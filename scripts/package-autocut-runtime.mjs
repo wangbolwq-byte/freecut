@@ -88,22 +88,24 @@ async function stageRuntime(outputRoot) {
     mkdir(path.join(outputRoot, 'bin'), { recursive: true }),
     mkdir(path.join(outputRoot, 'licenses'), { recursive: true }),
   ])
-  await cp(path.join(REPO_ROOT, 'dist'), path.join(outputRoot, 'dist'), { recursive: true })
+  await cp(path.join(REPO_ROOT, 'dist'), path.join(outputRoot, 'dist'), {
+    recursive: true,
+    filter: (source) => !source.endsWith('.map') && path.basename(source) !== '.gitkeep',
+  })
   await cp(path.join(REPO_ROOT, 'headless', 'lib'), path.join(outputRoot, 'headless', 'lib'), {
     recursive: true,
     filter: (source) => !source.endsWith('.test.mjs'),
   })
-  await Promise.all(TOP_LEVEL_HEADLESS_FILES.map((fileName) => copyHeadlessFile(outputRoot, fileName)))
+  await Promise.all(
+    TOP_LEVEL_HEADLESS_FILES.map((fileName) => copyHeadlessFile(outputRoot, fileName)),
+  )
   await cp(
     path.join(REPO_ROOT, 'node_modules', 'zod'),
     path.join(outputRoot, 'node_modules', 'zod'),
     { recursive: true },
   )
   await Promise.all([
-    cp(
-      path.join(REPO_ROOT, 'LICENSE'),
-      path.join(outputRoot, 'licenses', 'LICENSE.freecut.txt'),
-    ),
+    cp(path.join(REPO_ROOT, 'LICENSE'), path.join(outputRoot, 'licenses', 'LICENSE.freecut.txt')),
     cp(
       path.join(REPO_ROOT, 'node_modules', 'zod', 'LICENSE'),
       path.join(outputRoot, 'licenses', 'LICENSE.zod.txt'),
