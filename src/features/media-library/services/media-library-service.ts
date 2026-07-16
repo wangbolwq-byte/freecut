@@ -60,6 +60,7 @@ import {
   getProjectsUsingMedia,
   getMediaForProject as getMediaForProjectDB,
   getCopiedMediaReadUrl,
+  getMediaSourceReadUrl,
   deleteTranscript,
   readAiOutput,
   saveCaptions,
@@ -548,27 +549,41 @@ class MediaLibraryService {
   }
 
   private schedulePostImportWork(
-    file: File,
+    source: File | (() => Promise<File>),
     mediaMetadata: MediaMetadata,
     options: {
       isVideo: boolean
       previewAudioCodec?: string
     },
   ): void {
+    let sourcePromise: Promise<File> | null = null
+    const getSourceFile = () => {
+      if (source instanceof File) return Promise.resolve(source)
+      sourcePromise ??= source()
+      return sourcePromise
+    }
+
     if (needsCustomAudioDecoder(options.previewAudioCodec)) {
-      enqueueBackgroundMediaWork(() => startPreviewAudioStartupWarm(mediaMetadata.id, file), {
-        priority: 'warm',
-        delayMs: IMPORT_BACKGROUND_WARM_DELAY_MS,
-      })
-      enqueueBackgroundMediaWork(() => startPreviewAudioConform(mediaMetadata.id, file), {
-        priority: 'heavy',
-        delayMs: IMPORT_BACKGROUND_HEAVY_DELAY_MS,
-      })
+      enqueueBackgroundMediaWork(
+        async () => startPreviewAudioStartupWarm(mediaMetadata.id, await getSourceFile()),
+        {
+          priority: 'warm',
+          delayMs: IMPORT_BACKGROUND_WARM_DELAY_MS,
+        },
+      )
+      enqueueBackgroundMediaWork(
+        async () => startPreviewAudioConform(mediaMetadata.id, await getSourceFile()),
+        {
+          priority: 'heavy',
+          delayMs: IMPORT_BACKGROUND_HEAVY_DELAY_MS,
+        },
+      )
     }
 
     if (mediaMetadata.mimeType === 'image/gif') {
       enqueueBackgroundMediaWork(
         async () => {
+          const file = await getSourceFile()
           const blobUrl = URL.createObjectURL(file)
           try {
             const { gifFrameCache } = await importGifFrameCache()
@@ -582,6 +597,21 @@ class MediaLibraryService {
           delayMs: IMPORT_BACKGROUND_WARM_DELAY_MS,
         },
       )
+    }
+  }
+
+  private workspaceMediaFileLoader(media: MediaMetadata): () => Promise<File> {
+    return async () => {
+      const source = await getMediaSourceReadUrl(media.id)
+      if (!source) throw new Error(`Workspace media source is missing: ${media.id}`)
+      const response = await fetch(source.url)
+      if (!response.ok) {
+        throw new Error(`Failed to read workspace media: ${response.status}`)
+      }
+      return new File([await response.blob()], media.fileName, {
+        type: media.mimeType,
+        lastModified: media.fileLastModified ?? media.updatedAt,
+      })
     }
   }
 
@@ -902,12 +932,40 @@ class MediaLibraryService {
     },
     projectId: string,
   ): Promise<MediaMetadata & { isDuplicate?: boolean; hasUnsupportedCodec?: boolean }> {
-    const existing = (await getMediaForProjectDB(projectId)).find(
-      (media) => media.fileName === input.name && media.fileSize === input.stat.size,
-    )
+    const [workspaceMedia, projectMedia] = await Promise.all([
+      getAllMediaMetadataDB(),
+      getMediaForProjectDB(projectId),
+    ])
+    const isSameCopiedFile = (media: MediaMetadata) =>
+      media.fileName === input.name &&
+      media.fileSize === input.stat.size &&
+      media.fileLastModified === input.stat.modifiedAt
+    const duplicateCandidates = [
+      ...workspaceMedia.filter(isSameCopiedFile),
+      ...projectMedia.filter(isSameCopiedFile),
+    ]
+    let existing: MediaMetadata | undefined
+    for (const candidate of duplicateCandidates) {
+      if (candidate.storageType !== 'workspace') continue
+      const source = await getMediaSourceReadUrl(candidate.id).catch(() => null)
+      if (source) {
+        existing = candidate
+        break
+      }
+    }
     if (existing) {
+      const alreadyInThisProject = projectMedia.some((media) => media.id === existing.id)
+      if (!alreadyInThisProject) {
+        await associateMediaWithProject(projectId, existing.id)
+      }
+      this.schedulePostImportWork(this.workspaceMediaFileLoader(existing), existing, {
+        isVideo: existing.mimeType.startsWith('video/'),
+        previewAudioCodec: existing.mimeType.startsWith('audio/')
+          ? existing.codec
+          : existing.audioCodec,
+      })
       await removeWorkspaceCacheEntry([...input.path])
-      return { ...existing, isDuplicate: true }
+      return { ...existing, isDuplicate: alreadyInThisProject }
     }
 
     const mimeType = getMimeType(new File([], input.name))
@@ -917,10 +975,10 @@ class MediaLibraryService {
     }
 
     try {
-      const sourceUrl = await getCopiedMediaReadUrl(input.path)
+      const source = await getCopiedMediaReadUrl(input.path)
       const { metadata, thumbnail } = await mediaProcessorService.processMediaUrl(
         {
-          url: sourceUrl,
+          url: source.url,
           name: input.name,
           size: input.stat.size,
           lastModified: input.stat.modifiedAt,
@@ -974,6 +1032,12 @@ class MediaLibraryService {
         thumbnailBlob: thumbnail,
         thumbnailWidth: thumbnailDimensions?.width,
         thumbnailHeight: thumbnailDimensions?.height,
+      })
+      this.schedulePostImportWork(this.workspaceMediaFileLoader(persisted), persisted, {
+        isVideo: persisted.mimeType.startsWith('video/'),
+        previewAudioCodec: persisted.mimeType.startsWith('audio/')
+          ? persisted.codec
+          : persisted.audioCodec,
       })
       return { ...persisted, hasUnsupportedCodec: codecCheck.unsupported }
     } catch (error) {

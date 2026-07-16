@@ -2,6 +2,12 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
+type MockLocalReadUrl = {
+  url: string
+  expiresAt: number
+  stat: { kind: 'file'; size: number; modifiedAt: number; etag: string }
+}
+
 const indexedDbMocks = vi.hoisted(() => ({
   getAllMedia: vi.fn(),
   getAllMediaMetadata: vi.fn(),
@@ -28,7 +34,18 @@ const indexedDbMocks = vi.hoisted(() => ({
   deleteScenes: vi.fn(async () => undefined),
   hasMediaSource: vi.fn(async () => false),
   readMediaSource: vi.fn(async () => null),
-  getCopiedMediaReadUrl: vi.fn(async () => 'http://127.0.0.1:9999/media-token/video.mp4'),
+  getCopiedMediaReadUrl: vi.fn(async () => ({
+    url: 'http://127.0.0.1:9999/media-token/video.mp4',
+    expiresAt: Date.now() + 60_000,
+    stat: { kind: 'file', size: 1024, modifiedAt: 123, etag: '1024-123' },
+  })),
+  getMediaSourceReadUrl: vi.fn(
+    async (): Promise<MockLocalReadUrl | null> => ({
+      url: 'http://127.0.0.1:9999/media-token/adopted.mp4',
+      expiresAt: Date.now() + 60_000,
+      stat: { kind: 'file', size: 1024, modifiedAt: 123, etag: '1024-123' },
+    }),
+  ),
   adoptCopiedMediaSource: vi.fn(async () => undefined),
   removeWorkspaceCacheEntry: vi.fn(async () => undefined),
   writeMediaSource: vi.fn(async () => undefined),
@@ -307,6 +324,202 @@ describe('MediaLibraryService', () => {
         width: 1920,
         height: 1080,
       })
+    })
+
+    it('reuses matching workspace media across projects using modifiedAt', async () => {
+      const existing = makeMediaMetadata({
+        id: 'existing-1',
+        storageType: 'workspace',
+        fileLastModified: 123,
+      })
+      indexedDbMocks.getAllMediaMetadata.mockResolvedValue([existing])
+      indexedDbMocks.getMediaForProject.mockResolvedValue([])
+
+      const result = await mediaLibraryService.importCopiedWorkspaceMedia(
+        {
+          name: 'video.mp4',
+          path: ['cache', 'imports', 'batch-1', 'video.mp4'],
+          stat: { size: 1024, modifiedAt: 123 },
+        },
+        'project-2',
+      )
+
+      expect(indexedDbMocks.getAllMediaMetadata).toHaveBeenCalledTimes(1)
+      expect(indexedDbMocks.associateMediaWithProject).toHaveBeenCalledWith(
+        'project-2',
+        'existing-1',
+      )
+      expect(indexedDbMocks.removeWorkspaceCacheEntry).toHaveBeenCalled()
+      expect(mediaProcessorMocks.processMediaUrl).not.toHaveBeenCalled()
+      expect(result).toMatchObject({ id: 'existing-1', isDuplicate: false })
+    })
+
+    it('does not collapse copied files with a different modifiedAt', async () => {
+      indexedDbMocks.getAllMediaMetadata.mockResolvedValue([
+        makeMediaMetadata({
+          id: 'older-1',
+          storageType: 'workspace',
+          fileLastModified: 122,
+        }),
+      ])
+      mediaProcessorMocks.processMediaUrl.mockResolvedValue({
+        metadata: {
+          type: 'video',
+          duration: 12,
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          codec: 'avc1',
+          bitrate: 0,
+          audioCodecSupported: true,
+          videoCodecSupported: true,
+        },
+        thumbnail: null,
+      })
+      mediaProcessorMocks.hasUnsupportedAudioCodec.mockReturnValue({ unsupported: false })
+
+      const result = await mediaLibraryService.importCopiedWorkspaceMedia(
+        {
+          name: 'video.mp4',
+          path: ['cache', 'imports', 'batch-1', 'video.mp4'],
+          stat: { size: 1024, modifiedAt: 123 },
+        },
+        'project-1',
+      )
+
+      expect(mediaProcessorMocks.processMediaUrl).toHaveBeenCalledTimes(1)
+      expect(result.id).not.toBe('older-1')
+    })
+
+    it('preserves staged bytes when a matching record is not workspace-backed', async () => {
+      indexedDbMocks.getAllMediaMetadata.mockResolvedValue([
+        makeMediaMetadata({
+          id: 'legacy-handle',
+          storageType: 'handle',
+          fileLastModified: 123,
+        }),
+      ])
+      mediaProcessorMocks.processMediaUrl.mockResolvedValue({
+        metadata: {
+          type: 'video',
+          duration: 12,
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          codec: 'avc1',
+          bitrate: 0,
+          audioCodecSupported: true,
+          videoCodecSupported: true,
+        },
+        thumbnail: null,
+      })
+      mediaProcessorMocks.hasUnsupportedAudioCodec.mockReturnValue({ unsupported: false })
+
+      const result = await mediaLibraryService.importCopiedWorkspaceMedia(
+        {
+          name: 'video.mp4',
+          path: ['cache', 'imports', 'batch-1', 'video.mp4'],
+          stat: { size: 1024, modifiedAt: 123 },
+        },
+        'project-1',
+      )
+
+      expect(result.id).not.toBe('legacy-handle')
+      expect(indexedDbMocks.adoptCopiedMediaSource).toHaveBeenCalledWith(
+        ['cache', 'imports', 'batch-1', 'video.mp4'],
+        result.id,
+        'video.mp4',
+      )
+      expect(indexedDbMocks.removeWorkspaceCacheEntry).not.toHaveBeenCalled()
+    })
+
+    it('preserves staged bytes when matching workspace metadata has no source file', async () => {
+      indexedDbMocks.getAllMediaMetadata.mockResolvedValue([
+        makeMediaMetadata({
+          id: 'missing-workspace-source',
+          storageType: 'workspace',
+          fileLastModified: 123,
+        }),
+      ])
+      indexedDbMocks.getMediaSourceReadUrl.mockResolvedValueOnce(null)
+      mediaProcessorMocks.processMediaUrl.mockResolvedValue({
+        metadata: {
+          type: 'video',
+          duration: 12,
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          codec: 'avc1',
+          bitrate: 0,
+          audioCodecSupported: true,
+          videoCodecSupported: true,
+        },
+        thumbnail: null,
+      })
+      mediaProcessorMocks.hasUnsupportedAudioCodec.mockReturnValue({ unsupported: false })
+
+      const result = await mediaLibraryService.importCopiedWorkspaceMedia(
+        {
+          name: 'video.mp4',
+          path: ['cache', 'imports', 'batch-1', 'video.mp4'],
+          stat: { size: 1024, modifiedAt: 123 },
+        },
+        'project-1',
+      )
+
+      expect(result.id).not.toBe('missing-workspace-source')
+      expect(indexedDbMocks.adoptCopiedMediaSource).toHaveBeenCalledWith(
+        ['cache', 'imports', 'batch-1', 'video.mp4'],
+        result.id,
+        'video.mp4',
+      )
+      expect(indexedDbMocks.removeWorkspaceCacheEntry).not.toHaveBeenCalled()
+    })
+
+    it('schedules copied video audio preparation from its adopted workspace source', async () => {
+      const backgroundJobs: Promise<unknown>[] = []
+      backgroundMediaWorkMocks.enqueueBackgroundMediaWork.mockImplementation(
+        (run: () => unknown) => {
+          const job = Promise.resolve().then(run)
+          backgroundJobs.push(job)
+          return vi.fn()
+        },
+      )
+      compositionRuntimeMocks.needsCustomAudioDecoder.mockReturnValue(true)
+      fetchMock.mockResolvedValue({
+        ok: true,
+        blob: async () => new Blob(['video'], { type: 'video/mp4' }),
+      })
+      mediaProcessorMocks.processMediaUrl.mockResolvedValue({
+        metadata: {
+          type: 'video',
+          duration: 12,
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          codec: 'avc1',
+          bitrate: 0,
+          audioCodec: 'ac3',
+          audioCodecSupported: false,
+          videoCodecSupported: true,
+        },
+        thumbnail: null,
+      })
+      mediaProcessorMocks.hasUnsupportedAudioCodec.mockReturnValue({ unsupported: true })
+
+      await mediaLibraryService.importCopiedWorkspaceMedia(
+        {
+          name: 'video.mp4',
+          path: ['cache', 'imports', 'batch-1', 'video.mp4'],
+          stat: { size: 1024, modifiedAt: 123 },
+        },
+        'project-1',
+      )
+
+      expect(backgroundMediaWorkMocks.enqueueBackgroundMediaWork).toHaveBeenCalledTimes(2)
+      await Promise.all(backgroundJobs)
+      expect(compositionRuntimeMocks.startPreviewAudioStartupWarm).toHaveBeenCalledTimes(1)
+      expect(compositionRuntimeMocks.startPreviewAudioConform).toHaveBeenCalledTimes(1)
     })
   })
 
