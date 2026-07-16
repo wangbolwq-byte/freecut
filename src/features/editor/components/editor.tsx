@@ -389,7 +389,6 @@ export const LoadedEditor = memo(function LoadedEditor({
   project,
   migration,
 }: EditorProps) {
-  const [editorMountId] = useState(() => crypto.randomUUID())
   const { t } = useTranslation()
   const router = useRouter()
   const [exportDialogOpen, setExportDialogOpen] = useState(false)
@@ -795,9 +794,6 @@ export const LoadedEditor = memo(function LoadedEditor({
       aria-label={t('editor.editor.appLabel')}
       data-testid="freecut-editor-root"
     >
-      <span className="sr-only" data-testid="freecut-runtime-diagnostics">
-        {`FREECUT_RUNTIME backend=${storageBackendKind} mount=${editorMountId} revision=${lastAppliedRevision ?? 'pending'} syncCount=${appliedRevisionCount}`}
-      </span>
       {/* Top Toolbar */}
       <InteractionLockRegion locked={isMaskEditingActive}>
         <Toolbar

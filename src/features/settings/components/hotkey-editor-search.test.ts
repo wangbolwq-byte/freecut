@@ -43,8 +43,6 @@ describe('getHotkeyBindingDisplayLabel', () => {
   })
 
   it('formats non-empty bindings normally', () => {
-    expect(getHotkeyBindingDisplayLabel('mod+shift+e', 'Unassigned')).toBe(
-      process.platform === 'darwin' ? 'Cmd + Shift + E' : 'Ctrl + Shift + E',
-    )
+    expect(getHotkeyBindingDisplayLabel('mod+shift+e', 'Unassigned')).toBe('Ctrl + Shift + E')
   })
 })
