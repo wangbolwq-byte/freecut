@@ -18,7 +18,6 @@ import { clearPreviewAudioCache } from '@/features/editor/deps/composition-runti
 import { usePlaybackStore } from '@/shared/state/playback'
 import { useSelectionStore } from '@/shared/state/selection'
 import { blobUrlManager } from '@/infrastructure/browser/blob-url-manager'
-import { getWorkspaceRoot } from '@/infrastructure/storage/workspace-fs/root'
 import { createLogger } from '@/shared/logging/logger'
 
 const logger = createLogger('ProjectLiveSync')
@@ -26,6 +25,7 @@ const DEFAULT_HEADLESS_URL = 'http://127.0.0.1:8787'
 
 interface ProjectSnapshot {
   revision: string
+  projectRevision: string
   project: Project
   media: Array<{
     metadata: MediaMetadata
@@ -43,6 +43,39 @@ interface UseProjectLiveSyncOptions {
   enabled: boolean
 }
 
+function isActiveProjectGeneration(isMounted: boolean, current: object, expected: object): boolean {
+  return isMounted && current === expected
+}
+
+function queueRefetchAfterApply(
+  isActive: boolean,
+  refetchAfterApplyRef: { current: boolean },
+  scheduleFetchRef: { current: () => void },
+): void {
+  if (!isActive || !refetchAfterApplyRef.current) return
+  refetchAfterApplyRef.current = false
+  window.queueMicrotask(() => scheduleFetchRef.current())
+}
+
+async function requestProjectSnapshot(
+  baseUrl: string,
+  projectId: string,
+  controller: AbortController,
+  isMounted: () => boolean,
+): Promise<ProjectSnapshot | null> {
+  const response = await fetch(`${baseUrl}/v1/projects/${encodeURIComponent(projectId)}/snapshot`, {
+    signal: controller.signal,
+  })
+  if (controller.signal.aborted || !isMounted()) return null
+  if (!response.ok) throw new Error(`Snapshot request failed: ${response.status}`)
+  const snapshot = (await response.json()) as ProjectSnapshot
+  return controller.signal.aborted || !isMounted() ? null : snapshot
+}
+
+function isAbortedSnapshotRequest(error: unknown, controller: AbortController): boolean {
+  return controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')
+}
+
 export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLiveSyncOptions): {
   autoSaveEnabled: boolean
   conflictPending: boolean
@@ -50,7 +83,7 @@ export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLi
   lastAppliedRevision: string | null
   appliedRevisionCount: number
   applyPendingExternal: () => Promise<void>
-  keepEditorVersion: () => void
+  publishEditorVersion: (project: Project, persistLocal: () => Promise<void>) => Promise<void>
 } {
   const dirtyRef = useRef(isDirty)
   dirtyRef.current = isDirty
@@ -60,6 +93,21 @@ export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLi
   const queuedSnapshotRef = useRef<ProjectSnapshot | null>(null)
   const conflictPendingRef = useRef(false)
   const applyingRef = useRef(false)
+  const publishingRef = useRef(false)
+  const isMountedRef = useRef(true)
+  useEffect(() => {
+    isMountedRef.current = true
+    return () => {
+      isMountedRef.current = false
+    }
+  }, [])
+  const projectGenerationRef = useRef({ projectId, generation: 0 })
+  if (projectGenerationRef.current.projectId !== projectId) {
+    projectGenerationRef.current = {
+      projectId,
+      generation: projectGenerationRef.current.generation + 1,
+    }
+  }
   const refetchAfterApplyRef = useRef(false)
   const scheduleFetchRef = useRef<() => void>(() => undefined)
   const fetchControllerRef = useRef<AbortController | null>(null)
@@ -88,6 +136,9 @@ export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLi
       return
     }
     applyingRef.current = true
+    const generation = projectGenerationRef.current
+    const isCurrentProjectGeneration = () =>
+      isActiveProjectGeneration(isMountedRef.current, projectGenerationRef.current, generation)
     const playback = usePlaybackStore.getState()
     const timelineSettings = useTimelineSettingsStore.getState()
     const previousFrame = playback.currentFrame
@@ -120,6 +171,7 @@ export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLi
     }
 
     try {
+      if (!isCurrentProjectGeneration()) return
       playback.pause()
       playback.setPreviewFrame(null)
       timelineSettings.setTimelineLoading(true)
@@ -137,6 +189,11 @@ export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLi
         ]).catch((error) => logger.warn('Failed to clear changed media caches', error))
       }
 
+      await hydrateTimelineStoresFromProject(snapshot.project, {
+        shouldApply: isCurrentProjectGeneration,
+      })
+      if (!isCurrentProjectGeneration()) return
+
       useMediaLibraryStore.setState((state) => ({
         mediaItems,
         mediaById: Object.fromEntries(mediaItems.map((media) => [media.id, media])),
@@ -145,9 +202,6 @@ export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLi
         isLoading: false,
       }))
       useProjectStore.getState().setCurrentProject(snapshot.project)
-
-      await hydrateTimelineStoresFromProject(snapshot.project)
-
       restoreCompositionPath(snapshot.project, previousCompositionPath)
 
       const itemIds = new Set(useItemsStore.getState().items.map((item) => item.id))
@@ -197,29 +251,29 @@ export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLi
         mediaCount: mediaItems.length,
       })
     } finally {
-      useTimelineSettingsStore.getState().setTimelineLoading(false)
-      applyingRef.current = false
-      if (refetchAfterApplyRef.current) {
-        refetchAfterApplyRef.current = false
-        window.queueMicrotask(() => scheduleFetchRef.current())
+      if (isCurrentProjectGeneration()) {
+        useTimelineSettingsStore.getState().setTimelineLoading(false)
       }
+      applyingRef.current = false
+      queueRefetchAfterApply(isCurrentProjectGeneration(), refetchAfterApplyRef, scheduleFetchRef)
     }
   }, [])
 
   const fetchLatest = useCallback(async () => {
-    if (!enabled) return
+    if (!enabled || publishingRef.current) return
     fetchControllerRef.current?.abort()
     const controller = new AbortController()
     fetchControllerRef.current = controller
     const baseUrl =
       (import.meta.env.VITE_FREECUT_HEADLESS_URL as string | undefined) ?? DEFAULT_HEADLESS_URL
     try {
-      const response = await fetch(
-        `${baseUrl}/v1/projects/${encodeURIComponent(projectId)}/snapshot`,
-        { signal: controller.signal },
+      const snapshot = await requestProjectSnapshot(
+        baseUrl,
+        projectId,
+        controller,
+        () => isMountedRef.current,
       )
-      if (!response.ok) throw new Error(`Snapshot request failed: ${response.status}`)
-      const snapshot = (await response.json()) as ProjectSnapshot
+      if (!snapshot) return
       if (snapshot.revision === revisionRef.current) return
       const contentSignature = snapshotContentSignature(snapshot)
       if (contentSignature === contentSignatureRef.current) {
@@ -242,11 +296,13 @@ export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLi
       }
       await applySnapshot(snapshot)
     } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') return
+      if (isAbortedSnapshotRequest(error, controller)) return
       logger.debug('Live project snapshot unavailable', {
         projectId,
         error: error instanceof Error ? error.message : String(error),
       })
+    } finally {
+      if (fetchControllerRef.current === controller) fetchControllerRef.current = null
     }
   }, [applySnapshot, enabled, projectId])
 
@@ -262,19 +318,6 @@ export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLi
   useEffect(() => {
     if (!enabled) return
     void fetchLatest()
-    const root = getWorkspaceRoot()
-    const unsubscribeDirectory = root?.subscribe((event) => {
-      if (
-        event.paths.some(
-          (path) =>
-            (path[0] === 'projects' && path[1] === projectId) ||
-            path[0] === 'media' ||
-            path.join('/') === 'index.json',
-        )
-      ) {
-        scheduleFetch()
-      }
-    })
 
     const baseUrl =
       (import.meta.env.VITE_FREECUT_HEADLESS_URL as string | undefined) ?? DEFAULT_HEADLESS_URL
@@ -287,7 +330,6 @@ export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLi
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
-      unsubscribeDirectory?.()
       source.close()
       document.removeEventListener('visibilitychange', onVisible)
       fetchControllerRef.current?.abort()
@@ -306,13 +348,49 @@ export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLi
     await applySnapshot(snapshot)
   }, [applySnapshot])
 
-  const keepEditorVersion = useCallback(() => {
-    queuedSnapshotRef.current = null
-    conflictPendingRef.current = false
-    setConflictPending(false)
-    setPendingRevision(null)
-    scheduleFetch()
-  }, [scheduleFetch])
+  const publishEditorVersion = useCallback(
+    async (project: Project, persistLocal: () => Promise<void>) => {
+      const snapshot = queuedSnapshotRef.current
+      if (!snapshot) throw new Error('No external project revision is waiting')
+      publishingRef.current = true
+      fetchControllerRef.current?.abort()
+      fetchControllerRef.current = null
+      let completed = false
+      try {
+        const baseUrl =
+          (import.meta.env.VITE_FREECUT_HEADLESS_URL as string | undefined) ?? DEFAULT_HEADLESS_URL
+        const response = await fetch(`${baseUrl}/v1/projects/${encodeURIComponent(projectId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project,
+            expectedRevision: snapshot.projectRevision,
+          }),
+        })
+        if (!response.ok) {
+          throw new Error(`Headless project save failed: ${response.status}`)
+        }
+        const saved = (await response.json()) as { revision?: string }
+        if (saved.revision && queuedSnapshotRef.current) {
+          queuedSnapshotRef.current = {
+            ...queuedSnapshotRef.current,
+            projectRevision: saved.revision,
+          }
+        }
+        await persistLocal()
+        dirtyRef.current = false
+        queuedSnapshotRef.current = null
+        conflictPendingRef.current = false
+        setConflictPending(false)
+        setPendingRevision(null)
+        completed = true
+      } finally {
+        publishingRef.current = false
+      }
+      if (completed) scheduleFetch()
+    },
+    [projectId, scheduleFetch],
+  )
 
   return {
     autoSaveEnabled: !conflictPending,
@@ -321,7 +399,7 @@ export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLi
     lastAppliedRevision,
     appliedRevisionCount,
     applyPendingExternal,
-    keepEditorVersion,
+    publishEditorVersion,
   }
 }
 

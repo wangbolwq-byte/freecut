@@ -30,7 +30,7 @@ import {
   listProjectIdsUsingMedia,
   listProjects,
   loadProjectById,
-  reconcileProjectMediaLinks,
+  reconcileProjectMediaLinksAfterCommit,
   resolveMediaFile,
 } from './lib/workspace.mjs'
 import { parseArgs, chromeLaunchArgs } from './lib/cli.mjs'
@@ -104,6 +104,42 @@ export function resolveHost(args = {}, env = process.env) {
     throw new Error('Host must be a non-empty string (--host or FREECUT_HOST)')
   }
   return host.trim()
+}
+
+export function installWorkspaceChangeMonitor({
+  workspace,
+  onChange,
+  onPoll,
+  watch = fs.watch,
+  setIntervalFn = setInterval,
+  clearIntervalFn = clearInterval,
+  warn = console.warn,
+}) {
+  let watcher = null
+  let pollTimer = null
+  const startPolling = (reason) => {
+    if (pollTimer) return
+    watcher?.close()
+    watcher = null
+    warn(`${reason}; using revision polling`)
+    pollTimer = setIntervalFn(onPoll, 750)
+  }
+  try {
+    watcher = watch(
+      workspace,
+      { recursive: true, persistent: false },
+      (_eventType, fileName) => onChange(fileName),
+    )
+    watcher.on('error', (error) => {
+      startPolling(`Workspace watcher failed: ${error.message}`)
+    })
+  } catch (error) {
+    startPolling(`Recursive workspace watcher unavailable: ${error.message}`)
+  }
+  return () => {
+    if (pollTimer) clearIntervalFn(pollTimer)
+    watcher?.close()
+  }
 }
 
 function sendJson(res, status, obj) {
@@ -315,6 +351,7 @@ async function main() {
   }
 
   const handleEvents = async (req, res, projectId) => {
+    const snapshot = buildProjectSnapshot(workspace, projectId)
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',
@@ -329,20 +366,15 @@ async function main() {
     }
     clients.add(res)
 
-    try {
-      const snapshot = buildProjectSnapshot(workspace, projectId)
-      writeSseEvent(res, {
-        eventId: `${Date.now()}-${++eventCounter}`,
-        type: 'project.changed',
-        projectId,
-        revision: snapshot.revision,
-        source: 'initial-snapshot',
-        changedPaths: [],
-        timestamp: Date.now(),
-      })
-    } catch (error) {
-      res.write(`event: project.error\ndata: ${JSON.stringify({ error: error.message })}\n\n`)
-    }
+    writeSseEvent(res, {
+      eventId: `${Date.now()}-${++eventCounter}`,
+      type: 'project.changed',
+      projectId,
+      revision: snapshot.revision,
+      source: 'initial-snapshot',
+      changedPaths: [],
+      timestamp: Date.now(),
+    })
 
     const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 15_000)
     req.on('close', () => {
@@ -432,7 +464,9 @@ async function main() {
       throw new HttpError(400, 'PROJECT_ID_MISMATCH', 'Project body id must equal the path id')
     const project = await browserNormalize({ ...body.project, id })
     const resource = await saveProjectResource(workspace, id, project, body)
-    reconcileProjectMediaLinks(workspace, resource.project, id)
+    resource.warnings.push(
+      ...reconcileProjectMediaLinksAfterCommit(workspace, resource.project, id),
+    )
     publishCurrentProjectChange(id, 'headless-api', [
       ['projects', id, 'project.json'],
       ['projects', id, 'media-links.json'],
@@ -494,7 +528,9 @@ async function main() {
         }
       const project = await browserNormalize(result.project)
       const resource = await saveProjectResource(workspace, id, project, body)
-      reconcileProjectMediaLinks(workspace, resource.project, id)
+      resource.warnings.push(
+        ...reconcileProjectMediaLinksAfterCommit(workspace, resource.project, id),
+      )
       publishCurrentProjectChange(id, 'headless-api', [
         ['projects', id, 'project.json'],
         ['projects', id, 'media-links.json'],
@@ -787,33 +823,20 @@ async function main() {
     }
   }
 
-  let workspaceWatcher = null
-  let pollTimer = null
-  try {
-    workspaceWatcher = fs.watch(
-      workspace,
-      { recursive: true, persistent: false },
-      (_eventType, fileName) => handleWorkspaceChange(fileName),
-    )
-    workspaceWatcher.on('error', (error) => {
-      console.warn(`Workspace watcher failed: ${error.message}`)
-    })
-  } catch (error) {
-    console.warn(
-      `Recursive workspace watcher unavailable; using revision polling: ${error.message}`,
-    )
-    pollTimer = setInterval(() => {
+  const stopWorkspaceChangeMonitor = installWorkspaceChangeMonitor({
+    workspace,
+    onChange: handleWorkspaceChange,
+    onPoll: () => {
       for (const project of listProjects(workspace)) scheduleProjectChange(project.id, 'poll')
-    }, 750)
-  }
+    },
+  })
 
   let shuttingDown
   const shutdown = () =>
     (shuttingDown ??= (async () => {
       console.log('\nShutting down...')
       clearTimeout(watchDebounce)
-      if (pollTimer) clearInterval(pollTimer)
-      workspaceWatcher?.close()
+      stopWorkspaceChangeMonitor()
       for (const clients of eventClients.values()) {
         for (const client of clients) client.end()
       }

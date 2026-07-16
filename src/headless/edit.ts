@@ -90,7 +90,11 @@ export type EditOperationName =
   | 'setProjectSettings'
 
 /** A wire operation. Node validates its discriminator and fields before this browser boundary. */
-export type EditOp = Record<string, unknown> & { op: EditOperationName }
+export type EditOp = Record<string, unknown> & {
+  op: EditOperationName
+  updates?: Record<string, unknown> & { audioEq?: AudioEqSettings }
+  busAudioEq?: AudioEqSettings | null
+}
 
 export interface HeadlessEditInput {
   project: Project
@@ -368,11 +372,15 @@ function applyOp(op: EditOp): unknown {
       if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
         throw new Error('updateTrack requires an `updates` object')
       }
-      const raw = updates as Record<string, unknown>
+      const raw = updates
+      if ('height' in raw) {
+        throw new Error(
+          'updateTrack does not support `height`; track height is a local editor preference',
+        )
+      }
       const next: TimelineTrack = {
         ...existing,
         ...(asString(raw.name) !== undefined && { name: asString(raw.name)! }),
-        ...(asNumber(raw.height) !== undefined && { height: asNumber(raw.height)! }),
         ...(asBoolean(raw.locked) !== undefined && { locked: asBoolean(raw.locked)! }),
         ...(asBoolean(raw.syncLock) !== undefined && { syncLock: asBoolean(raw.syncLock)! }),
         ...(asBoolean(raw.visible) !== undefined && { visible: asBoolean(raw.visible)! }),
@@ -381,9 +389,7 @@ function applyOp(op: EditOp): unknown {
         ...(asNumber(raw.volume) !== undefined && { volume: asNumber(raw.volume)! }),
         ...(asString(raw.color) !== undefined && { color: asString(raw.color)! }),
         ...(asNumber(raw.order) !== undefined && { order: asNumber(raw.order)! }),
-        ...(raw.audioEq && typeof raw.audioEq === 'object'
-          ? { audioEq: raw.audioEq as AudioEqSettings }
-          : {}),
+        ...(raw.audioEq ? { audioEq: raw.audioEq } : {}),
       }
       setTracks(all.map((track) => (track.id === id ? next : track)))
       return { id }
@@ -393,8 +399,13 @@ function applyOp(op: EditOp): unknown {
       if (!id) throw new Error('removeTrack requires `id`')
       const all = tracks()
       if (!all.some((track) => track.id === id)) throw new Error(`removeTrack: unknown track ${id}`)
+      const itemIds = useItemsStore
+        .getState()
+        .items.filter((item) => item.trackId === id)
+        .map((item) => item.id)
+      if (itemIds.length > 0) removeItems(itemIds)
       setTracks(all.filter((track) => track.id !== id))
-      return { id }
+      return { id, removedItemIds: itemIds }
     }
     case 'addClip': {
       const mediaId = asString(op.mediaId)
@@ -603,11 +614,7 @@ function applyOp(op: EditOp): unknown {
       const masterBusDb = asNumber(op.masterBusDb)
       if (masterBusDb !== undefined) playback.setMasterBusDb(masterBusDb)
       if ('busAudioEq' in op) {
-        playback.setBusAudioEq(
-          op.busAudioEq && typeof op.busAudioEq === 'object'
-            ? (op.busAudioEq as AudioEqSettings)
-            : undefined,
-        )
+        playback.setBusAudioEq(op.busAudioEq ?? undefined)
       }
       return { masterBusDb, busAudioEq: op.busAudioEq }
     }
