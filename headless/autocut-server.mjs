@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { parseArgs } from './lib/cli.mjs'
 import { createHarnessServer } from './server.mjs'
 
@@ -136,9 +136,15 @@ function isPresent(value) {
   return value !== undefined && value !== null && value !== ''
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (isMainModule()) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.stack || error.message : String(error))
     process.exitCode = 1
   })
+}
+
+function isMainModule() {
+  if (!process.argv[1]) return false
+  const entryPath = fs.realpathSync(path.resolve(process.argv[1]))
+  return fileURLToPath(import.meta.url) === entryPath
 }
