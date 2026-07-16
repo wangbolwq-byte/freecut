@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { parseArgs } from './lib/cli.mjs'
 import {
   assertAutoCutWorkspace,
@@ -33,6 +32,7 @@ import {
   stageLocalMedia,
   updateMediaMetadata,
 } from './lib/lifecycle-store.mjs'
+import { isMainModule } from './lib/main-module.mjs'
 
 const OPTIONS = new Set([
   'workspace',
@@ -301,7 +301,7 @@ function createEditorUrl(args, env = process.env) {
   return { url: url.toString() }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (isMainModule(import.meta.url)) {
   run()
     .then((result) => console.log(JSON.stringify(result, null, 2)))
     .catch((error) => {

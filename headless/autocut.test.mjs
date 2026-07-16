@@ -1,12 +1,30 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { createEditorUrl } from './agent.mjs'
 import { createAutoCutServer } from './autocut-server.mjs'
 import { AutoCutBrokerPage } from './lib/autocut-browser-session.mjs'
+import { isMainModule } from './lib/main-module.mjs'
+
+test(
+  'AutoCut entrypoints recognize canonical path aliases',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'autocut-main-module-'))
+    const target = fileURLToPath(import.meta.url)
+    const aliasRoot = path.join(root, 'headless-link')
+    try {
+      await symlink(path.dirname(target), aliasRoot, 'dir')
+      assert.equal(isMainModule(import.meta.url, path.join(aliasRoot, path.basename(target))), true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  },
+)
 
 test('AutoCut server exposes the editor at root and versioned health data', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'autocut-server-'))

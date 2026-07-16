@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from './lib/cli.mjs'
+import { isMainModule } from './lib/main-module.mjs'
 import { createHarnessServer } from './server.mjs'
 
 const DEFAULT_PORT = 18787
@@ -136,15 +137,9 @@ function isPresent(value) {
   return value !== undefined && value !== null && value !== ''
 }
 
-if (isMainModule()) {
+if (isMainModule(import.meta.url)) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.stack || error.message : String(error))
     process.exitCode = 1
   })
-}
-
-function isMainModule() {
-  if (!process.argv[1]) return false
-  const entryPath = fs.realpathSync(path.resolve(process.argv[1]))
-  return fileURLToPath(import.meta.url) === entryPath
 }

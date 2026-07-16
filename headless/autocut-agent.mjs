@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { HEADLESS_API_VERSION } from './lib/contract.mjs'
+import { isMainModule } from './lib/main-module.mjs'
 import { run } from './agent.mjs'
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (isMainModule(import.meta.url)) {
   run()
     .then((result) => console.log(JSON.stringify(result, null, 2)))
     .catch((error) => {
