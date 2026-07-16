@@ -53,6 +53,15 @@
     "midtones": "Mittentoene",
     "highlights": "Lichter"
   },
+  "powerWindow": {
+    "window": "Fenster",
+    "matte": "Maske",
+    "correction": "Korrektur",
+    "ellipse": "Ellipse",
+    "rectangle": "Rechteck",
+    "editOnCanvas": "Auf der Leinwand bearbeiten",
+    "editingOnCanvas": "Bearbeitung auf der Leinwand"
+  },
   "params": {
     "flow": "Fluss",
     "span": "Spanne",

@@ -31,7 +31,7 @@ const BUILT_IN_PROPERTY_VALUE_RANGES: Record<BuiltInAnimatableProperty, Property
   cropBottom: { property: 'cropBottom', min: 0, max: 4000, unit: 'px', decimals: 0 },
   cropSoftness: { property: 'cropSoftness', min: -2000, max: 2000, unit: 'px', decimals: 0 },
   volume: { property: 'volume', min: -60, max: 20, unit: 'dB', decimals: 1 },
-  textStyleScale: { property: 'textStyleScale', min: 0.5, max: 3, unit: 'x', decimals: 2 },
+  textStyleScale: { property: 'textStyleScale', min: 0.5, max: 6, unit: 'x', decimals: 2 },
   fontSize: { property: 'fontSize', min: 8, max: 500, unit: 'px', decimals: 0 },
   lineHeight: { property: 'lineHeight', min: 0.5, max: 3, unit: 'x', decimals: 2 },
   textPadding: { property: 'textPadding', min: 0, max: 160, unit: 'px', decimals: 0 },
@@ -50,7 +50,7 @@ const BUILT_IN_PROPERTY_VALUE_RANGES: Record<BuiltInAnimatableProperty, Property
     unit: 'px',
     decimals: 0,
   },
-  textShadowBlur: { property: 'textShadowBlur', min: 0, max: 80, unit: 'px', decimals: 0 },
+  textShadowBlur: { property: 'textShadowBlur', min: 0, max: 160, unit: 'px', decimals: 0 },
   strokeWidth: { property: 'strokeWidth', min: 0, max: 24, unit: 'px', decimals: 0 },
 }
 

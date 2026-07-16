@@ -261,8 +261,8 @@ export const ClipContent = memo(function ClipContent({
       [compositionId],
     ),
   )
-  // A clip that references a standalone sequence reads "Sequence"; a plain
-  // pre-comp reads "Compound".
+  // A clip that references a standalone sequence reads "Sequence", a Motion
+  // composition reads "Composition", and a classic pre-comp reads "Compound".
   const isSequenceClip = useSequencesStore(
     useCallback(
       (s) => (compositionId ? s.topLevelSequenceIds.includes(compositionId) : false),
@@ -401,6 +401,14 @@ export const ClipContent = memo(function ClipContent({
   const compoundClipTimelineFps = composition?.fps ?? fps
   const compoundClipSourceDuration = compositionSourceDurationFrames / compoundClipTimelineFps
   const compoundClipSourceStart = compositionSourceStartFrames / compoundClipTimelineFps
+  const compositionKindLabel =
+    composition?.editorKind === 'composite-2d'
+      ? 'Composition'
+      : isSequenceClip
+        ? 'Sequence'
+        : 'Compound'
+  const defaultCompositionLabel =
+    composition?.editorKind === 'composite-2d' ? 'Composition' : 'Compound Clip'
 
   const renderCompoundClipLabel = useCallback(
     (label: string) => (
@@ -416,12 +424,12 @@ export const ClipContent = memo(function ClipContent({
         {renderTitleText(
           label,
           <span className="shrink-0 rounded bg-violet-950/40 px-1.5 text-[9px] font-semibold uppercase tracking-[0.08em] text-violet-100/90">
-            {isSequenceClip ? 'Sequence' : 'Compound'}
+            {compositionKindLabel}
           </span>,
         )}
       </div>
     ),
-    [renderTitleText, isSequenceClip],
+    [compositionKindLabel, renderTitleText],
   )
 
   const showVisualContent = clipWidth >= FILMSTRIP_MIN_WIDTH_PX && !deferVisual
@@ -522,7 +530,7 @@ export const ClipContent = memo(function ClipContent({
   if (isCompositionAudioWrapper && composition) {
     return (
       <div className="absolute inset-0 flex flex-col">
-        {renderCompoundClipLabel(item.label || 'Compound Clip')}
+        {renderCompoundClipLabel(item.label || defaultCompositionLabel)}
         {showVisualContent && showWaveforms && (
           <div className="relative overflow-hidden bg-waveform-gradient flex-1 min-h-0">
             <Suspense fallback={null}>
@@ -561,7 +569,7 @@ export const ClipContent = memo(function ClipContent({
     if (visualSegments.length > 0) {
       return (
         <div className="absolute inset-0 flex flex-col">
-          {renderCompoundClipLabel(item.label || 'Compound Clip')}
+          {renderCompoundClipLabel(item.label || defaultCompositionLabel)}
           {showVisualContent && (
             <>
               {/* Row 2: Filmstrip stack - flex-1 */}
@@ -613,7 +621,7 @@ export const ClipContent = memo(function ClipContent({
     if (compositionSummary.hasOwnedAudio && composition && !hasCompositionAudioCompanion) {
       return (
         <div className="absolute inset-0 flex flex-col">
-          {renderCompoundClipLabel(item.label || 'Compound Clip')}
+          {renderCompoundClipLabel(item.label || defaultCompositionLabel)}
           {showVisualContent && showWaveforms && (
             <div className="relative overflow-hidden bg-waveform-gradient flex-1 min-h-0">
               <Suspense fallback={null}>
@@ -636,7 +644,7 @@ export const ClipContent = memo(function ClipContent({
     }
     return (
       <div className="absolute inset-0 flex flex-col overflow-hidden">
-        {renderCompoundClipLabel(item.label || 'Compound Clip')}
+        {renderCompoundClipLabel(item.label || defaultCompositionLabel)}
       </div>
     )
   }

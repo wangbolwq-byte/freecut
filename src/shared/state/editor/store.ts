@@ -11,6 +11,7 @@ import {
   type EditorWorkspaceId,
   type EditorWorkspaceLayout,
 } from '@/config/editor-workspaces'
+import { usePlaybackStore } from '@/shared/state/playback'
 
 const LEGACY_SIDEBAR_DEFAULT_WIDTH = 320
 const WORKSPACE_STORAGE_KEY = 'editor:workspace'
@@ -195,6 +196,13 @@ export const useEditorStore = create<EditorState & EditorActions>((set) => ({
   setWorkspace: (workspace) =>
     set((state) => {
       if (state.workspace === workspace) return state
+
+      // A workspace swap can replace the mounted preview surface. Stop the
+      // shared clock before React mounts the destination canvas so it cannot
+      // inherit live playback and briefly advance footage while settling.
+      const playback = usePlaybackStore.getState()
+      playback.pause()
+      playback.setPreviewFrame(null)
 
       // Remember the outgoing workspace's layout so the user's tweaks
       // survive a round trip; the incoming workspace restores its own

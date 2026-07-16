@@ -9,8 +9,6 @@ interface DopesheetRulerHeaderProps {
   onRulerPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void
   onRulerPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void
   rulerTickElements: ReactNode
-  /** Self-positioning playhead flag handle, rendered over the ruler ticks. */
-  playheadFlag?: ReactNode
 }
 
 export function DopesheetRulerHeader({
@@ -20,7 +18,6 @@ export function DopesheetRulerHeader({
   onRulerPointerMove,
   onRulerPointerUp,
   rulerTickElements,
-  playheadFlag,
 }: DopesheetRulerHeaderProps) {
   const { t } = useTranslation()
 
@@ -43,7 +40,6 @@ export function DopesheetRulerHeader({
         onPointerCancel={onRulerPointerUp}
       >
         {rulerTickElements}
-        {playheadFlag}
       </div>
     </div>
   )

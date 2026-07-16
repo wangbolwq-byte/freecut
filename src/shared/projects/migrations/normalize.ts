@@ -242,9 +242,13 @@ function normalizeTimeline(timeline: ProjectTimeline): ProjectTimeline {
 
   // Drop tab ids that don't resolve to a composition (and any duplicates), so
   // standalone-timeline tabs never dangle after a composition is deleted.
-  const validCompositionIds = new Set((timeline.compositions ?? []).map((comp) => comp.id))
+  const validSequenceIds = new Set(
+    (timeline.compositions ?? [])
+      .filter((comp) => comp.editorKind !== 'composite-2d')
+      .map((comp) => comp.id),
+  )
   const normalizedTopLevelSequenceIds = timeline.topLevelSequenceIds
-    ? [...new Set(timeline.topLevelSequenceIds.filter((id) => validCompositionIds.has(id)))]
+    ? [...new Set(timeline.topLevelSequenceIds.filter((id) => validSequenceIds.has(id)))]
     : undefined
 
   return {
@@ -263,6 +267,7 @@ function normalizeTimeline(timeline: ProjectTimeline): ProjectTimeline {
       const compTransitions = comp.transitions?.map(normalizeTransition)
       return {
         ...comp,
+        editorKind: comp.editorKind === 'composite-2d' ? 'composite-2d' : 'sequence',
         tracks: flattenTrackGroups(comp.tracks.map((track, index) => normalizeTrack(track, index))),
         busAudioEq: normalizeAudioEqSettings(comp.busAudioEq),
         items: repairOverlappingItems(compItems, compTransitions),

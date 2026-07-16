@@ -5,6 +5,7 @@ export interface TimelineItemCompareProps {
   timelineDuration?: number
   trackLocked?: boolean
   trackHidden?: boolean
+  onHoverChange?: (itemId: string, hovered: boolean) => void
 }
 
 /**
@@ -55,6 +56,7 @@ export function areTimelineItemPropsEqual(
     prevIsMask === nextIsMask &&
     prevProps.timelineDuration === nextProps.timelineDuration &&
     prevProps.trackLocked === nextProps.trackLocked &&
-    prevProps.trackHidden === nextProps.trackHidden
+    prevProps.trackHidden === nextProps.trackHidden &&
+    prevProps.onHoverChange === nextProps.onHoverChange
   )
 }

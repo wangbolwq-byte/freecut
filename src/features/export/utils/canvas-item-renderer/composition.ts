@@ -19,6 +19,7 @@ import { applyMasks, buildPreparedMask, type MaskCanvasSettings } from '../canva
 import {
   getItemRenderTimelineSpan,
   getRenderTimelineSourceStart,
+  resolveCompositionSourceFrame,
   type RenderTimelineSpan,
 } from '../render-span'
 import type { CanvasSettings, ItemRenderContext, ItemTransform, SubCompRenderData } from './types'
@@ -57,7 +58,13 @@ export async function renderCompositionItem(
   // it tells us how many frames into the sub-comp to start playing.
   const effectiveRenderSpan = renderSpan ?? getItemRenderTimelineSpan(item)
   const sourceOffset = getRenderTimelineSourceStart(item, effectiveRenderSpan)
-  const localFrame = frame - effectiveRenderSpan.from + sourceOffset
+  const localFrame = resolveCompositionSourceFrame(
+    item,
+    frame,
+    rctx.fps,
+    subData.fps,
+    effectiveRenderSpan,
+  )
   if (localFrame < 0 || localFrame >= subData.durationInFrames) {
     if (frame < 5) {
       log.warn('renderCompositionItem: localFrame out of range', {

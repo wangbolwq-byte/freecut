@@ -290,7 +290,7 @@ describe('useVisibleItems filtering logic', () => {
 
     // Settle recomputes in the committed coordinate space; the set stays 'a,b'.
     act(() => {
-      vi.advanceTimersByTime(100)
+      vi.advanceTimersByTime(50)
     })
 
     expect(screen.getByTestId('visible-items')).toHaveTextContent('a,b')

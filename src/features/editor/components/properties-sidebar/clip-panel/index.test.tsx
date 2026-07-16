@@ -106,9 +106,7 @@ describe('ClipPanel inspector tabs', () => {
 
     activateTab('Effects')
 
-    await waitFor(() => {
-      expect(screen.getByText('Effects Body')).toBeInTheDocument()
-    })
+    expect(screen.getByText('Effects Body')).toBeInTheDocument()
     expect(useEditorStore.getState().clipInspectorTab).toBe('effects')
 
     act(() => {

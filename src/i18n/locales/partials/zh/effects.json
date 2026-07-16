@@ -53,6 +53,15 @@
     "midtones": "中间调",
     "highlights": "高光"
   },
+  "powerWindow": {
+    "window": "窗口",
+    "matte": "遮罩",
+    "correction": "校正",
+    "ellipse": "椭圆",
+    "rectangle": "矩形",
+    "editOnCanvas": "在画布上编辑",
+    "editingOnCanvas": "正在画布上编辑"
+  },
   "params": {
     "flow": "流动",
     "span": "跨度",

@@ -75,6 +75,9 @@ export const TransitionItem = memo(function TransitionItem({
   trackHidden = false,
 }: TransitionItemProps) {
   perfMarkRender('TransitionItem')
+  // Transition bridges are lightweight geometry and must stay pinned to the
+  // clip edges during live wheel zoom. Expensive clip media remains on the
+  // settled zoom path; only visible bridges subscribe here.
   const { frameToPixels } = useTimelineZoomContext()
   const fps = useTimelineStore((s: TimelineState) => s.fps)
   const removeTransition = useTimelineStore((s: TimelineActions) => s.removeTransition)

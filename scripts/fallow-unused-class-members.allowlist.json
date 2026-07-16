@@ -22,11 +22,6 @@
         },
         {
           "parentName": "VideoFrameExtractor",
-          "memberName": "dispose",
-          "kind": "class_method"
-        },
-        {
-          "parentName": "VideoFrameExtractor",
           "memberName": "drawFrameWithCapture",
           "kind": "class_method"
         },
@@ -63,6 +58,17 @@
       ]
     },
     {
+      "path": "src/features/export/utils/shared-video-extractor.ts",
+      "reason": "SharedVideoExtractorPool is consumed through the client renderer's pool abstraction; dispose releases every extractor lane during renderer teardown.",
+      "members": [
+        {
+          "parentName": "SharedVideoExtractorPool",
+          "memberName": "dispose",
+          "kind": "class_method"
+        }
+      ]
+    },
+    {
       "path": "src/features/media-library/transcription/browser-transcriber.ts",
       "reason": "Audited as a live transcription service API reached through adapter instances.",
       "members": [
@@ -84,27 +90,7 @@
       "members": [
         {
           "parentName": "ScrubbingCache",
-          "memberName": "cacheFrame",
-          "kind": "class_method"
-        },
-        {
-          "parentName": "ScrubbingCache",
-          "memberName": "dispose",
-          "kind": "class_method"
-        },
-        {
-          "parentName": "ScrubbingCache",
-          "memberName": "putGpuFrame",
-          "kind": "class_method"
-        },
-        {
-          "parentName": "ScrubbingCache",
           "memberName": "setEvictionHint",
-          "kind": "class_method"
-        },
-        {
-          "parentName": "ScrubbingCache",
-          "memberName": "setGpuDevice",
           "kind": "class_method"
         }
       ]
@@ -152,6 +138,113 @@
         {
           "parentName": "TimeStretchProcessor",
           "memberName": "tempoChange",
+          "kind": "class_method"
+        }
+      ]
+    },
+    {
+      "path": "src/infrastructure/storage/local-directory/electron-directory-backend.ts",
+      "reason": "ElectronDirectoryBackend implements the LocalDirectoryBackend interface; these methods are invoked through the selected workspace backend abstraction.",
+      "members": [
+        {
+          "parentName": "ElectronDirectoryBackend",
+          "memberName": "readFile",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "ElectronDirectoryBackend",
+          "memberName": "getReadUrl",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "ElectronDirectoryBackend",
+          "memberName": "writeFile",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "ElectronDirectoryBackend",
+          "memberName": "listDirectory",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "ElectronDirectoryBackend",
+          "memberName": "createDirectory",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "ElectronDirectoryBackend",
+          "memberName": "exists",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "ElectronDirectoryBackend",
+          "memberName": "stat",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "ElectronDirectoryBackend",
+          "memberName": "move",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "ElectronDirectoryBackend",
+          "memberName": "remove",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "ElectronDirectoryBackend",
+          "memberName": "selectAndCopyFiles",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "ElectronDirectoryBackend",
+          "memberName": "subscribe",
+          "kind": "class_method"
+        }
+      ]
+    },
+    {
+      "path": "src/infrastructure/storage/local-directory/file-system-access-backend.ts",
+      "reason": "FileSystemAccessDirectoryBackend implements the LocalDirectoryBackend interface; these methods are invoked through the selected workspace backend abstraction.",
+      "members": [
+        {
+          "parentName": "FileSystemAccessDirectoryBackend",
+          "memberName": "getReadUrl",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "FileSystemAccessDirectoryBackend",
+          "memberName": "writeFile",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "FileSystemAccessDirectoryBackend",
+          "memberName": "listDirectory",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "FileSystemAccessDirectoryBackend",
+          "memberName": "createDirectory",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "FileSystemAccessDirectoryBackend",
+          "memberName": "exists",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "FileSystemAccessDirectoryBackend",
+          "memberName": "move",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "FileSystemAccessDirectoryBackend",
+          "memberName": "selectAndCopyFiles",
+          "kind": "class_method"
+        },
+        {
+          "parentName": "FileSystemAccessDirectoryBackend",
+          "memberName": "subscribe",
           "kind": "class_method"
         }
       ]

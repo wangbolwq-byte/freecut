@@ -7,7 +7,6 @@ import { useTimelineStore } from '../stores/timeline-store'
 import { useItemsStore } from '../stores/items-store'
 import { useTimelineSettingsStore } from '../stores/timeline-settings-store'
 import { useTimelineViewportStore } from '../stores/timeline-viewport-store'
-import { useTimelineZoom } from '../hooks/use-timeline-zoom'
 import { registerZoomTo100, useZoomStore } from '../stores/zoom-store'
 import { usePlaybackStore } from '@/shared/state/playback'
 import { useEditorStore } from '@/shared/state/editor'
@@ -35,15 +34,16 @@ import {
 } from '../constants'
 
 // Components
-import { IO_LANE_HEIGHT, TimelineMarkers } from './timeline-markers'
 import { TimelinePlayhead } from './timeline-playhead'
 import { TimelinePreviewScrubber } from './timeline-preview-scrubber'
+import { TimelineRulerSurface } from './timeline-ruler-surface'
 import { TimelineTrack } from './timeline-track'
 import { TimelineGuidelines } from './timeline-guidelines'
 import { TimelineMediaDropZone } from './timeline-media-drop-zone'
 import { TimelineRecordingOverlay } from './timeline-recording-overlay'
 import { FirstTrackRowFrame, TrackRowFrame, TrackSectionDivider } from './track-row-frame'
 import { MarqueeOverlay } from '@/shared/marquee/marquee-overlay'
+import { announceTimelineMarqueeActive } from '../utils/timeline-interaction-events'
 
 // Group utilities
 import { getVisibleTrackIds } from '../utils/group-utils'
@@ -63,6 +63,8 @@ import {
   getPlayheadZoomAnchor,
   type TimelineZoomAnchor,
 } from '../utils/zoom-anchor'
+import { frameToPixelsNow, pixelsToFrameNow } from '../utils/zoom-conversions'
+import { applyTimelineLiveGeometry } from '../utils/timeline-live-geometry'
 
 const ACTIVE_TIMELINE_GESTURE_CURSOR_CLASSES = [
   'timeline-cursor-trim-left',
@@ -376,6 +378,7 @@ interface TimelineMarqueeLayerProps {
   itemIds: string[]
   onSelectionChange: (ids: string[]) => void
   onMarqueeActiveChange: (active: boolean) => void
+  onMarqueeGestureEnd: (event: MouseEvent) => void
 }
 
 const TimelineMarqueeLayer = memo(function TimelineMarqueeLayer({
@@ -383,6 +386,7 @@ const TimelineMarqueeLayer = memo(function TimelineMarqueeLayer({
   itemIds,
   onSelectionChange,
   onMarqueeActiveChange,
+  onMarqueeGestureEnd,
 }: TimelineMarqueeLayerProps) {
   const previewItemIdsRef = useRef<string[]>([])
 
@@ -453,10 +457,10 @@ const TimelineMarqueeLayer = memo(function TimelineMarqueeLayer({
     items: marqueeItems,
     onSelectionChange,
     onPreviewSelectionChange: setPreviewItemIds,
+    onGestureEnd: onMarqueeGestureEnd,
     enabled: itemIds.length > 0,
     threshold: 5,
     commitSelectionOnMouseUp: true,
-    liveCommitThrottleMs: 66,
   })
 
   useEffect(() => {
@@ -519,44 +523,42 @@ const TimelineTrackSectionsSurface = memo(function TimelineTrackSectionsSurface(
   audioTracksScrollRef,
   children,
 }: TimelineTrackSectionsSurfaceProps) {
-  const initialPixelsPerSecondRef = useRef(useZoomStore.getState().pixelsPerSecond)
+  const committedSurfaceRef = useRef<HTMLDivElement>(null)
+  const initialZoomRef = useRef(useZoomStore.getState())
 
-  const applyLiveTrackSurfaceStyles = useCallback(() => {
-    const node = tracksContainerRef.current
-    if (!node) {
+  const applyTrackSurfaceZoom = useCallback(() => {
+    const outer = tracksContainerRef.current
+    const surface = committedSurfaceRef.current
+    if (!outer || !surface) {
       return
     }
 
     const { pixelsPerSecond } = useZoomStore.getState()
-    const effectiveContainerWidth = containerWidth > 0 ? containerWidth : 1920
-    const liveTimelineWidth = getTimelineWidth({
-      contentWidth: actualDuration * pixelsPerSecond,
-      viewportWidth: effectiveContainerWidth,
+    applyTimelineLiveGeometry({
+      outer,
+      surface,
+      duration: actualDuration,
+      viewportWidth: containerWidth,
+      livePixelsPerSecond: pixelsPerSecond,
+      fps,
     })
-
-    node.style.width = `${liveTimelineWidth}px`
-    node.style.setProperty(
-      '--timeline-px-per-frame',
-      fps > 0 ? `${pixelsPerSecond / fps}px` : '0px',
-    )
-    node.style.setProperty('--timeline-pixels-per-second', `${pixelsPerSecond}px`)
   }, [actualDuration, containerWidth, fps, tracksContainerRef])
 
   useLayoutEffect(() => {
-    applyLiveTrackSurfaceStyles()
-  }, [applyLiveTrackSurfaceStyles])
+    applyTrackSurfaceZoom()
+  }, [applyTrackSurfaceZoom])
 
   useEffect(() => {
     return useZoomStore.subscribe((state, previousState) => {
       if (
         state.pixelsPerSecond === previousState.pixelsPerSecond &&
-        state.level === previousState.level
+        state.contentPixelsPerSecond === previousState.contentPixelsPerSecond
       ) {
         return
       }
-      applyLiveTrackSurfaceStyles()
+      applyTrackSurfaceZoom()
     })
-  }, [applyLiveTrackSurfaceStyles])
+  }, [applyTrackSurfaceZoom])
 
   const renderTrackSection = (
     sectionTracks: TimelineTrackType[],
@@ -623,41 +625,56 @@ const TimelineTrackSectionsSurface = memo(function TimelineTrackSectionsSurface(
           width: `${initialTimelineWidth}px`,
           contain: 'layout style paint',
           '--timeline-px-per-frame':
-            fps > 0 ? `${initialPixelsPerSecondRef.current / fps}px` : '0px',
-          '--timeline-pixels-per-second': `${initialPixelsPerSecondRef.current}px`,
+            fps > 0 ? `${initialZoomRef.current.pixelsPerSecond / fps}px` : '0px',
+          '--timeline-pixels-per-second': `${initialZoomRef.current.pixelsPerSecond}px`,
         } as React.CSSProperties
       }
     >
-      {hasTrackSections ? (
-        <>
-          {renderTrackSection(videoTracks, {
-            section: 'video',
-            height: videoPaneHeight,
-            zoneHeight: videoZoneHeight,
-            anchorTrackId: topZoneAnchorTrackId,
+      <div
+        ref={committedSurfaceRef}
+        data-timeline-committed-surface="tracks"
+        className="absolute inset-y-0 left-0 flex min-h-0 flex-col"
+        style={
+          {
+            width: `${initialTimelineWidth}px`,
+            contain: 'layout style paint',
+            '--timeline-px-per-frame':
+              fps > 0 ? `${initialZoomRef.current.contentPixelsPerSecond / fps}px` : '0px',
+            '--timeline-pixels-per-second': `${initialZoomRef.current.contentPixelsPerSecond}px`,
+          } as React.CSSProperties
+        }
+      >
+        {hasTrackSections ? (
+          <>
+            {renderTrackSection(videoTracks, {
+              section: 'video',
+              height: videoPaneHeight,
+              zoneHeight: videoZoneHeight,
+              anchorTrackId: topZoneAnchorTrackId,
+              firstTrackFrame: 'with-top-divider',
+              scrollRef: videoTracksScrollRef,
+            })}
+            <TrackSectionDivider onMouseDown={onSectionDividerMouseDown} />
+            {renderTrackSection(audioTracks, {
+              section: 'audio',
+              height: audioPaneHeight,
+              zoneHeight: audioZoneHeight,
+              anchorTrackId: bottomZoneAnchorTrackId,
+              firstTrackFrame: 'regular',
+              scrollRef: audioTracksScrollRef,
+            })}
+          </>
+        ) : (
+          renderTrackSection(singleSectionTracks, {
+            section: singleSectionKind,
+            height: singleSectionHeight,
+            zoneHeight: singleSectionZoneHeight,
+            anchorTrackId: singleSectionAnchorTrackId,
             firstTrackFrame: 'with-top-divider',
-            scrollRef: videoTracksScrollRef,
-          })}
-          <TrackSectionDivider onMouseDown={onSectionDividerMouseDown} />
-          {renderTrackSection(audioTracks, {
-            section: 'audio',
-            height: audioPaneHeight,
-            zoneHeight: audioZoneHeight,
-            anchorTrackId: bottomZoneAnchorTrackId,
-            firstTrackFrame: 'regular',
-            scrollRef: audioTracksScrollRef,
-          })}
-        </>
-      ) : (
-        renderTrackSection(singleSectionTracks, {
-          section: singleSectionKind,
-          height: singleSectionHeight,
-          zoneHeight: singleSectionZoneHeight,
-          anchorTrackId: singleSectionAnchorTrackId,
-          firstTrackFrame: 'with-top-divider',
-          scrollRef: allTracksScrollRef,
-        })
-      )}
+            scrollRef: allTracksScrollRef,
+          })
+        )}
+      </div>
       {children}
     </div>
   )
@@ -737,12 +754,6 @@ export const TimelineContent = memo(function TimelineContent({
   // O(1) pre-computed value from items store instead of O(n) reduce on every change
   const furthestItemEndFrame = useItemsStore((s) => s.maxItemEndFrame)
   const maxTimelineFrame = Math.floor(Math.max(furthestItemEndFrame / fps, 10) * fps)
-  const { pixelsPerSecond, frameToPixels, pixelsToFrame, setZoomImmediate, zoomLevel } =
-    useTimelineZoom({
-      minZoom: 0.01,
-      maxZoom: 2, // Match slider range
-    })
-  const contentPixelsPerSecond = useZoomStore((s) => s.contentPixelsPerSecond)
   // NOTE: Don't subscribe to currentFrame here - it would cause re-renders every frame!
   // Use refs to access it in callbacks instead (see currentFrameRef below)
   const selectItems = useSelectionStore((s) => s.selectItems)
@@ -757,6 +768,10 @@ export const TimelineContent = memo(function TimelineContent({
   const [containerWidth, setContainerWidth] = useState(0)
   const marqueeWasActiveRef = useRef(false)
   const marqueeResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const marqueePointerDownRef = useRef(false)
+  const marqueeStartPreviewFrameRef = useRef<number | null>(null)
+  const marqueeReleasePreviewRef = useRef<{ frame: number; itemId?: string } | null>(null)
+  const marqueeReleaseRafRef = useRef<number | null>(null)
   const dragWasActiveRef = useRef(false)
   const scrubWasActiveRef = useRef(false)
   const scrubTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -769,8 +784,7 @@ export const TimelineContent = memo(function TimelineContent({
   const previewRafRef = useRef<number | null>(null)
   useTimelineAudioSkimPreview()
 
-  const pixelsToFrameRef = useRef(pixelsToFrame)
-  pixelsToFrameRef.current = pixelsToFrame
+  const pixelsToFrameRef = useRef(pixelsToFrameNow)
   const maxTimelineFrameRef = useRef(maxTimelineFrame)
   maxTimelineFrameRef.current = maxTimelineFrame
 
@@ -814,11 +828,7 @@ export const TimelineContent = memo(function TimelineContent({
     })
   }, [])
 
-  const frameToPixelsRef = useRef(frameToPixels)
-  frameToPixelsRef.current = frameToPixels
-
-  const zoomLevelRef = useRef(zoomLevel)
-  zoomLevelRef.current = zoomLevel
+  const frameToPixelsRef = useRef(frameToPixelsNow)
 
   const actualDurationRef = useRef(10) // Initialize with minimum duration
 
@@ -850,7 +860,7 @@ export const TimelineContent = memo(function TimelineContent({
   // scroll and horizontal zoom (only the *content* width changes), so reading
   // them every scroll/zoom frame forces a needless layout flush. A ResizeObserver
   // refreshes this cache; we fall back to a live read until it has measured once.
-  const viewportDimsRef = useRef<{ width: number; height: number } | null>(null)
+  const viewportDimsRef = useRef<{ width: number; height: number; left: number } | null>(null)
 
   const syncViewportFromContainer = useCallback((knownScrollLeft?: number, immediate = false) => {
     const container = containerRef.current
@@ -918,9 +928,11 @@ export const TimelineContent = memo(function TimelineContent({
       if (!container) return
       // Refresh the cached box dims (read here, on actual resizes only, instead
       // of every scroll/zoom frame).
+      const containerRect = container.getBoundingClientRect()
       viewportDimsRef.current = {
         width: container.clientWidth,
         height: tracksContainerRef.current?.clientHeight ?? container.clientHeight,
+        left: containerRect.left,
       }
       setContainerWidth(container.clientWidth)
       syncViewportFromContainer()
@@ -935,9 +947,27 @@ export const TimelineContent = memo(function TimelineContent({
     // Measure on resize. A ResizeObserver catches panel/track-height changes that
     // the window 'resize' event misses, and keeps the cached dims fresh.
     window.addEventListener('resize', updateWidth)
-    const ro = new ResizeObserver(updateWidth)
-    if (containerRef.current) ro.observe(containerRef.current)
-    if (tracksContainerRef.current) ro.observe(tracksContainerRef.current)
+    const observedContainer = containerRef.current
+    const observedTracks = tracksContainerRef.current
+    let lastTracksHeight = observedTracks?.clientHeight ?? 0
+    const ro = new ResizeObserver((entries) => {
+      const shouldMeasure = entries.some((entry) => {
+        if (entry.target === observedContainer) return true
+        if (entry.target !== observedTracks) return false
+
+        // Live zoom intentionally changes the track surface width. Ignore those
+        // width-only notifications; measuring them would put a synchronous
+        // layout read back onto every zoom frame. Track-pane height changes still
+        // refresh viewport culling.
+        const nextHeight = entry.contentRect.height
+        if (Math.abs(nextHeight - lastTracksHeight) < 0.5) return false
+        lastTracksHeight = nextHeight
+        return true
+      })
+      if (shouldMeasure) updateWidth()
+    })
+    if (observedContainer) ro.observe(observedContainer)
+    if (observedTracks) ro.observe(observedTracks)
 
     return () => {
       cancelIdleCallback(idleId)
@@ -961,10 +991,11 @@ export const TimelineContent = memo(function TimelineContent({
     }
   }, [furthestItemEndFrame, containerWidth, syncViewportFromContainer]) // Depends on content end, not full items array
 
-  // Track scroll position with coalesced updates for viewport culling
-  // Throttle at 50ms to match zoom throttle rate - prevents width jitter during zoom+scroll
+  // Persist scroll position after scrolling settles. Viewport culling already
+  // uses the dedicated viewport store on RAF; publishing this persistence-only
+  // value during the gesture wakes every subscriber to the legacy facade.
   const scrollUpdateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const SCROLL_THROTTLE_MS = 50 // Match zoom throttle for synchronized updates
+  const SCROLL_PERSIST_DEBOUNCE_MS = 150
   const setScrollPosition = useTimelineStore((s) => s.setScrollPosition)
 
   useEffect(() => {
@@ -975,14 +1006,13 @@ export const TimelineContent = memo(function TimelineContent({
       scrollLeftRef.current = container.scrollLeft
       scheduleViewportSync()
 
-      // Coalesce scroll updates at same rate as zoom throttle
-      if (scrollUpdateTimeoutRef.current === null) {
-        scrollUpdateTimeoutRef.current = setTimeout(() => {
-          scrollUpdateTimeoutRef.current = null
-          // Sync to store for persistence (debounced to avoid excessive updates)
-          setScrollPosition(scrollLeftRef.current)
-        }, SCROLL_THROTTLE_MS)
+      if (scrollUpdateTimeoutRef.current !== null) {
+        clearTimeout(scrollUpdateTimeoutRef.current)
       }
+      scrollUpdateTimeoutRef.current = setTimeout(() => {
+        scrollUpdateTimeoutRef.current = null
+        setScrollPosition(scrollLeftRef.current)
+      }, SCROLL_PERSIST_DEBOUNCE_MS)
     }
 
     container.addEventListener('scroll', handleScroll, { passive: true })
@@ -1094,6 +1124,7 @@ export const TimelineContent = memo(function TimelineContent({
 
   const handleMarqueeActiveChange = useCallback(
     (active: boolean) => {
+      announceTimelineMarqueeActive(active)
       if (marqueeResetTimeoutRef.current !== null) {
         clearTimeout(marqueeResetTimeoutRef.current)
         marqueeResetTimeoutRef.current = null
@@ -1102,6 +1133,10 @@ export const TimelineContent = memo(function TimelineContent({
       if (active) {
         clearItemSelection()
         marqueeWasActiveRef.current = true
+        const lockedFrame = marqueeStartPreviewFrameRef.current
+        if (lockedFrame !== null && usePlaybackStore.getState().previewFrame !== lockedFrame) {
+          setPreviewFrameRef.current(lockedFrame)
+        }
         return
       }
 
@@ -1227,14 +1262,68 @@ export const TimelineContent = memo(function TimelineContent({
   // Preview scrubber: show ghost playhead on hover
   const handleTimelineMouseDownCapture = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return
+
     const target = e.target as HTMLElement
-    if (target.closest('.timeline-ruler') || target.closest('[data-playhead-handle]')) {
-      return
+    if (!target.closest('[data-track-id]') || target.closest('[data-item-id]')) return
+
+    // A press on track background is a potential marquee gesture. Freeze the
+    // skim target immediately so the few pixels before marquee activation do
+    // not briefly seek the preview away from the mouse-down frame.
+    marqueePointerDownRef.current = true
+    if (marqueeReleaseRafRef.current !== null) {
+      cancelAnimationFrame(marqueeReleaseRafRef.current)
+      marqueeReleaseRafRef.current = null
     }
-    if (usePlaybackStore.getState().previewFrame !== null) {
+    const playback = usePlaybackStore.getState()
+    marqueeStartPreviewFrameRef.current = playback.previewFrame
+    marqueeReleasePreviewRef.current =
+      playback.previewFrame === null
+        ? null
+        : { frame: playback.previewFrame, itemId: playback.previewItemId ?? undefined }
+    if (previewRafRef.current !== null) {
+      cancelAnimationFrame(previewRafRef.current)
+      previewRafRef.current = null
+    }
+  }, [])
+
+  const finishMarqueePointerGesture = useCallback((e: MouseEvent) => {
+    const wasMarqueePointerGesture = marqueePointerDownRef.current
+    const releasePreview = marqueeReleasePreviewRef.current
+    marqueePointerDownRef.current = false
+    marqueeStartPreviewFrameRef.current = null
+    marqueeReleasePreviewRef.current = null
+
+    if (!wasMarqueePointerGesture) return
+
+    const container = containerRef.current
+    const rect = container?.getBoundingClientRect()
+    const pointerIsInsideTimeline =
+      rect !== undefined &&
+      e.clientX >= rect.left &&
+      e.clientX <= rect.right &&
+      e.clientY >= rect.top &&
+      e.clientY <= rect.bottom
+
+    if (pointerIsInsideTimeline && releasePreview) {
+      // Complete marquee teardown first. Its mouseup path may clear transient
+      // preview state later in the same event dispatch.
+      marqueeReleaseRafRef.current = requestAnimationFrame(() => {
+        marqueeReleaseRafRef.current = null
+        setPreviewFrameRef.current(releasePreview.frame, releasePreview.itemId)
+      })
+    } else {
       setPreviewFrameRef.current(null)
     }
   }, [])
+
+  useEffect(
+    () => () => {
+      if (marqueeReleaseRafRef.current !== null) {
+        cancelAnimationFrame(marqueeReleaseRafRef.current)
+      }
+    },
+    [],
+  )
 
   const handleTimelineMouseMove = useCallback(
     (e: React.MouseEvent) => {
@@ -1258,7 +1347,7 @@ export const TimelineContent = memo(function TimelineContent({
         body.classList.contains(className),
       )
       const interactionLockActive = gestureCursorActive || body.style.userSelect === 'none'
-      if (interactionLockActive) {
+      if (interactionLockActive && !marqueePointerDownRef.current) {
         if (usePlaybackStore.getState().previewFrame !== null) {
           setPreviewFrameRef.current(null)
         }
@@ -1266,7 +1355,7 @@ export const TimelineContent = memo(function TimelineContent({
       }
 
       // Skip during any drag (playhead drag, item drag, marquee)
-      if (marqueeWasActiveRef.current || dragWasActiveRef.current || scrubWasActiveRef.current)
+      if (!marqueePointerDownRef.current && (dragWasActiveRef.current || scrubWasActiveRef.current))
         return
 
       const scrollContainer = containerRef.current
@@ -1302,6 +1391,11 @@ export const TimelineContent = memo(function TimelineContent({
       const itemEl = target.closest('[data-item-id]') as HTMLElement | null
       const itemId = itemEl?.getAttribute('data-item-id') ?? undefined
 
+      if (marqueePointerDownRef.current) {
+        marqueeReleasePreviewRef.current = { frame, itemId }
+        return
+      }
+
       // RAF-throttle the store update
       if (previewRafRef.current !== null) {
         cancelAnimationFrame(previewRafRef.current)
@@ -1315,6 +1409,8 @@ export const TimelineContent = memo(function TimelineContent({
   )
 
   const handleTimelineMouseLeave = useCallback(() => {
+    if (marqueePointerDownRef.current) return
+
     if (previewRafRef.current !== null) {
       cancelAnimationFrame(previewRafRef.current)
       previewRafRef.current = null
@@ -1324,7 +1420,7 @@ export const TimelineContent = memo(function TimelineContent({
 
   // Calculate the actual timeline duration and width based on content
   // Uses derived furthestItemEndFrame selector instead of full items array
-  const { actualDuration, timelineWidth, contentTimelineWidth } = useMemo(() => {
+  const { actualDuration, timelineWidth } = useMemo(() => {
     // Convert furthest item end from frames to seconds
     const furthestItemEnd = furthestItemEndFrame / fps
 
@@ -1334,23 +1430,18 @@ export const TimelineContent = memo(function TimelineContent({
     // Keep the visible fit behavior, but leave extra space after the project end
     // so the user can still scroll a bit farther to the right when needed.
     const effectiveContainerWidth = containerWidth > 0 ? containerWidth : 1920
-    const liveContentWidth = contentDuration * pixelsPerSecond
-    const settledContentWidth = contentDuration * contentPixelsPerSecond
+    const settledContentWidth = contentDuration * useZoomStore.getState().contentPixelsPerSecond
 
     // Timeline width is based on content only - don't depend on scroll position
     // This prevents feedback loops during zoom where scroll->width->scroll causes gradual shifts
     return {
       actualDuration: contentDuration,
       timelineWidth: getTimelineWidth({
-        contentWidth: liveContentWidth,
-        viewportWidth: effectiveContainerWidth,
-      }),
-      contentTimelineWidth: getTimelineWidth({
         contentWidth: settledContentWidth,
         viewportWidth: effectiveContainerWidth,
       }),
     }
-  }, [furthestItemEndFrame, fps, pixelsPerSecond, contentPixelsPerSecond, containerWidth])
+  }, [furthestItemEndFrame, fps, containerWidth])
 
   actualDurationRef.current = actualDuration
 
@@ -1407,13 +1498,20 @@ export const TimelineContent = memo(function TimelineContent({
             return
           }
 
-          pendingScrollRef.current = queuedScrollLeft
-          scrollLeftRef.current = queuedScrollLeft
-          setZoomImmediate(queuedZoomLevel)
+          useZoomStore.getState().setZoomLevelImmediate(queuedZoomLevel)
+          // Live geometry subscribers update the scrollable width synchronously.
+          // Apply the matching anchor offset in the same frame so direction
+          // changes cannot paint at the previous scroll position.
+          const container = containerRef.current
+          if (container) {
+            container.scrollLeft = queuedScrollLeft
+            scrollLeftRef.current = queuedScrollLeft
+            scheduleViewportSync()
+          }
         })
       })
     },
-    [setZoomImmediate],
+    [scheduleViewportSync],
   )
 
   const clearQueuedZoomApply = useCallback(() => {
@@ -1427,7 +1525,7 @@ export const TimelineContent = memo(function TimelineContent({
 
   const applyZoomWithAnchor = useCallback(
     (newZoomLevel: number, anchor: TimelineZoomAnchor) => {
-      const currentZoom = queuedZoomLevelRef.current ?? zoomLevelRef.current
+      const currentZoom = queuedZoomLevelRef.current ?? useZoomStore.getState().level
       const clampedZoom = Math.max(0.01, Math.min(2, newZoomLevel))
       if (clampedZoom === currentZoom) return
 
@@ -1447,7 +1545,7 @@ export const TimelineContent = memo(function TimelineContent({
       const container = containerRef.current
       if (!container) return
 
-      const currentZoom = queuedZoomLevelRef.current ?? zoomLevelRef.current
+      const currentZoom = queuedZoomLevelRef.current ?? useZoomStore.getState().level
       const baseScrollLeft =
         queuedZoomScrollLeftRef.current ?? pendingScrollRef.current ?? container.scrollLeft
 
@@ -1469,7 +1567,7 @@ export const TimelineContent = memo(function TimelineContent({
       const container = containerRef.current
       if (!container) return
 
-      const currentZoom = queuedZoomLevelRef.current ?? zoomLevelRef.current
+      const currentZoom = queuedZoomLevelRef.current ?? useZoomStore.getState().level
       const baseScrollLeft =
         queuedZoomScrollLeftRef.current ?? pendingScrollRef.current ?? container.scrollLeft
 
@@ -1495,12 +1593,12 @@ export const TimelineContent = memo(function TimelineContent({
   )
 
   const handleZoomIn = useCallback(() => {
-    const newZoomLevel = Math.min(2, zoomLevelRef.current + 0.1)
+    const newZoomLevel = Math.min(2, useZoomStore.getState().level + 0.1)
     applyZoomWithPlayheadAnchor(newZoomLevel)
   }, [applyZoomWithPlayheadAnchor])
 
   const handleZoomOut = useCallback(() => {
-    const newZoomLevel = Math.max(0.01, zoomLevelRef.current - 0.1)
+    const newZoomLevel = Math.max(0.01, useZoomStore.getState().level - 0.1)
     applyZoomWithPlayheadAnchor(newZoomLevel)
   }, [applyZoomWithPlayheadAnchor])
 
@@ -1522,8 +1620,11 @@ export const TimelineContent = memo(function TimelineContent({
 
     const newZoomLevel = getZoomToFitLevel(effectiveContainerWidth, contentDuration)
 
-    // Apply zoom and reset scroll to start
-    pendingScrollRef.current = 0
+    // Apply zoom and reset scroll to start. This scroll is applied immediately,
+    // so do not leave a pending value behind: TimelineContent intentionally does
+    // not re-render for live wheel zoom and the stale zero would override the
+    // real anchored position on the next wheel event.
+    pendingScrollRef.current = null
     scrollLeftRef.current = 0
     useZoomStore.getState().setZoomLevelSynchronized(newZoomLevel)
     container.scrollLeft = 0
@@ -1572,11 +1673,25 @@ export const TimelineContent = memo(function TimelineContent({
   }, [handleZoomChange, handleZoomIn, handleZoomOut, handleZoomToFit, onZoomHandlersReady])
 
   useEffect(() => {
-    onMetricsChange?.({
-      actualDuration,
-      timelineWidth,
+    if (!onMetricsChange) return
+    const publishMetrics = (contentPixelsPerSecond: number) => {
+      const effectiveContainerWidth = containerWidth > 0 ? containerWidth : 1920
+      onMetricsChange({
+        actualDuration,
+        timelineWidth: getTimelineWidth({
+          contentWidth: actualDuration * contentPixelsPerSecond,
+          viewportWidth: effectiveContainerWidth,
+        }),
+      })
+    }
+
+    publishMetrics(useZoomStore.getState().contentPixelsPerSecond)
+    return useZoomStore.subscribe((state, previousState) => {
+      if (state.contentPixelsPerSecond !== previousState.contentPixelsPerSecond) {
+        publishMetrics(state.contentPixelsPerSecond)
+      }
     })
-  }, [actualDuration, onMetricsChange, timelineWidth])
+  }, [actualDuration, containerWidth, onMetricsChange])
 
   const getVerticalScrollTarget = useCallback(
     (target: EventTarget | null): HTMLDivElement | null => {
@@ -1652,7 +1767,7 @@ export const TimelineContent = memo(function TimelineContent({
 
         // Apply zoom to store at throttled rate, or always on final update
         if (timeSinceLastApply >= ZOOM_UPDATE_INTERVAL || isFinalUpdate) {
-          const currentZoom = zoomLevelRef.current
+          const currentZoom = useZoomStore.getState().level
           // Work in log space: add velocity to log(zoom), then exponentiate
           const logZoom = Math.log(currentZoom)
           const newLogZoom = logZoom - velocityZoomRef.current * 1.2 // Scale factor for feel
@@ -1718,10 +1833,12 @@ export const TimelineContent = memo(function TimelineContent({
         velocityZoomRef.current = 0
 
         // Capture cursor position for anchor zoom
-        const rect = container.getBoundingClientRect()
-        zoomCursorXRef.current = event.clientX - rect.left
+        const containerLeft =
+          viewportDimsRef.current?.left ?? container.getBoundingClientRect().left
+        zoomCursorXRef.current = event.clientX - containerLeft
 
-        applyZoomWithCursorAnchor(computeWheelZoomStep(zoomLevelRef.current, event.deltaY))
+        const currentZoom = queuedZoomLevelRef.current ?? useZoomStore.getState().level
+        applyZoomWithCursorAnchor(computeWheelZoomStep(currentZoom, event.deltaY))
         return
       }
 
@@ -1838,6 +1955,7 @@ export const TimelineContent = memo(function TimelineContent({
           itemIds={itemIds}
           onSelectionChange={handleMarqueeSelectionChange}
           onMarqueeActiveChange={handleMarqueeActiveChange}
+          onMarqueeGestureEnd={finishMarqueePointerGesture}
         />
 
         {itemIds.length === 0 && (
@@ -1849,21 +1967,19 @@ export const TimelineContent = memo(function TimelineContent({
           </div>
         )}
 
-        <div
-          className="relative z-30 shrink-0 timeline-ruler bg-background"
-          style={{ width: `${timelineWidth}px` }}
-        >
-          <TimelineMarkers duration={actualDuration} width={timelineWidth} />
-          <TimelinePreviewScrubber inRuler maxFrame={maxTimelineFrame} />
-          <TimelinePlayhead inRuler maxFrame={maxTimelineFrame} topOffsetPx={IO_LANE_HEIGHT} />
-        </div>
+        <TimelineRulerSurface
+          duration={actualDuration}
+          containerWidth={containerWidth}
+          initialWidth={timelineWidth}
+          maxFrame={maxTimelineFrame}
+        />
 
         <TimelineTrackSectionsSurface
           tracksContainerRef={tracksContainerRef}
           fps={fps}
           actualDuration={actualDuration}
           containerWidth={containerWidth}
-          initialTimelineWidth={contentTimelineWidth}
+          initialTimelineWidth={timelineWidth}
           hasTrackSections={hasTrackSections}
           videoTracks={videoTracks}
           audioTracks={audioTracks}

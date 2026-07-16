@@ -13,6 +13,7 @@ import type { SnapTarget } from '../types/drag'
 import { useSlipEditPreviewStore } from '../stores/slip-edit-preview-store'
 import { useSlideEditPreviewStore } from '../stores/slide-edit-preview-store'
 import { useLinkedEditPreviewStore } from '../stores/linked-edit-preview-store'
+import { useKeyframesStore } from '../stores/keyframes-store'
 import { slipItem, slideItem } from '../stores/actions/item-actions'
 import {
   getSourceProperties,
@@ -43,6 +44,7 @@ import {
 } from '../utils/item-edit-preview'
 import { hasExceededDragThreshold } from '../utils/drag-threshold'
 import { computeSlideContinuitySourceDelta } from '../utils/slide-utils'
+import { clampSlideDeltaToPreserveKeyframes } from '../utils/slide-keyframe-constraints'
 
 interface SlipSlideState {
   isActive: boolean
@@ -339,6 +341,11 @@ export function useTimelineSlipSlide(
       const affectedIds = new Set<string>([currentItem.id])
       if (leftNeighbor) affectedIds.add(leftNeighbor.id)
       if (rightNeighbor) affectedIds.add(rightNeighbor.id)
+      for (const participantContext of participantContexts) {
+        affectedIds.add(participantContext.participant.id)
+        if (participantContext.leftAdjacent) affectedIds.add(participantContext.leftAdjacent.id)
+        if (participantContext.rightAdjacent) affectedIds.add(participantContext.rightAdjacent.id)
+      }
       const relatedTransitions = transitions.filter(
         (transition) =>
           affectedIds.has(transition.leftClipId) || affectedIds.has(transition.rightClipId),
@@ -748,6 +755,47 @@ export function useTimelineSlipSlide(
           )
         }
 
+        for (const participantContext of context.participantContexts) {
+          const { participant, leftAdjacent, rightAdjacent } = participantContext
+          let participantPreview = applyPreviewUpdate(
+            participant,
+            applyMovePreview(participant, delta),
+          )
+          const participantSourceDelta = computeSlideContinuitySourceDelta(
+            participant,
+            leftAdjacent,
+            rightAdjacent,
+            delta,
+            fps,
+          )
+          if (
+            participantSourceDelta !== 0 &&
+            (participantPreview.type === 'video' ||
+              participantPreview.type === 'audio' ||
+              participantPreview.type === 'composition') &&
+            participantPreview.sourceEnd !== undefined
+          ) {
+            participantPreview = {
+              ...participantPreview,
+              sourceStart: (participantPreview.sourceStart ?? 0) + participantSourceDelta,
+              sourceEnd: participantPreview.sourceEnd + participantSourceDelta,
+            }
+          }
+          previewById.set(participant.id, participantPreview)
+          if (leftAdjacent) {
+            previewById.set(
+              leftAdjacent.id,
+              applyPreviewUpdate(leftAdjacent, applyTrimEndPreview(leftAdjacent, delta, fps)),
+            )
+          }
+          if (rightAdjacent) {
+            previewById.set(
+              rightAdjacent.id,
+              applyPreviewUpdate(rightAdjacent, applyTrimStartPreview(rightAdjacent, delta, fps)),
+            )
+          }
+        }
+
         let slidItemPreview = applyPreviewUpdate(
           context.currentItem,
           applyMovePreview(context.currentItem, delta),
@@ -789,6 +837,7 @@ export function useTimelineSlipSlide(
             rightClip,
             transition.durationInFrames,
             transition.alignment,
+            fps,
           ).canAdd
         })
       }
@@ -823,12 +872,28 @@ export function useTimelineSlipSlide(
         )
 
         const sourceClamped = clampSlipDelta(sourceFramesDelta)
-        const transitionClamped = clampSlipDeltaToPreserveTransitions(
-          currentItem,
-          sourceClamped,
-          useTimelineStore.getState().items,
-          useTransitionsStore.getState().transitions,
-        )
+        const allItems = useTimelineStore.getState().items
+        const transitions = useTransitionsStore.getState().transitions
+        const synchronizedItems = useEditorStore.getState().linkedSelectionEnabled
+          ? getSynchronizedLinkedItems(allItems, currentItem.id)
+          : [currentItem]
+        let transitionClamped = sourceClamped
+        for (const synchronizedItem of synchronizedItems) {
+          const source = getSourceProperties(synchronizedItem)
+          transitionClamped = computeClampedSlipDelta(
+            source.sourceStart,
+            source.sourceEnd,
+            source.sourceDuration,
+            transitionClamped,
+          )
+          transitionClamped = clampSlipDeltaToPreserveTransitions(
+            synchronizedItem,
+            transitionClamped,
+            allItems,
+            transitions,
+            fps,
+          )
+        }
         const clamped = transitionClamped
         const isConstrained = clamped !== sourceFramesDelta
         const constraintEdge = !isConstrained ? null : sourceFramesDelta > clamped ? 'end' : 'start'
@@ -920,7 +985,7 @@ export function useTimelineSlipSlide(
         const sourceClamped = slideContext
           ? clampSlideDeltaWithContext(deltaFrames, slideContext)
           : clampSlideDelta(deltaFrames, leftNeighborId, rightNeighborId)
-        const transitionClamped = slideContext
+        let transitionClamped = slideContext
           ? clampSlideDeltaToPreserveTransitionsWithContext(sourceClamped, slideContext)
           : clampSlideDeltaToPreserveTransitions(
               storeItem,
@@ -935,6 +1000,35 @@ export function useTimelineSlipSlide(
               useTransitionsStore.getState().transitions,
               fps,
             )
+        transitionClamped = clampSlideDeltaToPreserveKeyframes(
+          transitionClamped,
+          slideContext
+            ? [
+                {
+                  item: slideContext.currentItem,
+                  leftNeighbor: slideContext.leftNeighbor,
+                  rightNeighbor: slideContext.rightNeighbor,
+                },
+                ...slideContext.participantContexts.map((participantContext) => ({
+                  item: participantContext.participant,
+                  leftNeighbor: participantContext.leftAdjacent,
+                  rightNeighbor: participantContext.rightAdjacent,
+                })),
+              ]
+            : [
+                {
+                  item: storeItem,
+                  leftNeighbor: leftNeighborId
+                    ? (allItems.find((candidate) => candidate.id === leftNeighborId) ?? null)
+                    : null,
+                  rightNeighbor: rightNeighborId
+                    ? (allItems.find((candidate) => candidate.id === rightNeighborId) ?? null)
+                    : null,
+                },
+              ],
+          slideContext?.transitions ?? useTransitionsStore.getState().transitions,
+          useKeyframesStore.getState().keyframesByItemId,
+        )
         const clamped = transitionClamped
         const isConstrained = clamped !== deltaFrames
         const constraintEdge = !isConstrained ? null : deltaFrames > clamped ? 'end' : 'start'

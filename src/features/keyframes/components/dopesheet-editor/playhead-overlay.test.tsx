@@ -33,6 +33,8 @@ describe('DopesheetEditor playhead overlay', () => {
     expect(clip).toHaveClass('overflow-hidden')
     // Playhead should be clamped to 0 (left edge), not negative
     expect(line).toHaveStyle({ left: '0px' })
+    expect(screen.getAllByTestId('dopesheet-playhead-line')).toHaveLength(1)
+    expect(line.querySelectorAll('span')).toHaveLength(2)
   })
 
   it('shows the shared ruler in graph mode and defers the playhead to the graph', () => {

@@ -64,6 +64,9 @@ type BaseTimelineItem = {
   reverseConformPreviewPath?: string // OPFS/workspace cache path for the preview reversed media
   reverseConformPreviewKey?: string // Cache key describing the preview reversed source range
   reverseConformPreviewUsesProxy?: boolean // Whether the preview reversed media was generated from a proxy
+  reverseConformPreviewIsSourceLevel?: boolean // Preview conform contains the entire reversed source
+  reverseConformPreviewSourceDuration?: number // Source duration, in source-native frames, used by the conform
+  reverseConformPreviewFps?: number // Frame rate of the source-level preview conform
   reverseConformStatus?: 'pending' | 'ready' | 'error'
   // Timeline-frame offset into reverseConform{Src,PreviewSrc} where this clip starts
   // playing. Set on split halves so they share the parent's conform but read

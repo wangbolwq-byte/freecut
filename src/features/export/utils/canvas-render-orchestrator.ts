@@ -52,12 +52,23 @@ async function loadCanvasAudio(): Promise<CanvasAudioModule> {
 
 const AUDIO_ENCODE_CHUNK_FRAMES = 48_000
 
+function formatClock(seconds: number): string {
+  const wholeSeconds = Math.max(0, Math.floor(seconds))
+  const hours = Math.floor(wholeSeconds / 3600)
+  const minutes = Math.floor((wholeSeconds % 3600) / 60)
+  const remainingSeconds = wholeSeconds % 60
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`
+    : `${minutes}:${String(remainingSeconds).padStart(2, '0')}`
+}
+
 async function addAudioDataInChunks(
   audioSource: InstanceType<MediabunnyModule['AudioSampleSource']>,
   AudioSample: MediabunnyModule['AudioSample'],
   audioData: { samples: Float32Array[]; sampleRate: number; channels: number },
   signal?: AbortSignal,
   startTimestamp = 0,
+  onFramesAdded?: (frames: number) => void,
 ): Promise<void> {
   const totalFrames = audioData.samples[0]?.length ?? 0
 
@@ -80,6 +91,7 @@ async function addAudioDataInChunks(
     })
     try {
       await audioSource.add(sample)
+      onFramesAdded?.(frameCount)
     } finally {
       sample.close()
     }
@@ -91,13 +103,17 @@ async function addCompositionAudio(params: {
   AudioSample: MediabunnyModule['AudioSample']
   canvasAudio: CanvasAudioModule
   composition: CompositionInputProps
-  audioData: { samples: Float32Array[]; sampleRate: number; channels: number } | null
   useWindowedAudio: boolean
   signal?: AbortSignal
+  onProgress?: (encodedFrames: number) => void
 }): Promise<number> {
-  const { audioSource, AudioSample, canvasAudio, composition, audioData, signal } = params
+  const { audioSource, AudioSample, canvasAudio, composition, signal, onProgress } = params
+  let encodedFrames = 0
+  const recordFrames = (frames: number) => {
+    encodedFrames += frames
+    onProgress?.(encodedFrames)
+  }
   if (params.useWindowedAudio) {
-    let encodedFrames = 0
     for await (const window of canvasAudio.processAudioWindows(composition, signal)) {
       await addAudioDataInChunks(
         audioSource,
@@ -105,15 +121,91 @@ async function addCompositionAudio(params: {
         window,
         signal,
         encodedFrames / window.sampleRate,
+        recordFrames,
       )
-      encodedFrames += window.samples[0]?.length ?? 0
     }
     return encodedFrames
   }
 
+  const audioData = await canvasAudio.processAudio(composition, signal)
   if (!audioData) return 0
-  await addAudioDataInChunks(audioSource, AudioSample, audioData, signal)
-  return audioData.samples[0]?.length ?? 0
+  await addAudioDataInChunks(audioSource, AudioSample, audioData, signal, 0, recordFrames)
+  return encodedFrames
+}
+
+interface PreparedAudioPacketCopy {
+  input: InstanceType<MediabunnyModule['Input']>
+  track: NonNullable<
+    Awaited<ReturnType<InstanceType<MediabunnyModule['Input']>['getPrimaryAudioTrack']>>
+  >
+  source: InstanceType<MediabunnyModule['EncodedAudioPacketSource']>
+  durationSeconds: number
+}
+
+async function prepareAudioPacketCopy(params: {
+  mediabunny: MediabunnyModule
+  canvasAudio: CanvasAudioModule
+  composition: CompositionInputProps
+  supportedCodecs: readonly string[]
+}): Promise<PreparedAudioPacketCopy | null> {
+  const plan = params.canvasAudio.getAudioPacketPassthroughPlan(params.composition)
+  if (!plan) return null
+
+  const { mediabunny } = params
+  const input = new mediabunny.Input({
+    formats: mediabunny.ALL_FORMATS,
+    source: createMediabunnyInputSource(mediabunny, plan.src),
+  })
+  let ownershipTransferred = false
+  try {
+    const track = await input.getPrimaryAudioTrack()
+    if (!track) return null
+    const codec = await track.getCodec()
+    const firstTimestamp = await track.getFirstTimestamp()
+    if (!codec || !params.supportedCodecs.includes(codec) || Math.abs(firstTimestamp) > 0.001) {
+      return null
+    }
+    const prepared = {
+      input,
+      track,
+      source: new mediabunny.EncodedAudioPacketSource(codec),
+      durationSeconds: plan.durationSeconds,
+    }
+    ownershipTransferred = true
+    return prepared
+  } catch (error) {
+    getLog().warn('Audio packet-copy preflight failed; audio will be re-encoded', { error })
+    return null
+  } finally {
+    if (!ownershipTransferred) input.dispose()
+  }
+}
+
+async function feedAudioPacketCopy(params: {
+  mediabunny: MediabunnyModule
+  prepared: PreparedAudioPacketCopy
+  signal?: AbortSignal
+  onProgress?: (seconds: number) => void
+}): Promise<void> {
+  const { mediabunny, prepared, signal, onProgress } = params
+  try {
+    const sink = new mediabunny.EncodedPacketSink(prepared.track)
+    const decoderConfig = await prepared.track.getDecoderConfig()
+    const metadata = { decoderConfig: decoderConfig ?? undefined }
+    for await (const packet of sink.packets()) {
+      if (signal?.aborted) throw new DOMException('Audio copy cancelled', 'AbortError')
+      if (packet.timestamp >= prepared.durationSeconds) break
+      const copiedPacket = packet.clone({ timestamp: packet.timestamp })
+      await prepared.source.add(copiedPacket, metadata)
+      onProgress?.(Math.min(prepared.durationSeconds, packet.timestamp + packet.duration))
+    }
+  } finally {
+    try {
+      prepared.source.close()
+    } finally {
+      prepared.input.dispose()
+    }
+  }
 }
 
 function getAudioOnlyCodec(
@@ -510,21 +602,11 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
     message: 'Processing audio...',
   })
 
-  // Process audio in parallel with setup
-  let audioData: { samples: Float32Array[]; sampleRate: number; channels: number } | null = null
   const compositionHasAudio = await canvasAudio.hasAudioContent(composition)
   const useWindowedAudio =
     compositionHasAudio &&
     durationInFrames / fps >= 5 * 60 &&
     canvasAudio.supportsWindowedAudioProcessing(composition)
-  if (compositionHasAudio && !useWindowedAudio) {
-    audioData = await canvasAudio.processAudio(composition, signal)
-    if (!audioData) throw new Error('Audio processing produced no output')
-    getLog().info('Audio processed', {
-      sampleRate: audioData.sampleRate,
-      channels: audioData.channels,
-    })
-  }
 
   onProgress({
     phase: 'preparing',
@@ -538,6 +620,14 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
   const format = await createOutputFormat(settings.container, {
     fastStart: outputTarget.kind === 'buffer',
   })
+  const packetAudio = compositionHasAudio
+    ? await prepareAudioPacketCopy({
+        mediabunny,
+        canvasAudio,
+        composition,
+        supportedCodecs: format.getSupportedAudioCodecs(),
+      })
+    : null
 
   // Create output
   const output = new Output({
@@ -614,6 +704,10 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
   const ctx = renderCanvas.getContext('2d')
 
   if (!ctx) {
+    if (packetAudio) {
+      packetAudio.source.close()
+      packetAudio.input.dispose()
+    }
     throw new Error('Failed to create OffscreenCanvas 2D context')
   }
 
@@ -635,6 +729,7 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
   const videoSource = new VideoSampleSource({
     codec: settings.codec,
     bitrate: settings.videoBitrate ?? 10_000_000,
+    bitrateMode: settings.bitrateMode ?? 'variable',
     keyFrameInterval: 2, // Keyframe every 2 seconds for better seeking
     latencyMode: 'quality', // Enables B-frames and consistent frame quality for offline encoding
   })
@@ -646,7 +741,10 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
 
   let audioSource: InstanceType<typeof AudioSampleSource> | null = null
 
-  if (audioData || useWindowedAudio) {
+  if (packetAudio) {
+    output.addAudioTrack(packetAudio.source)
+    getLog().info('Audio will be copied without decoding or re-encoding')
+  } else if (compositionHasAudio) {
     try {
       // Select the container-compatible audio codec for the muxer.
       const audioCodec = getDefaultAudioCodec(settings.container)
@@ -657,8 +755,8 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
       }
       const supported = await ensureAudioEncoderSupport(audioCodec, {
         bitrate: settings.audioBitrate ?? 192_000,
-        numberOfChannels: audioData?.channels ?? 2,
-        sampleRate: audioData?.sampleRate ?? 48_000,
+        numberOfChannels: 2,
+        sampleRate: 48_000,
       })
       if (!supported) {
         throw new Error(
@@ -677,8 +775,8 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
       output.addAudioTrack(audioSource)
       getLog().info('Audio track added to output', {
         duration: durationInFrames / fps,
-        channels: audioData?.channels ?? 2,
-        sampleRate: audioData?.sampleRate ?? 48_000,
+        channels: 2,
+        sampleRate: 48_000,
         codec: audioCodec,
         windowed: useWindowedAudio,
       })
@@ -697,42 +795,66 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
       transcriptSubtitleSource.close()
     }
   } catch (error) {
+    if (packetAudio) {
+      try {
+        packetAudio.source.close()
+      } finally {
+        packetAudio.input.dispose()
+      }
+    }
     await outputTarget.discard()
     throw error
   }
 
-  // Feed bounded planar chunks after output has started. This avoids a second
-  // full-timeline AudioBuffer allocation and respects encoder backpressure.
-  if (audioSource && (audioData || useWindowedAudio)) {
-    try {
-      const encodedFrames = await addCompositionAudio({
-        audioSource,
-        AudioSample,
-        canvasAudio,
-        composition,
-        audioData,
-        useWindowedAudio,
-        signal,
-      })
-      getLog().info('Audio chunks fed to encoder', {
-        duration: encodedFrames / 48_000,
-        samples: encodedFrames,
-        windowed: useWindowedAudio,
-      })
-      audioSource.close()
-      audioSource = null
-      audioData = null
-    } catch (error) {
-      getLog().error('Failed to feed audio to encoder', { error })
-      try {
-        if (output.state === 'started') await output.cancel()
-      } catch {
-        // Ignore cancellation errors; preserve the encoder failure.
-      }
-      await outputTarget.discard()
-      throw error
-    }
+  let videoRenderingStarted = false
+  let audioError: unknown
+  const reportAudioProgress = (completedSeconds: number, mode: 'copying' | 'processing') => {
+    if (videoRenderingStarted) return
+    const boundedSeconds = Math.min(durationSeconds, completedSeconds)
+    const progress = 20 + Math.round((boundedSeconds / durationSeconds) * 15)
+    onProgress({
+      phase: 'preparing',
+      progress,
+      totalFrames,
+      message: `${mode === 'copying' ? 'Copying' : 'Processing'} audio ${formatClock(boundedSeconds)} / ${formatClock(durationSeconds)}`,
+    })
   }
+
+  // Audio and video now advance together. Mediabunny's source backpressure
+  // bounds encoded data while windowed processing bounds decoded PCM memory.
+  const audioTask: Promise<void> | null = packetAudio
+    ? feedAudioPacketCopy({
+        mediabunny,
+        prepared: packetAudio,
+        signal,
+        onProgress: (seconds) => reportAudioProgress(seconds, 'copying'),
+      })
+    : audioSource
+      ? (async () => {
+          try {
+            const encodedFrames = await addCompositionAudio({
+              audioSource,
+              AudioSample,
+              canvasAudio,
+              composition,
+              useWindowedAudio,
+              signal,
+              onProgress: (frames) => reportAudioProgress(frames / 48_000, 'processing'),
+            })
+            getLog().info('Audio chunks fed to encoder', {
+              duration: encodedFrames / 48_000,
+              samples: encodedFrames,
+              windowed: useWindowedAudio,
+            })
+          } finally {
+            audioSource.close()
+            audioSource = null
+          }
+        })()
+      : null
+  void audioTask?.catch((error: unknown) => {
+    audioError = error
+  })
 
   onProgress({
     phase: 'rendering',
@@ -748,6 +870,8 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
     frameRenderer = await createCompositionRenderer(renderCompositionInput, renderCanvas, ctx)
     // Preload media
     await frameRenderer.preload()
+    videoRenderingStarted = true
+    if (audioError) throw audioError
 
     // Render each frame using a pipelined double-buffer approach.
     // VideoSample copies pixel data on construction, so the canvas is free
@@ -756,6 +880,7 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
     let pendingEncode: Promise<void> | null = null
 
     for (let frame = 0; frame < totalFrames; frame++) {
+      if (audioError) throw audioError
       // Check for abort — drain any in-flight encode first so the encoder
       // is idle before we cancel the output. Discard encoder errors since
       // we are aborting anyway and must always surface AbortError.
@@ -827,6 +952,17 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
     // Drain the final in-flight encode before finalizing
     if (pendingEncode) await pendingEncode
 
+    if (audioTask) {
+      onProgress({
+        phase: 'encoding',
+        progress: 94,
+        currentFrame: totalFrames,
+        totalFrames,
+        message: 'Finishing audio...',
+      })
+      await audioTask
+    }
+
     onProgress({
       phase: 'finalizing',
       progress: 95,
@@ -834,16 +970,6 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
       totalFrames,
       message: 'Finalizing video...',
     })
-
-    // Close an audio source that did not finish during preparation.
-    if (audioSource) {
-      try {
-        audioSource.close()
-        getLog().info('Audio source closed')
-      } catch (error) {
-        getLog().error('Failed to close audio source', { error })
-      }
-    }
 
     // Finalize output
     await output.finalize()
@@ -883,6 +1009,7 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
     } catch {
       // Ignore cancel errors
     }
+    if (audioTask) await Promise.allSettled([audioTask])
     await outputTarget.discard()
     throw error
   }
@@ -1031,10 +1158,6 @@ export async function renderAudioOnly(options: AudioRenderOptions): Promise<Clie
 
   const useWindowedAudio =
     durationSeconds >= 5 * 60 && canvasAudio.supportsWindowedAudioProcessing(composition)
-  let audioData = useWindowedAudio ? null : await canvasAudio.processAudio(composition, signal)
-  if (!audioData && !useWindowedAudio) {
-    throw new Error('Failed to process audio')
-  }
 
   onProgress({
     phase: 'preparing',
@@ -1065,8 +1188,8 @@ export async function renderAudioOnly(options: AudioRenderOptions): Promise<Clie
 
   getLog().info('Audio track configured', {
     duration: durationSeconds,
-    channels: audioData?.channels ?? 2,
-    sampleRate: audioData?.sampleRate ?? 48_000,
+    channels: 2,
+    sampleRate: 48_000,
     codec: audioCodec,
     windowed: useWindowedAudio,
   })
@@ -1086,11 +1209,17 @@ export async function renderAudioOnly(options: AudioRenderOptions): Promise<Clie
       AudioSample,
       canvasAudio,
       composition,
-      audioData,
       useWindowedAudio,
       signal,
+      onProgress: (frames) => {
+        onProgress({
+          phase: 'encoding',
+          progress: 60 + Math.round((frames / 48_000 / durationSeconds) * 30),
+          totalFrames: durationInFrames,
+          message: `Encoding audio ${formatClock(frames / 48_000)} / ${formatClock(durationSeconds)}`,
+        })
+      },
     })
-    audioData = null
 
     onProgress({
       phase: 'finalizing',

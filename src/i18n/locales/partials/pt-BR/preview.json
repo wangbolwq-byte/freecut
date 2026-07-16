@@ -71,7 +71,7 @@
       "emptyDescription": "Importe mídia, arraste um clipe para a linha do tempo e pressione Espaço para visualizar."
     },
     "zoom": {
-      "ariaLabel": "Rotulo ARIA",
+      "ariaLabel": "Nível de zoom: {{label}}",
       "auto": "Automático",
       "tooltip": "Zoom: {{label}}"
     },

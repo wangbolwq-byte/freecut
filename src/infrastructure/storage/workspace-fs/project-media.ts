@@ -41,6 +41,11 @@ const logger = createLogger('WorkspaceFS:ProjectMedia')
 /** Bound on parallel metadata.json reads — mirrors media.ts's global read. */
 const METADATA_READ_CONCURRENCY = 8
 
+// Editor startup asks for project media from both the media-library hydrator
+// and timeline orphan validation. Share concurrent reads so a cold open only
+// walks the workspace/project metadata once.
+const mediaForProjectInFlight = new Map<string, Promise<MediaMetadata[]>>()
+
 type ProjectMediaReadResult =
   | { kind: 'ok'; media: MediaMetadata }
   | { kind: 'missing'; mediaId: string }
@@ -208,7 +213,7 @@ export async function getProjectsUsingMedia(mediaId: string): Promise<string[]> 
  *    missing from media-links.json.
  *  - Prunes associations whose underlying media metadata is missing.
  */
-export async function getMediaForProject(projectId: string): Promise<MediaMetadata[]> {
+async function loadMediaForProject(projectId: string): Promise<MediaMetadata[]> {
   // Ensures a workspace root is set before downstream helpers run. Throws
   // consistently at this boundary rather than deep inside getMedia/getProject.
   requireWorkspaceRoot()
@@ -282,4 +287,19 @@ export async function getMediaForProject(projectId: string): Promise<MediaMetada
     logger.error(`getMediaForProject(${projectId}) failed`, error)
     throw new Error(`Failed to load project media: ${projectId}`)
   }
+}
+
+export function getMediaForProject(projectId: string): Promise<MediaMetadata[]> {
+  const existing = mediaForProjectInFlight.get(projectId)
+  if (existing) return existing
+
+  const load = loadMediaForProject(projectId)
+  mediaForProjectInFlight.set(projectId, load)
+  const clear = () => {
+    if (mediaForProjectInFlight.get(projectId) === load) {
+      mediaForProjectInFlight.delete(projectId)
+    }
+  }
+  void load.then(clear, clear)
+  return load
 }

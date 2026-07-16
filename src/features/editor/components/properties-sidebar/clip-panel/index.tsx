@@ -1,4 +1,5 @@
 import { useMemo, useCallback, useEffect, memo, lazy, Suspense } from 'react'
+import { flushSync } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { Film, Sparkles, Volume2, Type, WandSparkles, Shapes, type LucideIcon } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
@@ -9,6 +10,7 @@ import { useEditorStore } from '@/shared/state/editor'
 import { useSelectionStore } from '@/shared/state/selection'
 import { useItemsStore, useTimelineStore } from '@/features/editor/deps/timeline-store'
 import { useProjectStore } from '@/features/editor/deps/projects'
+import { EffectsSection } from '@/features/editor/deps/effects-contract'
 import {
   DEFAULT_PROJECT_FPS,
   DEFAULT_PROJECT_HEIGHT,
@@ -30,11 +32,6 @@ import { CornerPinSection } from './corner-pin-section'
 
 const LazyAudioSection = lazy(() =>
   import('./audio-section').then((module) => ({ default: module.AudioSection })),
-)
-const LazyEffectsSection = lazy(() =>
-  import('@/features/editor/deps/effects-contract').then((module) => ({
-    default: module.EffectsSection,
-  })),
 )
 const LazySubtitleSection = lazy(() =>
   import('./subtitle-section').then((module) => ({ default: module.SubtitleSection })),
@@ -259,7 +256,13 @@ export const ClipPanel = memo(function ClipPanel() {
 
   const handleTabChange = useCallback(
     (value: string) => {
-      setClipInspectorTab(value as ClipInspectorTab)
+      // Playback can keep the main thread busy with synchronous GPU canvas
+      // handoffs. Commit this discrete inspector interaction before returning
+      // to that loop so the requested tab never sits blank until playback
+      // pauses.
+      flushSync(() => {
+        setClipInspectorTab(value as ClipInspectorTab)
+      })
     },
     [setClipInspectorTab],
   )
@@ -380,9 +383,7 @@ export const ClipPanel = memo(function ClipPanel() {
                   {t('editor.clipPanel.adjustmentLayerHint')}
                 </div>
               )}
-              <Suspense fallback={null}>
-                <LazyEffectsSection items={visualItems} onEditInColor={handleEditInColor} />
-              </Suspense>
+              <EffectsSection items={visualItems} onEditInColor={handleEditInColor} />
               {/* Text style + animation only share the Effects tab for mixed
                   selections; a pure-text selection has dedicated Text /
                   Animation tabs. */}

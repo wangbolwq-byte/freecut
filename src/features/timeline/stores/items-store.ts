@@ -572,9 +572,14 @@ export const useItemsStore = create<ItemsState & ItemsActions>()((set, get) => (
         // playback stays on the smooth forward-through-conform path across
         // the cut (same as forward-split clips reuse one source). Track each
         // half's offset into the conform so the runtime reads the right slice.
-        const parentConformOffset = item.reverseConformLocalStart ?? 0
-        leftItem.reverseConformLocalStart = parentConformOffset
-        rightItem.reverseConformLocalStart = parentConformOffset + leftDuration
+        if (item.reverseConformPreviewIsSourceLevel === true) {
+          leftItem.reverseConformLocalStart = undefined
+          rightItem.reverseConformLocalStart = undefined
+        } else {
+          const parentConformOffset = item.reverseConformLocalStart ?? 0
+          leftItem.reverseConformLocalStart = parentConformOffset
+          rightItem.reverseConformLocalStart = parentConformOffset + leftDuration
+        }
       } else {
         // Explicitly set sourceStart on left item so it has full explicit bounds.
         // Without this, the left item inherits undefined sourceStart from the original,

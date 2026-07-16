@@ -26,14 +26,19 @@ import type { GpuMediaRect, GpuMediaRenderParams } from '@/infrastructure/gpu-me
 import { MAX_GPU_SHAPE_PATH_VERTICES } from '@/infrastructure/gpu-shapes'
 import { doesMaskAffectTrack } from '@/shared/utils/mask-scope'
 import { isTextMotionActive } from '@/shared/typography/text-motion'
+import { recordPreviewVideoSource } from '@/shared/logging/preview-scrub-performance'
 import { getAnimatedTransform } from '../canvas-keyframes'
 import { combineEffects, getAdjustmentLayerEffects, getGpuEffectInstances } from '../canvas-effects'
 import {
   getItemRenderTimelineSpan,
-  getRenderTimelineSourceStart,
+  resolveCompositionSourceFrame,
   type RenderTimelineSpan,
 } from '../render-span'
-import { resolvePreviewDomVideoDrawDecision } from '../frame-source-policy'
+import {
+  isPreviewGpuEffectFrameHoldFresh,
+  resolvePreviewDomVideoDrawDecision,
+  shouldHoldPreviewGpuEffectFrame,
+} from '../frame-source-policy'
 import type {
   GpuBitmapMaskTextureCacheEntry,
   GpuTextTextureCacheEntry,
@@ -182,6 +187,57 @@ export async function renderItemGpuEffectsToTexture(
   }
 }
 
+interface PreviewGpuEffectFrameCacheEntry {
+  canvas: OffscreenCanvas
+  frame: number
+}
+
+const previewGpuEffectFrameCache = new WeakMap<
+  ItemRenderContext,
+  Map<string, PreviewGpuEffectFrameCacheEntry>
+>()
+
+function getPreviewGpuEffectFrameCache(
+  rctx: ItemRenderContext,
+): Map<string, PreviewGpuEffectFrameCacheEntry> {
+  let cache = previewGpuEffectFrameCache.get(rctx)
+  if (!cache) {
+    cache = new Map()
+    previewGpuEffectFrameCache.set(rctx, cache)
+  }
+  return cache
+}
+
+function getFreshPreviewGpuEffectFrame(
+  rctx: ItemRenderContext,
+  itemId: string,
+  currentFrame: number,
+): PreviewGpuEffectFrameCacheEntry | null {
+  const cachedFrame = getPreviewGpuEffectFrameCache(rctx).get(itemId)
+  if (!cachedFrame) return null
+  return isPreviewGpuEffectFrameHoldFresh({
+    currentFrame,
+    cachedFrame: cachedFrame.frame,
+    hasCachedFrame: true,
+    fps: rctx.fps,
+  })
+    ? cachedFrame
+    : null
+}
+
+function resolvePreviewGpuEffectFallback(params: {
+  heldFrame: PreviewGpuEffectFrameCacheEntry | null
+  shouldHold: boolean
+  holdReason: string
+  missReason: string
+  details?: Record<string, unknown>
+  record: (reason: string, details?: Record<string, unknown>) => void
+}): OffscreenCanvas | null {
+  const useHeldFrame = params.shouldHold && Boolean(params.heldFrame)
+  params.record(useHeldFrame ? params.holdReason : params.missReason, params.details)
+  return useHeldFrame ? params.heldFrame!.canvas : null
+}
+
 export function renderPreviewVideoGpuEffectsToCanvas(
   item: TimelineItem,
   transform: ItemTransform,
@@ -259,6 +315,8 @@ export function renderPreviewVideoGpuEffectsToCanvas(
     return null
   }
 
+  const frameCache = getPreviewGpuEffectFrameCache(rctx)
+  const heldFrame = getFreshPreviewGpuEffectFrame(rctx, item.id, frame)
   const video = rctx.domVideoElementProvider(item.id)
   const renderSpan = getItemRenderTimelineSpan(item)
   const sourceTime = resolveVideoParticipantSourceTime(item, renderSpan, frame, rctx)
@@ -270,19 +328,39 @@ export function renderPreviewVideoGpuEffectsToCanvas(
     isRenderingTransition: rctx.isRenderingTransition === true,
   })
   if (!video) {
-    recordFastPath('no-dom-video')
-    return null
+    return resolvePreviewGpuEffectFallback({
+      heldFrame,
+      shouldHold: true,
+      holdReason: 'hold-missing-dom-video',
+      missReason: 'no-dom-video',
+      record: recordFastPath,
+    })
   }
   if (!decision.shouldDraw) {
-    recordFastPath(decision.hasReadyDomVideo ? 'dom-video-drift' : 'dom-video-not-ready', {
-      drift: decision.drift,
-      driftThreshold: decision.driftThreshold,
-      videoTime: video.currentTime,
-      sourceTime,
-      readyState: video.readyState,
-      videoWidth: video.videoWidth,
+    return resolvePreviewGpuEffectFallback({
+      heldFrame,
+      shouldHold: shouldHoldPreviewGpuEffectFrame({
+        domVideo: video,
+        sourceTime,
+        speed,
+        isRenderingTransition: rctx.isRenderingTransition === true,
+        currentFrame: frame,
+        cachedFrame: heldFrame?.frame ?? -Infinity,
+        hasCachedFrame: Boolean(heldFrame),
+        fps: rctx.fps,
+      }),
+      holdReason: 'hold-metadata-frame',
+      missReason: decision.hasReadyDomVideo ? 'dom-video-drift' : 'dom-video-not-ready',
+      details: {
+        drift: decision.drift,
+        driftThreshold: decision.driftThreshold,
+        videoTime: video.currentTime,
+        sourceTime,
+        readyState: video.readyState,
+        videoWidth: video.videoWidth,
+      },
+      record: recordFastPath,
     })
-    return null
   }
 
   const drawLayout = calculateContainedMediaDrawLayout(
@@ -309,18 +387,30 @@ export function renderPreviewVideoGpuEffectsToCanvas(
       // applyEffectsToVideo bailed (importExternalTexture unsupported/failed).
       // Returning null drops this item to the per-frame mediabunny decode path,
       // so this must NOT be recorded as a fast-path hit.
-      recordFastPath('apply-null')
-      return null
+      return resolvePreviewGpuEffectFallback({
+        heldFrame,
+        shouldHold: true,
+        holdReason: 'hold-apply-null',
+        missReason: 'apply-null',
+        record: recordFastPath,
+      })
     }
     recordFastPath('hit', {
       effectCount: enabledEffects.length,
       videoTime: video.currentTime,
       sourceTime,
     })
+    recordPreviewVideoSource({ frame, itemId: item.id, path: 'dom-video', sourceTime })
+    frameCache.set(item.id, { canvas, frame })
     return canvas
   } catch {
-    recordFastPath('apply-failed')
-    return null
+    return resolvePreviewGpuEffectFallback({
+      heldFrame,
+      shouldHold: true,
+      holdReason: 'hold-apply-failed',
+      missReason: 'apply-failed',
+      record: recordFastPath,
+    })
   }
 }
 
@@ -729,8 +819,13 @@ async function renderGpuSubCompChildrenToTexture(
   const subAdjustmentLayers = subData?.adjustmentLayers ?? []
   if (!subData) return null
   const effectiveRenderSpan = participant.renderSpan ?? getItemRenderTimelineSpan(participant.item)
-  const sourceOffset = getRenderTimelineSourceStart(participant.item, effectiveRenderSpan)
-  const localFrame = frame - effectiveRenderSpan.from + sourceOffset
+  const localFrame = resolveCompositionSourceFrame(
+    participant.item,
+    frame,
+    rctx.fps,
+    subData.fps,
+    effectiveRenderSpan,
+  )
   if (localFrame < 0 || localFrame >= subData.durationInFrames) return null
 
   const activeMasks = getActiveSubCompMasks(

@@ -47,17 +47,53 @@ async function renderQueuedJob(job: RenderJob): Promise<void> {
     // Lazy-load the render engine + deps only when a job actually runs.
     const [
       { runRender },
+      { trySmartCopyExport },
       { convertTimelineToComposition },
       { resolveMediaUrls },
       { saveExportFile },
     ] = await Promise.all([
       import('../utils/render-pipeline'),
+      import('../utils/smart-copy'),
       import('../utils/timeline-to-composition'),
       import('@/features/export/deps/media-library'),
       import('@/infrastructure/storage'),
     ])
 
     const { snapshot } = job
+    const smartCopy = await trySmartCopyExport(
+      {
+        settings: job.clientSettings,
+        tracks: snapshot.tracks,
+        items: snapshot.items,
+        transitions: snapshot.transitions,
+        keyframes: snapshot.keyframes,
+        fps: snapshot.fps,
+        width: snapshot.width,
+        height: snapshot.height,
+        inPoint: job.inPoint,
+        outPoint: job.outPoint,
+        busAudioEq: snapshot.busAudioEq,
+        masterBusDb: snapshot.masterBusDb,
+      },
+      controller.signal,
+      (progress) => useRenderQueueStore.getState().updateJobProgress(job.id, progress),
+    )
+
+    if (smartCopy.result) {
+      const saved = await saveExportFile(job.projectId, job.fileName, smartCopy.result.blob)
+      useRenderQueueStore.getState().markCompleted(job.id, {
+        savedPath: saved.relPath,
+        fileSize: smartCopy.result.fileSize,
+      })
+      event.set('renderPath', 'smart-copy')
+      event.success({
+        savedPath: saved.relPath,
+        fileSize: smartCopy.result.fileSize,
+        duration: smartCopy.result.duration,
+      })
+      return
+    }
+
     const composition = convertTimelineToComposition(
       snapshot.tracks,
       snapshot.items,

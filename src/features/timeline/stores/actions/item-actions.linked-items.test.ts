@@ -151,6 +151,7 @@ describe('linked timeline items', () => {
         key: 'reverse-key',
         quality: 'preview',
         usesProxy: true,
+        isSourceLevel: true,
       },
     ])
 
@@ -182,6 +183,7 @@ describe('linked timeline items', () => {
         key: 'reverse-key',
         quality: 'preview',
         usesProxy: true,
+        isSourceLevel: true,
       },
     ])
 

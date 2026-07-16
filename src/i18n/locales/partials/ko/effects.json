@@ -53,6 +53,15 @@
     "midtones": "중간톤",
     "highlights": "밝은 영역"
   },
+  "powerWindow": {
+    "window": "윈도우",
+    "matte": "매트",
+    "correction": "보정",
+    "ellipse": "타원",
+    "rectangle": "사각형",
+    "editOnCanvas": "캔버스에서 편집",
+    "editingOnCanvas": "캔버스에서 편집 중"
+  },
   "params": {
     "flow": "흐름",
     "span": "폭",

@@ -37,6 +37,7 @@
   "toolbar": {
     "ariaLabel": "Editör araç çubuğu",
     "workspaces": {
+      "motion": "Motion",
       "label": "Çalışma alanları",
       "edit": "Kurgu",
       "color": "Renk",

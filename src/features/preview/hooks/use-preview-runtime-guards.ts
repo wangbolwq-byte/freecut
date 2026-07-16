@@ -7,8 +7,6 @@ import { createAdaptivePreviewQualityState } from '../utils/adaptive-preview-qua
 interface UsePreviewRuntimeGuardsParams {
   isGizmoInteracting: boolean
   isGizmoInteractingRef: MutableRefObject<boolean>
-  isPlaying: boolean
-  adaptiveQualityCap: PreviewQuality
   setAdaptiveQualityCap: Dispatch<SetStateAction<PreviewQuality>>
   adaptiveQualityStateRef: MutableRefObject<ReturnType<typeof createAdaptivePreviewQualityState>>
   adaptiveFrameSampleRef: MutableRefObject<{ frame: number; tsMs: number } | null>
@@ -27,8 +25,6 @@ function clearPreviewFramePreservingViewedFrame() {
 export function usePreviewRuntimeGuards({
   isGizmoInteracting,
   isGizmoInteractingRef,
-  isPlaying,
-  adaptiveQualityCap,
   setAdaptiveQualityCap,
   adaptiveQualityStateRef,
   adaptiveFrameSampleRef,
@@ -51,27 +47,23 @@ export function usePreviewRuntimeGuards({
     if (!ADAPTIVE_PREVIEW_QUALITY_ENABLED) {
       adaptiveFrameSampleRef.current = null
       adaptiveQualityStateRef.current = createAdaptivePreviewQualityState(1)
-      if (adaptiveQualityCap !== 1) {
-        setAdaptiveQualityCap(1)
-      }
+      setAdaptiveQualityCap((quality) => (quality === 1 ? quality : 1))
       return
     }
 
-    if (isPlaying) {
+    const applyPlaybackState = (isPlaying: boolean) => {
       adaptiveFrameSampleRef.current = null
-      return
+      if (isPlaying) return
+
+      adaptiveQualityStateRef.current = createAdaptivePreviewQualityState(1)
+      setAdaptiveQualityCap((quality) => (quality === 1 ? quality : 1))
     }
 
-    adaptiveFrameSampleRef.current = null
-    adaptiveQualityStateRef.current = createAdaptivePreviewQualityState(1)
-    if (adaptiveQualityCap !== 1) {
-      setAdaptiveQualityCap(1)
-    }
-  }, [
-    adaptiveFrameSampleRef,
-    adaptiveQualityCap,
-    adaptiveQualityStateRef,
-    isPlaying,
-    setAdaptiveQualityCap,
-  ])
+    applyPlaybackState(usePlaybackStore.getState().isPlaying)
+    return usePlaybackStore.subscribe((state, previousState) => {
+      if (state.isPlaying !== previousState.isPlaying) {
+        applyPlaybackState(state.isPlaying)
+      }
+    })
+  }, [adaptiveFrameSampleRef, adaptiveQualityStateRef, setAdaptiveQualityCap])
 }

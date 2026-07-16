@@ -9,7 +9,18 @@ const mirrorBlobToWorkspaceMock = vi.fn()
 const getFileBlobMock = vi.fn()
 const saveFileMock = vi.fn()
 const resolveMediaUrlsMock = vi.fn()
-let mediaByIdMock: Record<string, { duration: number; fps: number }> = {}
+let mediaByIdMock: Record<
+  string,
+  {
+    duration: number
+    fps: number
+    fileSize?: number
+    fileLastModified?: number
+    width?: number
+    height?: number
+    contentHash?: string
+  }
+> = {}
 
 vi.mock('../deps/export-contract', () => ({
   importCanvasRenderOrchestrator: vi.fn(async () => ({
@@ -80,7 +91,7 @@ describe('reverseConformService', () => {
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:reverse')
   })
 
-  it('derives conform duration from explicit source bounds when the clip duration is zero', async () => {
+  it('renders the whole known source instead of only the selected clip range', async () => {
     const { reverseConformService } = await import('./reverse-conform-service')
 
     await reverseConformService.prepareVideo(
@@ -93,11 +104,12 @@ describe('reverseConformService', () => {
     )
 
     const renderRequest = renderCompositionMock.mock.calls[0]?.[0]
-    expect(renderRequest.composition.durationInFrames).toBe(60)
+    expect(renderRequest.composition.durationInFrames).toBe(90)
     expect(renderRequest.composition.tracks[0].items[0]).toMatchObject({
-      durationInFrames: 60,
-      sourceStart: 30,
+      durationInFrames: 90,
+      sourceStart: 0,
       sourceEnd: 90,
+      speed: 1,
     })
   })
 
@@ -126,7 +138,7 @@ describe('reverseConformService', () => {
       durationInFrames: 60,
       sourceStart: 0,
       sourceEnd: 60,
-      sourceDuration: 0,
+      sourceDuration: 60,
     })
   })
 
@@ -160,5 +172,35 @@ describe('reverseConformService', () => {
 
     expect(resolveMediaUrlsMock).toHaveBeenCalled()
     expect(renderCompositionMock).toHaveBeenCalled()
+  })
+
+  it('shares one source-level preview across differently trimmed instances', async () => {
+    mediaByIdMock = {
+      'media-1': {
+        duration: 10,
+        fps: 30,
+        fileSize: 1234,
+        fileLastModified: 5678,
+        width: 1920,
+        height: 1080,
+      },
+    }
+    const cachedBlob = new Blob(['reverse'], { type: 'video/mp4' })
+    readWorkspaceBlobMock.mockResolvedValue(cachedBlob)
+    const { reverseConformService } = await import('./reverse-conform-service')
+
+    const first = await reverseConformService.prepareVideo(
+      makeVideoItem({ id: 'clip-a', sourceStart: 0, sourceEnd: 60 }),
+      30,
+    )
+    const second = await reverseConformService.prepareVideo(
+      makeVideoItem({ id: 'clip-b', sourceStart: 120, sourceEnd: 210, speed: 2 }),
+      60,
+    )
+
+    expect(first.key).toBe(second.key)
+    expect(first.path).toBe(second.path)
+    expect(first.src).toBe(second.src)
+    expect(renderCompositionMock).not.toHaveBeenCalled()
   })
 })

@@ -8,10 +8,11 @@ import {
   useClockPlaybackRate,
 } from './ClockContext'
 import {
+  BridgedTimelineBoundsContext,
+  BridgedTimelineFrameContext,
+  BridgedTimelinePlaybackContext,
   BridgedSetTimelineContext,
-  BridgedTimelineContext,
   type SetTimelineContextValue,
-  type TimelineContextValue,
 } from './clock-bridge-context'
 
 interface ClockBridgeProviderProps {
@@ -55,20 +56,29 @@ function ClockBridgeInner({
     clock.setOutPoint(outFrame)
   }, [clock, outFrame])
 
-  const timelineContextValue = useMemo((): TimelineContextValue => {
+  const setPlaybackRate = useCallback(
+    (rate: number) => {
+      clock.playbackRate = rate
+    },
+    [clock],
+  )
+
+  const playbackContextValue = useMemo(() => {
     return {
-      frame,
       playing,
-      rootId: 'player-comp',
       playbackRate,
       imperativePlaying,
-      setPlaybackRate: (rate: number) => {
-        clock.playbackRate = rate
-      },
+      setPlaybackRate,
+    }
+  }, [playing, playbackRate, setPlaybackRate])
+
+  const boundsContextValue = useMemo(() => {
+    return {
+      rootId: 'player-comp',
       inFrame,
       outFrame,
     }
-  }, [frame, playing, playbackRate, inFrame, outFrame, clock])
+  }, [inFrame, outFrame])
 
   const setFrame = useCallback(
     (action: React.SetStateAction<Record<string, number>>) => {
@@ -109,11 +119,15 @@ function ClockBridgeInner({
   }, [setFrame, setPlaying])
 
   return (
-    <BridgedTimelineContext.Provider value={timelineContextValue}>
-      <BridgedSetTimelineContext.Provider value={setTimelineContextValue}>
-        {children}
-      </BridgedSetTimelineContext.Provider>
-    </BridgedTimelineContext.Provider>
+    <BridgedTimelineBoundsContext.Provider value={boundsContextValue}>
+      <BridgedTimelinePlaybackContext.Provider value={playbackContextValue}>
+        <BridgedSetTimelineContext.Provider value={setTimelineContextValue}>
+          <BridgedTimelineFrameContext.Provider value={frame}>
+            {children}
+          </BridgedTimelineFrameContext.Provider>
+        </BridgedSetTimelineContext.Provider>
+      </BridgedTimelinePlaybackContext.Provider>
+    </BridgedTimelineBoundsContext.Provider>
   )
 }
 

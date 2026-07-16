@@ -154,18 +154,45 @@ describe('getPreviewPlayerSize', () => {
 })
 
 describe('getPreviewDisplayEdgePadding', () => {
-  it('uses source-pixel padding that lands on whole screen pixels at fixed zooms', () => {
+  it('uses at least two screen pixels of source padding at fixed zooms', () => {
     const renderSize = { width: 1920, height: 1080 }
 
-    expect(getPreviewDisplayEdgePadding({ width: 480, height: 270 }, renderSize, 1)).toBe(4)
-    expect(getPreviewDisplayEdgePadding({ width: 960, height: 540 }, renderSize, 1)).toBe(2)
+    expect(getPreviewDisplayEdgePadding({ width: 480, height: 270 }, renderSize, 1)).toBe(8)
+    expect(getPreviewDisplayEdgePadding({ width: 960, height: 540 }, renderSize, 1)).toBe(4)
     expect(getPreviewDisplayEdgePadding({ width: 1440, height: 810 }, renderSize, 1)).toBe(4)
   })
 
-  it('falls back to a minimal source-pixel pad for non-terminating auto-fit scales', () => {
+  it('keeps awkward auto-fit scales thick enough for bilinear filtering', () => {
     expect(
       getPreviewDisplayEdgePadding({ width: 992, height: 558 }, { width: 1920, height: 1080 }, 1),
-    ).toBe(1)
+    ).toBe(4)
+    expect(
+      getPreviewDisplayEdgePadding({ width: 928, height: 522 }, { width: 1920, height: 1080 }, 1),
+    ).toBe(5)
+    expect(
+      getPreviewDisplayEdgePadding({ width: 1056, height: 594 }, { width: 1920, height: 1080 }, 1),
+    ).toBe(4)
+  })
+
+  it('guarantees multi-device-pixel overscan across panel sizes and display densities', () => {
+    const renderSize = { width: 1920, height: 1080 }
+    for (const devicePixelRatio of [1, 1.25, 1.5, 2]) {
+      for (const playerSize of [
+        { width: 320, height: 180 },
+        { width: 592, height: 333 },
+        { width: 928, height: 522 },
+        { width: 1024, height: 576 },
+        { width: 1432, height: 805.5 },
+      ]) {
+        const padding = getPreviewDisplayEdgePadding(playerSize, renderSize, devicePixelRatio)
+        expect(
+          (padding * playerSize.width * devicePixelRatio) / renderSize.width,
+        ).toBeGreaterThanOrEqual(2 - 1e-3)
+        expect(
+          (padding * playerSize.height * devicePixelRatio) / renderSize.height,
+        ).toBeGreaterThanOrEqual(2 - 1e-3)
+      }
+    }
   })
 })
 
@@ -230,10 +257,10 @@ describe('PreviewStage', () => {
 
     canvases.forEach((canvas) => {
       expect(canvas).toHaveStyle({
-        width: 'calc(100% + 2px)',
-        height: 'calc(100% + 2px)',
-        left: '-1px',
-        top: '-1px',
+        width: 'calc(100% + 4px)',
+        height: 'calc(100% + 4px)',
+        left: '-2px',
+        top: '-2px',
       })
     })
   })
@@ -249,10 +276,10 @@ describe('PreviewStage', () => {
     expect(beforeLayer.style.clipPath).toBe('inset(0 50% 0 0)')
     expect(beforeLayer.style.overflow).toBe('')
     expect(scrubCanvas).toHaveStyle({
-      width: 'calc(100% + 2px)',
-      height: 'calc(100% + 2px)',
-      left: '-1px',
-      top: '-1px',
+      width: 'calc(100% + 4px)',
+      height: 'calc(100% + 4px)',
+      left: '-2px',
+      top: '-2px',
     })
     expect(scrubCanvas.style.clipPath).toBe('')
     expect(screen.getByLabelText('Split grade comparison')).toBeTruthy()
@@ -278,10 +305,10 @@ describe('PreviewStage', () => {
     expect(beforeLayer.style.clipPath).toBe('inset(0 65% 0 0)')
     expect(beforeLayer.style.overflow).toBe('')
     expect(scrubCanvas).toHaveStyle({
-      width: 'calc(100% + 2px)',
-      height: 'calc(100% + 2px)',
-      left: '-1px',
-      top: '-1px',
+      width: 'calc(100% + 4px)',
+      height: 'calc(100% + 4px)',
+      left: '-2px',
+      top: '-2px',
     })
     expect(scrubCanvas.style.clipPath).toBe('')
     expect(wipeHandle).toHaveAttribute('aria-valuenow', '35')

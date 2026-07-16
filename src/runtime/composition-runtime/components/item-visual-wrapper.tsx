@@ -17,6 +17,7 @@ import { getRasterizedMaskLayerSettingsList } from '../utils/mask-preview'
 import type { MaskInfo } from './item'
 import type { CropSettings } from '@/types/transform'
 import { ContainedMediaLayout } from './contained-media-layout'
+import { ItemVisualTransformProvider } from '../contexts/item-visual-transform-context'
 
 interface ItemVisualWrapperProps {
   item: TimelineItem
@@ -594,35 +595,39 @@ export const ItemVisualWrapper: React.FC<ItemVisualWrapperProps> = ({
   // When there's no mask, skip the full-canvas mask container div entirely
   if (state.maskType === null) {
     return (
-      <div
-        style={{
-          ...state.transformStyle,
-          overflow: state.transform.cornerRadius > 0 && !cornerPinStyle ? 'hidden' : undefined,
-          mixBlendMode: blendModeCss,
-        }}
-      >
-        {innerContent}
-      </div>
-    )
-  }
-
-  return (
-    <>
-      {/* SVG mask definitions (hidden, referenced via CSS) */}
-      {svgMaskDefs}
-
-      {/* Masks are authored in composition space, so they must be applied on a
-          full-canvas wrapper instead of the item-sized transform node. */}
-      <div style={maskContainerStyle}>
+      <ItemVisualTransformProvider value={state.transform}>
         <div
           style={{
             ...state.transformStyle,
             overflow: state.transform.cornerRadius > 0 && !cornerPinStyle ? 'hidden' : undefined,
+            mixBlendMode: blendModeCss,
           }}
         >
           {innerContent}
         </div>
-      </div>
-    </>
+      </ItemVisualTransformProvider>
+    )
+  }
+
+  return (
+    <ItemVisualTransformProvider value={state.transform}>
+      <>
+        {/* SVG mask definitions (hidden, referenced by CSS) */}
+        {svgMaskDefs}
+
+        {/* Masks are authored in composition space, so they must be applied on a
+            full-canvas wrapper instead of the item-sized transform node. */}
+        <div style={maskContainerStyle}>
+          <div
+            style={{
+              ...state.transformStyle,
+              overflow: state.transform.cornerRadius > 0 && !cornerPinStyle ? 'hidden' : undefined,
+            }}
+          >
+            {innerContent}
+          </div>
+        </div>
+      </>
+    </ItemVisualTransformProvider>
   )
 }

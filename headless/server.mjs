@@ -4,9 +4,16 @@
 // with the cross-origin-isolation headers the harness needs (COEP/COOP), plus
 // HTTP Range for media so large clips stream via mediabunny's UrlSource.
 import http from 'node:http'
-import fs from 'node:fs'
-import { stat } from 'node:fs/promises'
 import path from 'node:path'
+import {
+  assertSinglePathComponent,
+  decodeRequestPath,
+  requireGetOrHead,
+  resolveContained,
+  sendHttpError,
+  serveFile,
+  setHttpTimeouts,
+} from './lib/http-security.mjs'
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -45,47 +52,6 @@ function contentType(filePath) {
   return MIME[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream'
 }
 
-async function serveFile(req, res, filePath, { allowRange } = { allowRange: false }) {
-  let info
-  try {
-    info = await stat(filePath)
-  } catch {
-    res.writeHead(404)
-    res.end('not found')
-    return
-  }
-  if (!info.isFile()) {
-    res.writeHead(404)
-    res.end('not found')
-    return
-  }
-
-  res.setHeader('Content-Type', contentType(filePath))
-  const size = info.size
-  const range = allowRange ? req.headers.range : undefined
-
-  if (allowRange) res.setHeader('Accept-Ranges', 'bytes')
-
-  if (range) {
-    const parts = /bytes=(\d*)-(\d*)/.exec(range)
-    let start = parts?.[1] ? Number.parseInt(parts[1], 10) : 0
-    let end = parts?.[2] ? Number.parseInt(parts[2], 10) : size - 1
-    if (!Number.isFinite(start) || start < 0) start = 0
-    if (!Number.isFinite(end) || end >= size) end = size - 1
-    res.writeHead(206, { 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Length': end - start + 1 })
-    if (req.method === 'HEAD') return res.end()
-    fs.createReadStream(filePath, { start, end }).pipe(res)
-    return
-  }
-
-  res.setHeader('Content-Length', size)
-  if (req.method === 'HEAD') {
-    res.writeHead(200)
-    return res.end()
-  }
-  fs.createReadStream(filePath).pipe(res)
-}
-
 /**
  * @param {{ distDir: string, resolveMedia?: (mediaId: string) => string | null, port?: number }} opts
  *   resolveMedia maps a media id to an absolute source-file path (or null). Omit
@@ -101,37 +67,42 @@ export async function createHarnessServer({ distDir, resolveMedia = () => null, 
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
 
-    const url = new URL(req.url ?? '/', 'http://localhost')
+    try {
+      if (!requireGetOrHead(req, res)) return
+      const pathname = decodeRequestPath(req)
 
-    if (url.pathname === '/favicon.ico') {
-      res.writeHead(204)
-      res.end()
-      return
-    }
-
-    const mediaMatch = url.pathname.match(/^\/media\/(.+)$/)
-    if (mediaMatch) {
-      const filePath = resolveMedia(decodeURIComponent(mediaMatch[1]))
-      if (!filePath) {
-        res.writeHead(404)
-        res.end('media not found')
+      if (pathname === '/favicon.ico') {
+        res.writeHead(204)
+        res.end()
         return
       }
-      await serveFile(req, res, filePath, { allowRange: true })
-      return
-    }
 
-    // Static dist serving.
-    let rel = decodeURIComponent(url.pathname)
-    if (rel === '/') rel = '/headless.html'
-    const filePath = path.join(resolvedDist, rel)
-    if (!filePath.startsWith(resolvedDist)) {
-      res.writeHead(403)
-      res.end('forbidden')
-      return
+      const mediaMatch = pathname.match(/^\/media\/(.+)$/)
+      if (mediaMatch) {
+        const mediaId = assertSinglePathComponent(mediaMatch[1], 'media id')
+        const filePath = resolveMedia(mediaId)
+        if (!filePath) {
+          res.writeHead(404)
+          res.end('media not found')
+          return
+        }
+        await serveFile(req, res, filePath, {
+          contentType: contentType(filePath),
+          allowRange: true,
+        })
+        return
+      }
+
+      let rel = pathname
+      if (rel === '/') rel = '/headless.html'
+      rel = rel.replace(/^[/\\]+/, '')
+      const filePath = resolveContained(resolvedDist, rel)
+      await serveFile(req, res, filePath, { contentType: contentType(filePath), allowRange: false })
+    } catch (error) {
+      sendHttpError(res, error)
     }
-    await serveFile(req, res, filePath, { allowRange: false })
   })
+  setHttpTimeouts(server)
 
   await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve))
   const base = `http://127.0.0.1:${server.address().port}`

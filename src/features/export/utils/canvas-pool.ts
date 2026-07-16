@@ -16,11 +16,33 @@ export class CanvasPool {
   private width: number
   private height: number
   private maxSize: number
+  private peakInUse = 0
+  private temporaryAllocations = 0
+  private readonly onStatsChange?: (stats: {
+    width: number
+    height: number
+    maxSize: number
+    peakInUse: number
+    temporaryAllocations: number
+  }) => void
 
-  constructor(width: number, height: number, initialSize: number = 8, maxSize: number = 20) {
+  constructor(
+    width: number,
+    height: number,
+    initialSize: number = 8,
+    maxSize: number = 20,
+    onStatsChange?: (stats: {
+      width: number
+      height: number
+      maxSize: number
+      peakInUse: number
+      temporaryAllocations: number
+    }) => void,
+  ) {
     this.width = width
     this.height = height
     this.maxSize = maxSize
+    this.onStatsChange = onStatsChange
 
     // Pre-allocate canvases
     for (let i = 0; i < initialSize; i++) {
@@ -42,10 +64,22 @@ export class CanvasPool {
     } else {
       // Pool exhausted and at max, create temporary (will be discarded)
       log.warn('Canvas pool exhausted, creating temporary canvas')
+      this.temporaryAllocations += 1
       canvas = new OffscreenCanvas(this.width, this.height)
     }
 
     this.inUse.add(canvas)
+    const nextPeak = Math.max(this.peakInUse, this.inUse.size)
+    if (nextPeak !== this.peakInUse || this.temporaryAllocations > 0) {
+      this.peakInUse = nextPeak
+      this.onStatsChange?.({
+        width: this.width,
+        height: this.height,
+        maxSize: this.maxSize,
+        peakInUse: this.peakInUse,
+        temporaryAllocations: this.temporaryAllocations,
+      })
+    }
     // Reset dimensions in case a previous user resized the canvas (e.g. sub-comp rendering)
     if (canvas.width !== this.width || canvas.height !== this.height) {
       canvas.width = this.width
@@ -87,11 +121,19 @@ export class CanvasPool {
   /**
    * Get pool statistics for debugging
    */
-  getStats(): { available: number; inUse: number; total: number } {
+  getStats(): {
+    available: number
+    inUse: number
+    total: number
+    peakInUse: number
+    temporaryAllocations: number
+  } {
     return {
       available: this.available.length,
       inUse: this.inUse.size,
       total: this.available.length + this.inUse.size,
+      peakInUse: this.peakInUse,
+      temporaryAllocations: this.temporaryAllocations,
     }
   }
 }

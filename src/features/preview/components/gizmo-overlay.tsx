@@ -12,8 +12,7 @@ import { usePlaybackStore } from '@/shared/state/playback'
 import { usePreviewBridgeStore } from '@/shared/state/preview-bridge'
 import { getResolvedPlaybackFrame } from '@/shared/state/playback/frame-resolution'
 import { useGizmoStore } from '../stores/gizmo-store'
-import { useCornerPinStore } from '../stores/corner-pin-store'
-import { useMaskEditorStore } from '../stores/mask-editor-store'
+import { useExclusiveCanvasEditor } from '../hooks/use-exclusive-canvas-editor'
 import { TransformGizmo } from './transform-gizmo'
 import { GroupGizmo } from './group-gizmo'
 import { SelectableItem } from './selectable-item'
@@ -217,12 +216,18 @@ export function GizmoOverlay({
   const setSnappingEnabled = useGizmoStore((s) => s.setSnappingEnabled)
   const setOtherItemBounds = useGizmoStore((s) => s.setOtherItemBounds)
   const snapLines = useGizmoStore((s) => s.snapLines)
-  const isCornerPinEditing = useCornerPinStore((s) => s.isEditing)
-  const isMaskEditing = useMaskEditorStore((s) => s.isEditing)
+  const {
+    cornerPin: isCornerPinEditing,
+    mask: isMaskEditing,
+    powerWindow: isPowerWindowEditing,
+    spatialEffect: isSpatialEffectEditing,
+    active: isExclusiveCanvasEditorActive,
+  } = useExclusiveCanvasEditor()
   const startTranslate = useGizmoStore((s) => s.startTranslate)
   const updateInteraction = useGizmoStore((s) => s.updateInteraction)
   const endInteraction = useGizmoStore((s) => s.endInteraction)
   const clearInteraction = useGizmoStore((s) => s.clearInteraction)
+  const cancelInteraction = useGizmoStore((s) => s.cancelInteraction)
   // Live drag position so the motion path previews the pending edit in real time
   // (only a translate moves position keyframes).
   const gizmoDragItemId = useGizmoStore((s) =>
@@ -359,7 +364,14 @@ export function GizmoOverlay({
   selectedItemsRef.current = selectedItems
 
   const motionPaths = useMemo(() => {
-    if (!coordParams || isCornerPinEditing || isMaskEditing) return []
+    if (
+      !coordParams ||
+      isCornerPinEditing ||
+      isMaskEditing ||
+      isPowerWindowEditing ||
+      isSpatialEffectEditing
+    )
+      return []
     const canvas = { width: projectSize.width, height: projectSize.height, fps }
     return selectedItemsRef.current.flatMap((item) => {
       const dragging = item.id === gizmoDragItemId && gizmoPreviewTransform
@@ -392,6 +404,8 @@ export function GizmoOverlay({
     fps,
     isCornerPinEditing,
     isMaskEditing,
+    isPowerWindowEditing,
+    isSpatialEffectEditing,
     projectSize.height,
     projectSize.width,
     motionPathSignature,
@@ -452,15 +466,23 @@ export function GizmoOverlay({
   const { marquee } = useMarqueeSelection({
     containerRef: marqueeContainerRef,
     items: marqueeItems,
+    enabled: !isExclusiveCanvasEditorActive,
     onSelectionChange: useCallback(
       (ids: string[]) => {
         selectItems(ids)
       },
       [selectItems],
     ),
-    enabled: true,
     threshold: 5,
   })
+
+  useEffect(() => {
+    if (!isExclusiveCanvasEditorActive) return
+    cancelInteraction()
+    setOtherItemBounds([])
+    setContextMenu(null)
+    document.body.style.cursor = ''
+  }, [cancelInteraction, isExclusiveCanvasEditorActive, setOtherItemBounds])
 
   const handleTransformStart = useCallback(() => {
     const playback = usePlaybackStore.getState()
@@ -615,25 +637,30 @@ export function GizmoOverlay({
   )
 
   // Handle click on overlay background to deselect
-  const handleBackgroundClick = useCallback((e: React.MouseEvent) => {
-    // Don't deselect if we just finished a drag or marquee operation
-    if (justFinishedDragRef.current || isMarqueeJustFinished()) {
-      return
-    }
-    // Don't clear if clicking on gizmo elements
-    const target = e.target as HTMLElement
-    if (target.closest('[data-gizmo]')) return
+  const handleBackgroundClick = useCallback(
+    (e: React.MouseEvent) => {
+      if (isExclusiveCanvasEditorActive) return
+      // Don't deselect if we just finished a drag or marquee operation
+      if (justFinishedDragRef.current || isMarqueeJustFinished()) {
+        return
+      }
+      // Don't clear if clicking on gizmo elements
+      const target = e.target as HTMLElement
+      if (target.closest('[data-gizmo]')) return
 
-    // Stop propagation so video-preview doesn't also clear
-    e.stopPropagation()
-    useSelectionStore.getState().clearItemSelection()
-  }, [])
+      // Stop propagation so video-preview doesn't also clear
+      e.stopPropagation()
+      useSelectionStore.getState().clearItemSelection()
+    },
+    [isExclusiveCanvasEditorActive],
+  )
 
   // Handle clicking an item to select it
   // For unselected items: select that item (or add to selection with shift)
   // For selected items in a group: select just that item (break group selection)
   const handleItemClick = useCallback(
     (itemId: string, e: React.MouseEvent) => {
+      if (isExclusiveCanvasEditorActive) return
       e.stopPropagation()
       const isSelected = selectedItemIdsSet.has(itemId)
       const isGroupSelection = selectedItemIds.length > 1
@@ -654,7 +681,7 @@ export function GizmoOverlay({
       }
       // If single selected item is clicked again, do nothing (keeps selection)
     },
-    [selectItems, selectedItemIds, selectedItemIdsSet],
+    [isExclusiveCanvasEditorActive, selectItems, selectedItemIds, selectedItemIdsSet],
   )
 
   // Helper to find all items at a canvas point (for context menu)
@@ -697,7 +724,7 @@ export function GizmoOverlay({
   // Handle right-click to show context menu for overlapping items
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
-      if (!coordParams) return
+      if (!coordParams || isExclusiveCanvasEditorActive) return
 
       e.preventDefault()
       e.stopPropagation()
@@ -717,7 +744,7 @@ export function GizmoOverlay({
         selectItems([itemsAtPoint[0]!.id])
       }
     },
-    [coordParams, findAllItemsAtPoint, selectItems],
+    [coordParams, findAllItemsAtPoint, isExclusiveCanvasEditorActive, selectItems],
   )
 
   // Handle selecting an item from context menu
@@ -746,7 +773,7 @@ export function GizmoOverlay({
   // Handle drag start from SelectableItem - select and start dragging in one motion
   const handleItemDragStart = useCallback(
     (itemId: string, e: React.MouseEvent, transform: Transform) => {
-      if (!coordParams) return
+      if (!coordParams || isExclusiveCanvasEditorActive) return
 
       const startTransformSnapshot = { ...transform }
       const point = screenToCanvas(e.clientX, e.clientY, coordParams)
@@ -778,6 +805,7 @@ export function GizmoOverlay({
       endInteraction,
       clearInteraction,
       handleTransformEnd,
+      isExclusiveCanvasEditorActive,
     ],
   )
 
@@ -805,13 +833,12 @@ export function GizmoOverlay({
       {/* Marquee selection rectangle — portaled into the preview background so
           it renders in the same coordinate space the marquee hook tracks.
           Hidden during corner pin / mask editing. */}
-      {!isCornerPinEditing &&
-        !isMaskEditing &&
+      {!isExclusiveCanvasEditorActive &&
         marqueePortalTarget &&
         createPortal(<MarqueeOverlay marquee={marquee} />, marqueePortalTarget)}
 
       {/* Player area - receives clicks for deselection and contains gizmos */}
-      {/* Disabled entirely during corner pin / mask editing so the overlay gets exclusive input */}
+      {/* Disabled while any exclusive editor owns canvas input. */}
       <div
         className="absolute"
         style={{
@@ -819,16 +846,16 @@ export function GizmoOverlay({
           left: overlayPadding,
           width: playerSize.width,
           height: playerSize.height,
-          pointerEvents: isCornerPinEditing || isMaskEditing ? 'none' : 'auto',
+          pointerEvents: isExclusiveCanvasEditorActive ? 'none' : 'auto',
         }}
         onClick={handleBackgroundClick}
         onContextMenu={handleContextMenu}
-        onDragEnter={handleDragEnter}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
+        onDragEnter={isExclusiveCanvasEditorActive ? undefined : handleDragEnter}
+        onDragOver={isExclusiveCanvasEditorActive ? undefined : handleDragOver}
+        onDragLeave={isExclusiveCanvasEditorActive ? undefined : handleDragLeave}
+        onDrop={isExclusiveCanvasEditorActive ? undefined : handleDrop}
       >
-        {dropState && (
+        {!isExclusiveCanvasEditorActive && dropState && (
           <div
             className={`absolute inset-0 pointer-events-none z-20 flex items-center justify-center border-2 border-dashed ${
               dropState.allowed
@@ -849,7 +876,7 @@ export function GizmoOverlay({
 
         {/* Hide the motion path during playback — it clutters the frame and the
             moving object already conveys the motion. */}
-        {!isPlaying && (
+        {!isPlaying && !isPowerWindowEditing && !isSpatialEffectEditing && (
           <MotionPathOverlay
             paths={motionPaths}
             width={playerSize.width}
@@ -859,34 +886,34 @@ export function GizmoOverlay({
 
         {/* Clickable areas for UNSELECTED visible items */}
         {/* Selected items are handled by their respective gizmos (TransformGizmo or GroupGizmo) */}
-        {unselectedItems.map((item) => {
-          const resolved = visualTransformsMap.get(item.id)
-          if (!resolved) return null
-          return (
-            <SelectableItem
-              key={item.id}
-              item={item}
-              transform={{
-                x: resolved.x,
-                y: resolved.y,
-                width: resolved.width,
-                height: resolved.height,
-                anchorX: resolved.anchorX,
-                anchorY: resolved.anchorY,
-                rotation: resolved.rotation,
-                opacity: resolved.opacity,
-                cornerRadius: resolved.cornerRadius,
-              }}
-              coordParams={coordParams}
-              onSelect={(e) => handleItemClick(item.id, e)}
-              onDragStart={(e, transform) => handleItemDragStart(item.id, e, transform)}
-            />
-          )
-        })}
+        {!isExclusiveCanvasEditorActive &&
+          unselectedItems.map((item) => {
+            const resolved = visualTransformsMap.get(item.id)
+            if (!resolved) return null
+            return (
+              <SelectableItem
+                key={item.id}
+                item={item}
+                transform={{
+                  x: resolved.x,
+                  y: resolved.y,
+                  width: resolved.width,
+                  height: resolved.height,
+                  anchorX: resolved.anchorX,
+                  anchorY: resolved.anchorY,
+                  rotation: resolved.rotation,
+                  opacity: resolved.opacity,
+                  cornerRadius: resolved.cornerRadius,
+                }}
+                coordParams={coordParams}
+                onSelect={(e) => handleItemClick(item.id, e)}
+                onDragStart={(e, transform) => handleItemDragStart(item.id, e, transform)}
+              />
+            )
+          })}
 
-        {/* Transform gizmo(s) for selected items - hidden during corner pin / mask editing */}
-        {isCornerPinEditing || isMaskEditing ? null : selectedItems.length === 1 &&
-          selectedItems[0] ? (
+        {/* Transform gizmo(s) for selected items - hidden while another canvas editor is active */}
+        {isExclusiveCanvasEditorActive ? null : selectedItems.length === 1 && selectedItems[0] ? (
           <TransformGizmo
             item={selectedItems[0]}
             coordParams={coordParams}
@@ -908,11 +935,14 @@ export function GizmoOverlay({
         ) : null}
 
         {/* Snap guides shown during drag */}
-        <SnapGuides snapLines={snapLines} coordParams={coordParams} />
+        {!isExclusiveCanvasEditorActive && (
+          <SnapGuides snapLines={snapLines} coordParams={coordParams} />
+        )}
       </div>
 
       {/* Context menu for selecting from overlapping items - rendered via portal to ensure it's above all other elements */}
-      {contextMenu &&
+      {!isExclusiveCanvasEditorActive &&
+        contextMenu &&
         createPortal(
           <div
             className="fixed z-[9999] bg-popover border border-border rounded-md shadow-lg py-1 min-w-[160px]"

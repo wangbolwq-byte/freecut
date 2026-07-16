@@ -5,6 +5,8 @@
       "graph": "Diagramm",
       "sheet": "Tabelle",
       "split": "Geteilt",
+      "enterFocusMode": "Keyframe-Editor fokussieren",
+      "exitFocusMode": "Keyframe-Fokusmodus beenden",
       "selectItem": "Element auswählen, um Keyframes zu bearbeiten",
       "parameters": "Parameter",
       "parameterDisplayOptions": "Anzeigeoptionen für Parameter",

@@ -128,7 +128,11 @@ const main = async () => {
   const mediaUrl = mediaServer.url(MEDIA_ID)
   console.log(`Media server: ${mediaUrl}`)
 
-  const browser = await chromium.launch({ channel: 'chrome', headless: !HEADED, args: chromeLaunchArgs() })
+  const browser = await chromium.launch({
+    channel: 'chrome',
+    headless: !HEADED,
+    args: chromeLaunchArgs(),
+  })
   try {
     const context = await browser.newContext({ acceptDownloads: true })
     const page = await context.newPage()

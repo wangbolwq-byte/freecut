@@ -4,6 +4,8 @@ import type { TimelineItem } from '@/types/timeline'
 import { useSettingsStore } from '@/features/timeline/deps/settings'
 import { useMediaLibraryStore } from '@/features/timeline/deps/media-library-store'
 import { useItemsStore } from '../../stores/items-store'
+import { useCompositionsStore } from '../../stores/compositions-store'
+import { useSequencesStore } from '../../stores/sequences-store'
 import { useTimelineStore } from '../../stores/timeline-store'
 import { useZoomStore, _resetZoomStoreForTest } from '../../stores/zoom-store'
 import { ClipContent } from './clip-content'
@@ -56,6 +58,8 @@ describe('ClipContent', () => {
       notification: null,
     })
     useItemsStore.getState().setItems([])
+    useCompositionsStore.getState().setCompositions([])
+    useSequencesStore.getState().reset()
   })
 
   it('renders the linked delta badge before the clip title text', () => {
@@ -104,6 +108,40 @@ describe('ClipContent', () => {
 
     expect(screen.getByTitle('Linked audio/video pair')).toBeInTheDocument()
     expect(screen.getByText('Linked clip')).toBeInTheDocument()
+  })
+
+  it('labels Motion assets as compositions instead of compound clips', () => {
+    useCompositionsStore.getState().addComposition({
+      id: 'motion-composition',
+      name: 'Lower Third',
+      editorKind: 'composite-2d',
+      tracks: [],
+      items: [],
+      transitions: [],
+      keyframes: [],
+      fps: 30,
+      width: 1920,
+      height: 1080,
+      durationInFrames: 90,
+    })
+    const item: TimelineItem = {
+      id: 'motion-wrapper',
+      type: 'composition',
+      trackId: 'track-1',
+      from: 0,
+      durationInFrames: 90,
+      label: 'Lower Third',
+      compositionId: 'motion-composition',
+      compositionWidth: 1920,
+      compositionHeight: 1080,
+      transform: { x: 0, y: 0, rotation: 0, opacity: 1 },
+    }
+
+    render(<ClipContent item={item} clipLeftFrames={0} clipWidthFrames={96} fps={30} />)
+
+    expect(screen.getByText('Composition')).toBeInTheDocument()
+    expect(screen.queryByText('Compound')).not.toBeInTheDocument()
+    expect(screen.getByText('Lower Third')).toBeInTheDocument()
   })
 
   it('uses settled zoom for filmstrip content by default', async () => {

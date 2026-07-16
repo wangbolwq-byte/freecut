@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vite-plus/test'
 import { useItemsStore, useTimelineStore } from '@/features/editor/deps/timeline-store'
 import { usePlaybackStore } from '@/shared/state/playback'
 import { useSelectionStore } from '@/shared/state/selection'
-import type { AudioItem, TimelineTrack, VideoItem } from '@/types/timeline'
+import type { AudioItem, CompositionItem, TimelineTrack, VideoItem } from '@/types/timeline'
 import { AnimateTimelineStrip } from './animate-timeline-strip'
 
 const VIDEO_TRACK: TimelineTrack = {
@@ -45,6 +45,18 @@ const VIDEO_ITEM_2: VideoItem = {
   label: 'overlay.mp4',
 }
 
+const COMPOSITION_ITEM: CompositionItem = {
+  id: 'motion-composition-clip',
+  type: 'composition',
+  compositionId: 'motion-composition',
+  compositionWidth: 1920,
+  compositionHeight: 1080,
+  trackId: 'v1',
+  from: 24,
+  durationInFrames: 180,
+  label: 'Motion title',
+}
+
 describe('AnimateTimelineStrip', () => {
   beforeEach(() => {
     useItemsStore.getState().setTracks([VIDEO_TRACK])
@@ -65,9 +77,15 @@ describe('AnimateTimelineStrip', () => {
     render(<AnimateTimelineStrip />)
 
     expect(screen.getByTestId('animate-timeline-strip')).toBeInTheDocument()
+    expect(screen.getByTestId('animate-timeline-strip')).toHaveClass(
+      '[@media(max-height:900px)]:h-[120px]',
+    )
     expect(screen.getByTestId('animate-timeline-scrub-surface')).toBeInTheDocument()
     expect(screen.getByTestId('animate-timeline-playhead')).toBeInTheDocument()
     expect(screen.getAllByTestId('animate-timeline-film-tile').length).toBe(2)
+    expect(screen.getByTestId('animate-timeline-filmstrip-scroll')).toHaveClass(
+      '[@media(max-height:900px)]:hidden',
+    )
     expect(screen.getAllByTestId('animate-timeline-clip').length).toBe(2)
     expect(screen.getAllByText('V1').length).toBeGreaterThan(0)
   })
@@ -87,6 +105,18 @@ describe('AnimateTimelineStrip', () => {
 
     // clip-1 (from 48) precedes clip-2 (from 200) on V1.
     expect(useSelectionStore.getState().selectedItemIds).toEqual(['clip-1'])
+  })
+
+  it('keeps an embedded composition clip available to the classic Animate workspace', () => {
+    useItemsStore.getState().setItems([COMPOSITION_ITEM])
+
+    render(<AnimateTimelineStrip />)
+
+    expect(screen.getByTestId('animate-timeline-film-tile')).toHaveAttribute(
+      'data-clip-id',
+      COMPOSITION_ITEM.id,
+    )
+    expect(useSelectionStore.getState().selectedItemIds).toEqual([COMPOSITION_ITEM.id])
   })
 
   describe('linked audio companion (A1 paired with V1)', () => {
@@ -160,5 +190,24 @@ describe('AnimateTimelineStrip', () => {
 
     expect(useSelectionStore.getState().selectedItemIds).toEqual(['clip-2'])
     expect(usePlaybackStore.getState().currentFrame).toBe(200)
+  })
+
+  it('keeps drag state transient and commits the exact release frame', () => {
+    render(<AnimateTimelineStrip />)
+    const surface = screen.getByTestId('animate-timeline-scrub-surface')
+    surface.getBoundingClientRect = () =>
+      ({ left: 0, width: 1000, top: 0, right: 1000, bottom: 120, height: 120 }) as DOMRect
+
+    fireEvent.pointerDown(surface, { button: 0, pointerId: 7, clientX: 250 })
+    const dragging = usePlaybackStore.getState()
+    expect(dragging.previewFrame).not.toBeNull()
+    expect(dragging.currentFrame).toBe(0)
+    expect(dragging.compositionVisualFrozen).toBe(true)
+
+    fireEvent.pointerUp(surface, { button: 0, pointerId: 7, clientX: 750 })
+    const released = usePlaybackStore.getState()
+    expect(released.previewFrame).toBeNull()
+    expect(released.compositionVisualFrozen).toBe(false)
+    expect(released.currentFrame).toBeGreaterThan(dragging.currentFrame)
   })
 })

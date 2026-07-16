@@ -20,7 +20,6 @@ interface UsePreviewPlaybackControllerParams {
   keyframes: ItemKeyframes[]
   activeGizmoItemType: TimelineItem['type'] | null
   isGizmoInteracting: boolean
-  isPlaying: boolean
   forceFastScrubOverlay: boolean
   previewPerfRef: MutableRefObject<PreviewPerfStats>
   isGizmoInteractingRef: MutableRefObject<boolean>
@@ -38,7 +37,6 @@ export function usePreviewPlaybackController({
   keyframes,
   activeGizmoItemType,
   isGizmoInteracting,
-  isPlaying,
   forceFastScrubOverlay,
   previewPerfRef,
   isGizmoInteractingRef,
@@ -54,8 +52,6 @@ export function usePreviewPlaybackController({
   usePreviewRuntimeGuards({
     isGizmoInteracting,
     isGizmoInteractingRef,
-    isPlaying,
-    adaptiveQualityCap,
     setAdaptiveQualityCap,
     adaptiveQualityStateRef,
     adaptiveFrameSampleRef,

@@ -5,6 +5,8 @@
       "graph": "Grafik",
       "sheet": "Sayfa",
       "split": "Bölünmüş",
+      "enterFocusMode": "Ana kare düzenleyiciye odaklan",
+      "exitFocusMode": "Ana kare odak modundan çık",
       "selectItem": "Anahtar kareleri düzenlemek için bir öğe seçin",
       "parameters": "Parametreler",
       "parameterDisplayOptions": "Parametre görüntüleme seçenekleri",

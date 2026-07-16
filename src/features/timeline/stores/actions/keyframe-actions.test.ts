@@ -104,6 +104,20 @@ describe('keyframe actions', () => {
       useTimelineCommandStore.getState().undo()
       expect(getKeyframes('a', 'opacity')).toHaveLength(0)
     })
+
+    it('preserves RGBA color values through undo and redo', () => {
+      const property = 'effect:gpu-fluted-glass:fluted-1:colorBack'
+      const rgbaValue = 0x100000000 + 0x12345678
+
+      addKeyframe('a', property, 10, rgbaValue)
+      expect(getKeyframes('a', property)[0]?.value).toBe(rgbaValue)
+
+      useTimelineCommandStore.getState().undo()
+      expect(getKeyframes('a', property)).toHaveLength(0)
+
+      useTimelineCommandStore.getState().redo()
+      expect(getKeyframes('a', property)[0]?.value).toBe(rgbaValue)
+    })
   })
 
   describe('addKeyframes (batch)', () => {

@@ -56,7 +56,7 @@ export function calculateTransitionPortions(
   return { leftPortion, rightPortion }
 }
 
-function solveClipTransitionPressure(
+export function solveClipTransitionPressure(
   clipDuration: number,
   incomingPortion: number,
   outgoingPortion: number,

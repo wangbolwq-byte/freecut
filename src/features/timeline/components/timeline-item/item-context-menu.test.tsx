@@ -11,8 +11,15 @@ const { mockGetSceneVerificationModelOptions } = vi.hoisted(() => ({
   ]),
 }))
 
+const { mockContextMenuProps } = vi.hoisted(() => ({
+  mockContextMenuProps: vi.fn(),
+}))
+
 vi.mock('@/components/ui/context-menu', () => ({
-  ContextMenu: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  ContextMenu: ({ children, ...props }: { children: ReactNode; modal?: boolean }) => {
+    mockContextMenuProps(props)
+    return <div>{children}</div>
+  },
   ContextMenuTrigger: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   ContextMenuContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   ContextMenuItem: ({
@@ -86,6 +93,7 @@ function renderContextMenu(overrides: Partial<ComponentProps<typeof ItemContextM
 describe('ItemContextMenu scene detection', () => {
   beforeEach(() => {
     mockGetSceneVerificationModelOptions.mockClear()
+    mockContextMenuProps.mockClear()
     useSelectionStore.setState({
       selectedItemIds: [],
       selectedMarkerId: null,
@@ -95,6 +103,12 @@ describe('ItemContextMenu scene detection', () => {
       activeTrackId: null,
       selectionType: null,
     })
+  })
+
+  it('keeps the menu non-modal so dialog handoffs cannot strand pointer blocking', () => {
+    renderContextMenu()
+
+    expect(mockContextMenuProps).toHaveBeenLastCalledWith({ modal: false })
   })
 
   it('renders scene verification submenu labels from shared options', () => {

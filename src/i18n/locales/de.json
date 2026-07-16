@@ -37,6 +37,7 @@
   "toolbar": {
     "ariaLabel": "Editor-Symbolleiste",
     "workspaces": {
+      "motion": "Motion",
       "label": "Arbeitsbereiche",
       "edit": "Schnitt",
       "color": "Farbe",

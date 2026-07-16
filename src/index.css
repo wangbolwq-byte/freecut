@@ -271,8 +271,16 @@
   }
 }
 
-.timeline-marquee-preview {
-  box-shadow: inset 0 0 0 1px oklch(var(--primary));
+.timeline-marquee-preview::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+  border: 1px solid var(--primary);
+  border-radius: inherit;
+  background: color-mix(in oklab, var(--primary) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 35%, transparent);
 }
 
 [data-media-id].media-marquee-preview > * {

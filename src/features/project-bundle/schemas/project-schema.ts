@@ -535,6 +535,7 @@ const compositionSchema = z
   .object({
     id: z.string().min(1),
     name: z.string(),
+    editorKind: z.enum(['sequence', 'composite-2d']).optional(),
     items: z.array(timelineItemSchema),
     tracks: z.array(trackSchema),
     transitions: z.array(transitionSchema).optional(),
@@ -596,10 +597,11 @@ const projectSchema = z
     schemaVersion: z.number().int().optional(),
     thumbnail: z.string().optional(),
     thumbnailId: z.string().optional(),
+    rootFolderName: z.string().optional(),
     metadata: projectResolutionSchema,
     timeline: timelineSchema.optional(),
   })
-  .passthrough()
+  .strict()
 
 // ============================================================================
 // Media Reference Schema

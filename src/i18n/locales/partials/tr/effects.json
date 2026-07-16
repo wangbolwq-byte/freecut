@@ -53,6 +53,15 @@
     "midtones": "Orta tonlar",
     "highlights": "Parlak alanlar"
   },
+  "powerWindow": {
+    "window": "Pencere",
+    "matte": "Mat",
+    "correction": "Düzeltme",
+    "ellipse": "Elips",
+    "rectangle": "Dikdörtgen",
+    "editOnCanvas": "Tuvalde düzenle",
+    "editingOnCanvas": "Tuvalde düzenleniyor"
+  },
   "params": {
     "flow": "Akış",
     "span": "Aralık",

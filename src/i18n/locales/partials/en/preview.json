@@ -75,7 +75,7 @@
       "gradeComparisonWipe": "Adjust split comparison"
     },
     "zoom": {
-      "ariaLabel": "ARIA Label",
+      "ariaLabel": "Zoom level: {{label}}",
       "auto": "Auto",
       "tooltip": "Zoom: {{label}}"
     },

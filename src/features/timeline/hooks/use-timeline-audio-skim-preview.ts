@@ -239,6 +239,10 @@ export function useTimelineAudioSkimPreview(): void {
 
   useEffect(() => {
     return usePlaybackStore.subscribe((state, prev) => {
+      if (state.isPlaying) {
+        if (!prev.isPlaying || prev.previewFrame !== null) stopAudioSkim()
+        return
+      }
       if (state.previewFrame === null) {
         if (prev.previewFrame !== null) stopAudioSkim()
         return

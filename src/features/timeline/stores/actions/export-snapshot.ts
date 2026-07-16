@@ -57,16 +57,23 @@ export function getActiveExportSequenceId(): string | null {
   return getActiveTabId(useCompositionNavigationStore.getState().breadcrumbs)
 }
 
-/** Main + every top-level sequence, in tab order, for the picker. */
+/** Main + classic sequence tabs + layer compositions for the export picker. */
 export function listExportableSequences(): Array<{ id: string | null; name: string }> {
-  const compositionById = useCompositionsStore.getState().compositionById
+  const compositionsState = useCompositionsStore.getState()
+  const compositionById = compositionsState.compositionById
   const topLevelSequenceIds = useSequencesStore.getState().topLevelSequenceIds
+  const listedIds = new Set(topLevelSequenceIds)
   return [
     { id: null, name: MAIN_LABEL },
     ...topLevelSequenceIds.flatMap((id) => {
       const comp = compositionById[id]
       return comp ? [{ id, name: comp.name }] : []
     }),
+    ...compositionsState.compositions.flatMap((composition) =>
+      composition.editorKind === 'composite-2d' && !listedIds.has(composition.id)
+        ? [{ id: composition.id, name: composition.name }]
+        : [],
+    ),
   ]
 }
 

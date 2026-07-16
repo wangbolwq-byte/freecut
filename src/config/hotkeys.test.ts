@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from 'vite-plus/test'
 import {
+  HOTKEYS,
   HOTKEY_EXPORT_SCHEMA,
   HOTKEY_EXPORT_VERSION,
   createHotkeyExportDocument,
@@ -15,6 +16,26 @@ import {
   resolveHotkeys,
   sanitizeHotkeyOverrides,
 } from './hotkeys'
+
+describe('keyframe productivity hotkeys', () => {
+  it('provides distinct defaults for the focused editor workflow', () => {
+    expect({
+      split: HOTKEYS.KEYFRAME_EDITOR_SPLIT,
+      toggle: HOTKEYS.KEYFRAME_TOGGLE,
+      previous: HOTKEYS.KEYFRAME_PREVIOUS,
+      next: HOTKEYS.KEYFRAME_NEXT,
+      auto: HOTKEYS.KEYFRAME_TOGGLE_AUTO,
+      fit: HOTKEYS.KEYFRAME_FIT,
+    }).toEqual({
+      split: '3',
+      toggle: 'k',
+      previous: 'alt+bracketleft',
+      next: 'alt+bracketright',
+      auto: 'a',
+      fit: 'f',
+    })
+  })
+})
 
 describe('normalizeHotkeyBinding', () => {
   it('orders modifiers consistently and normalizes aliases', () => {

@@ -53,6 +53,15 @@
     "midtones": "中間調",
     "highlights": "ハイライト"
   },
+  "powerWindow": {
+    "window": "ウィンドウ",
+    "matte": "マット",
+    "correction": "補正",
+    "ellipse": "楕円",
+    "rectangle": "長方形",
+    "editOnCanvas": "キャンバス上で編集",
+    "editingOnCanvas": "キャンバス上で編集中"
+  },
   "params": {
     "flow": "フロー",
     "span": "範囲",

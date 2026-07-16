@@ -15,6 +15,14 @@ const playbackStateMocks = vi.hoisted(() => ({
     resolvedVolume: 1,
     resolvedPitchShiftSemitones: 0,
     resolvedAudioEqStages: [] as (typeof DEFAULT_AUDIO_EQ_SETTINGS)[],
+  } as {
+    frame: number
+    fps: number
+    playing: boolean
+    isPreviewScrubbing?: boolean
+    resolvedVolume: number
+    resolvedPitchShiftSemitones: number
+    resolvedAudioEqStages: (typeof DEFAULT_AUDIO_EQ_SETTINGS)[]
   },
 }))
 
@@ -258,6 +266,47 @@ describe('PitchCorrectedAudio', () => {
     })
 
     expect(audioDecodeMocks.getOrDecodeAudio).toHaveBeenCalledWith('media-1', 'blob:audio')
+  })
+
+  it('defers decoded pitch audio until an active preview scrub settles', async () => {
+    playbackStateMocks.current.isPreviewScrubbing = true
+    audioDecodeMocks.getOrDecodeAudioSliceForPlayback.mockResolvedValue({
+      buffer: makeAudioBuffer(2),
+      startTime: 0,
+      isComplete: false,
+    })
+    audioDecodeMocks.getOrDecodeAudio.mockReturnValue(new Promise<AudioBuffer>(() => {}))
+
+    const { rerender } = render(
+      <PitchCorrectedAudio
+        src="blob:audio"
+        mediaId="media-1"
+        itemId="item-1"
+        durationInFrames={240}
+        playbackRate={1.5}
+      />,
+    )
+
+    await Promise.resolve()
+    expect(audioDecodeMocks.getOrDecodeAudioSliceForPlayback).not.toHaveBeenCalled()
+    expect(audioDecodeMocks.getOrDecodeAudio).not.toHaveBeenCalled()
+
+    playbackStateMocks.current.isPreviewScrubbing = false
+    rerender(
+      <PitchCorrectedAudio
+        src="blob:audio"
+        mediaId="media-1"
+        itemId="item-1"
+        durationInFrames={240}
+        playbackRate={1.5}
+        volumeMultiplier={1.01}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(audioDecodeMocks.getOrDecodeAudioSliceForPlayback).toHaveBeenCalledTimes(1)
+      expect(audioDecodeMocks.getOrDecodeAudio).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('uses a synthetic decode key when pitch correction is needed without a media id', async () => {

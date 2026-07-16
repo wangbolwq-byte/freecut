@@ -17,11 +17,13 @@ import { beginIoPointerDrag, IoRangeStrip } from '@/shared/timeline/io-range'
 import { useSettingsStore } from '@/features/timeline/deps/settings'
 
 // Utilities and hooks
-import { useTimelineZoomContext } from '../contexts/timeline-zoom-context'
+import { useTimelineCommittedZoomContext } from '../contexts/timeline-zoom-context'
+import { useZoomStore } from '../stores/zoom-store'
 import { formatTimecode, formatTimecodeCompact, secondsToFrames } from '@/shared/utils/time-utils'
 import { createScrubThrottleState, shouldCommitScrubFrame } from '../utils/scrub-throttle'
 import { EDITOR_LAYOUT_CSS_VALUES, getEditorLayout } from '@/config/editor-layout'
 import { sanitizeInOutPoints } from '../utils/in-out-points'
+import { pixelsToFrameNow } from '../utils/zoom-conversions'
 
 // Edge-scrolling configuration
 const EDGE_SCROLL_MAX_SPEED = 20 // Max pixels per frame at max distance
@@ -319,7 +321,7 @@ export const TimelineMarkers = memo(function TimelineMarkers({
   perfMarkRender('TimelineMarkers')
   const editorDensity = useSettingsStore((s) => s.editorDensity)
   const editorLayout = getEditorLayout(editorDensity)
-  const { timeToPixels, pixelsPerSecond, pixelsToFrame } = useTimelineZoomContext()
+  const { timeToPixels, frameToPixels, pixelsPerSecond } = useTimelineCommittedZoomContext()
   const fps = useTimelineStore((s) => s.fps)
   const inPoint = useTimelineStore((s) => s.inPoint)
   const outPoint = useTimelineStore((s) => s.outPoint)
@@ -344,7 +346,7 @@ export const TimelineMarkers = memo(function TimelineMarkers({
   const [isRangeDragging, setIsRangeDragging] = useState(false)
 
   // Refs for drag handlers
-  const pixelsToFrameRef = useRef(pixelsToFrame)
+  const pixelsToFrameRef = useRef(pixelsToFrameNow)
   const setCurrentFrameRef = useRef(setCurrentFrame)
   const setScrubFrameRef = useRef(setScrubFrame)
   const setPreviewFrameRef = useRef(usePlaybackStore.getState().setPreviewFrame)
@@ -356,7 +358,6 @@ export const TimelineMarkers = memo(function TimelineMarkers({
   const markDirtyRef = useRef(markDirty)
   const pauseRef = useRef(pause)
   const fpsRef = useRef(fps)
-  const pixelsPerSecondRef = useRef(pixelsPerSecond)
   const durationRef = useRef(duration)
   const inPointRef = useRef(inPoint)
   const outPointRef = useRef(outPoint)
@@ -370,28 +371,15 @@ export const TimelineMarkers = memo(function TimelineMarkers({
   const safeOutPoint = sanitizedInOutPoints.outPoint
 
   useEffect(() => {
-    pixelsToFrameRef.current = pixelsToFrame
     setCurrentFrameRef.current = setCurrentFrame
     setScrubFrameRef.current = setScrubFrame
     markDirtyRef.current = markDirty
     pauseRef.current = pause
     fpsRef.current = fps
-    pixelsPerSecondRef.current = pixelsPerSecond
     durationRef.current = duration
     inPointRef.current = safeInPoint
     outPointRef.current = safeOutPoint
-  }, [
-    pixelsToFrame,
-    setCurrentFrame,
-    setScrubFrame,
-    markDirty,
-    pause,
-    fps,
-    pixelsPerSecond,
-    duration,
-    safeInPoint,
-    safeOutPoint,
-  ])
+  }, [setCurrentFrame, setScrubFrame, markDirty, pause, fps, duration, safeInPoint, safeOutPoint])
 
   useEffect(() => {
     if (safeInPoint === inPoint && safeOutPoint === outPoint) {
@@ -645,6 +633,26 @@ export const TimelineMarkers = memo(function TimelineMarkers({
   }, [])
   syncRulerScrollRef.current = syncRulerScroll
 
+  // Redraw only the small visible tile/label pool at live zoom. Tick spacing
+  // and text stay natural because no ruler content is stretched.
+  useEffect(() => {
+    return useZoomStore.subscribe((state, previousState) => {
+      if (state.pixelsPerSecond === previousState.pixelsPerSecond) return
+
+      const livePPS = state.pixelsPerSecond
+      const liveQuantizedPPS = quantizePPSForCache(livePPS)
+      displayWidthRef.current = Math.max(duration * livePPS, viewportWidthRef.current)
+      quantizedPPSRef.current = liveQuantizedPPS
+      cacheKeyRef.current = `${liveQuantizedPPS.toFixed(4)}-${fpsRef.current}-${canvasHeightRef.current}`
+
+      if (rafIdRef.current !== null) return
+      rafIdRef.current = requestAnimationFrame(() => {
+        rafIdRef.current = null
+        syncRulerScrollRef.current?.()
+      })
+    })
+  }, [duration])
+
   // Trigger sync on config changes (zoom, fps, width, height).
   // Labels update in-place (position + text) — no clear needed.
   useEffect(() => {
@@ -747,7 +755,7 @@ export const TimelineMarkers = memo(function TimelineMarkers({
         state: scrubThrottleStateRef.current,
         pointerX: x,
         targetFrame: frame,
-        pixelsPerSecond: pixelsPerSecondRef.current,
+        pixelsPerSecond: useZoomStore.getState().pixelsPerSecond,
         nowMs,
       })
     ) {
@@ -804,6 +812,7 @@ export const TimelineMarkers = memo(function TimelineMarkers({
       if (startIn === null || startOut === null) return
 
       const startTimelineX = getTimelineXFromClientX(e.clientX)
+      const rangeTop = e.currentTarget.getBoundingClientRect().top
       const originalCursor = document.body.style.cursor
       let lastIn = startIn
       let lastOut = startOut
@@ -820,14 +829,35 @@ export const TimelineMarkers = memo(function TimelineMarkers({
           const nextIn = Math.max(0, Math.min(startIn + deltaFrames, maxIn))
           const nextOut = nextIn + span
           const label = `${formatTimecodeCompact(nextIn, fpsRef.current)} → ${formatTimecodeCompact(nextOut, fpsRef.current)}`
+          const scrollContainer = containerRef.current?.closest(
+            '.timeline-container',
+          ) as HTMLDivElement | null
+          const coordinateBox = scrollContainer ?? containerRef.current
+          const coordinateRect = coordinateBox?.getBoundingClientRect()
+          const scrollLeft = scrollContainer?.scrollLeft ?? 0
+          const rangeLeft = (coordinateRect?.left ?? 0) + frameToPixels(nextIn) - scrollLeft
+          const rangeRight = (coordinateRect?.left ?? 0) + frameToPixels(nextOut) - scrollLeft
+          const visibleLeft = coordinateRect
+            ? Math.max(coordinateRect.left, Math.min(coordinateRect.right, rangeLeft))
+            : rangeLeft
+          const visibleRight = coordinateRect
+            ? Math.max(coordinateRect.left, Math.min(coordinateRect.right, rangeRight))
+            : rangeRight
+          const readout = {
+            label,
+            x: (visibleLeft + visibleRight) / 2,
+            // The global readout places its bottom 16px above this coordinate;
+            // offset by the lane height so it sits just above the body.
+            y: rangeTop + IO_LANE_HEIGHT,
+          }
           // Skip redundant writes while dragging (still update the readout).
-          if (nextIn === lastIn && nextOut === lastOut) return label
+          if (nextIn === lastIn && nextOut === lastOut) return readout
           setInOutPointsWithoutHistory(nextIn, nextOut)
           // Skim the preview to the range's leading (in) edge as it slides.
           setPreviewFrameRef.current(nextIn)
           lastIn = nextIn
           lastOut = nextOut
-          return label
+          return readout
         },
         () => {
           document.body.style.cursor = originalCursor
@@ -846,7 +876,7 @@ export const TimelineMarkers = memo(function TimelineMarkers({
       setIsRangeDragging(true)
       rangeDragCleanupRef.current = cleanup
     },
-    [getTimelineXFromClientX],
+    [frameToPixels, getTimelineXFromClientX],
   )
 
   // Scrubbing handlers
@@ -986,11 +1016,12 @@ export const TimelineMarkers = memo(function TimelineMarkers({
       {/* Draggable in/out strip — its own lane at the top of the ruler */}
       {safeInPoint !== null && safeOutPoint !== null && (
         <IoRangeStrip
-          left={`${timeToPixels(safeInPoint / fps)}px`}
-          width={`${timeToPixels((safeOutPoint - safeInPoint) / fps)}px`}
+          left={`${frameToPixels(safeInPoint)}px`}
+          width={`${frameToPixels(safeOutPoint) - frameToPixels(safeInPoint)}px`}
           height={IO_LANE_HEIGHT}
           className="cursor-move active:cursor-move"
           onDragStart={handleRangeMouseDown}
+          testId="edit-timeline-io-strip"
         />
       )}
 

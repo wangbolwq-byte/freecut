@@ -52,12 +52,12 @@ describe('transition-preview-geometry', () => {
     expect(bridge.rightFrame).toBe(122)
   })
 
-  it('keeps an odd-duration centered bridge centered on the cut', () => {
+  it('uses the renderer integer split for an odd-duration centered bridge', () => {
     const bridge = getTransitionBridgeBounds(0, 100, 100, 15, 0.5)
 
-    expect(bridge.leftFrame).toBe(92.5)
-    expect(bridge.rightFrame).toBe(107.5)
-    expect((bridge.leftFrame + bridge.rightFrame) / 2).toBe(100)
+    expect(bridge.leftFrame).toBe(93)
+    expect(bridge.rightFrame).toBe(108)
+    expect(bridge.rightFrame - bridge.leftFrame).toBe(15)
   })
 
   it('moves bridge in rolling edit on outgoing edge (trim left end)', () => {

@@ -14,6 +14,8 @@ import {
   getAudioBitrateForQuality,
   estimateFileSize,
 } from './client-renderer'
+import { mapRequestedClientSettings } from './render-pipeline'
+import type { SmartCopyAssessment } from './smart-copy'
 
 export type ExportPreflightSeverity = 'ok' | 'info' | 'warning' | 'error'
 
@@ -38,13 +40,14 @@ export interface AssessExportPreflightOptions {
   offlineAudioContextAvailable?: boolean
   audioEncoderSupported?: boolean
   brokenMediaIds?: string[]
+  smartCopyAssessment?: SmartCopyAssessment
 }
 
 export interface ExportPreflightResult {
   canExport: boolean
   checks: ExportPreflightCheck[]
   resolvedSettings?: ClientExportSettings
-  predictedRenderPath: 'worker' | 'main-thread'
+  predictedRenderPath: 'smart-copy' | 'worker' | 'main-thread'
   estimatedDurationSeconds: number
   estimatedFileSizeBytes?: number
 }
@@ -240,6 +243,141 @@ async function assessVideoAudioCodec(
       }
 }
 
+type ResolvedPreflightSettings = Awaited<ReturnType<typeof resolveSettingsForPreflight>>
+
+async function resolveSettingsForAssessment(
+  settings: ExtendedExportSettings,
+  fps: number,
+  supportedVideoCodecs: ClientCodec[] | undefined,
+  smartCopyActive: boolean,
+): Promise<ResolvedPreflightSettings> {
+  if (smartCopyActive) {
+    return { clientSettings: mapRequestedClientSettings(settings, fps).clientSettings }
+  }
+  return resolveSettingsForPreflight(settings, fps, supportedVideoCodecs)
+}
+
+function appendFormatReadinessCheck(
+  checks: ExportPreflightCheck[],
+  resolved: ResolvedPreflightSettings & { clientSettings: ClientExportSettings },
+  smartCopyActive: boolean,
+): void {
+  if (smartCopyActive) {
+    checks.push({
+      id: 'smart-copy-ready',
+      severity: 'ok',
+      titleKey: 'export.preflight.checks.smart-copy-ready.title',
+      detailKey: 'export.preflight.checks.smart-copy-ready.detail',
+    })
+    return
+  }
+
+  if (resolved.clientSettings.mode === 'audio') {
+    checks.push({
+      id: 'audio-export-ready',
+      severity: 'ok',
+      titleKey: 'export.preflight.checks.audio-export-ready.title',
+      detailKey: resolved.clientSettings.audioCodec
+        ? 'export.preflight.checks.audio-export-ready.detail'
+        : 'export.preflight.checks.audio-export-ready.detailDefaultCodec',
+      detailParams: {
+        container: resolved.clientSettings.container.toUpperCase(),
+        codec: resolved.clientSettings.audioCodec,
+      },
+    })
+    return
+  }
+
+  if (resolved.codecFallback) {
+    checks.push({
+      id: 'video-codec-fallback',
+      severity: 'warning',
+      titleKey: 'export.preflight.checks.video-codec-fallback.title',
+      detailKey: 'export.preflight.checks.video-codec-fallback.detail',
+      detailParams: {
+        codec: describeCodec(resolved.codecFallback),
+        container: resolved.clientSettings.container.toUpperCase(),
+      },
+      fixKey: 'export.preflight.checks.video-codec-fallback.fix',
+    })
+    return
+  }
+
+  checks.push({
+    id: 'video-codec-supported',
+    severity: 'ok',
+    titleKey: 'export.preflight.checks.video-codec-supported.title',
+    detailKey: 'export.preflight.checks.video-codec-supported.detail',
+    detailParams: {
+      codec: describeCodec(resolved.clientSettings.codec),
+      container: resolved.clientSettings.container.toUpperCase(),
+    },
+  })
+}
+
+function appendRenderPathCheck(options: {
+  checks: ExportPreflightCheck[]
+  smartCopyActive: boolean
+  workerAvailable: boolean
+  settings: ClientExportSettings
+  tracks: TimelineTrack[]
+  offlineAudioContextAvailable: boolean
+}): ExportPreflightResult['predictedRenderPath'] {
+  if (options.smartCopyActive) return 'smart-copy'
+
+  if (!options.workerAvailable) {
+    options.checks.push({
+      id: 'worker-unavailable-fallback',
+      severity: 'info',
+      titleKey: 'export.preflight.checks.worker-unavailable-fallback.title',
+      detailKey: 'export.preflight.checks.worker-unavailable-fallback.detail',
+      fixKey: 'export.preflight.checks.worker-unavailable-fallback.fix',
+    })
+    return 'main-thread'
+  }
+
+  if (options.settings.mode === 'video' && hasAnimatedImage(options.tracks)) {
+    options.checks.push({
+      id: 'worker-animated-image-fallback',
+      severity: 'warning',
+      titleKey: 'export.preflight.checks.worker-animated-image-fallback.title',
+      detailKey: 'export.preflight.checks.worker-animated-image-fallback.detail',
+      fixKey: 'export.preflight.checks.worker-animated-image-fallback.fix',
+    })
+    return 'main-thread'
+  }
+
+  if (hasAudibleItem(options.tracks) && !options.offlineAudioContextAvailable) {
+    options.checks.push({
+      id: 'worker-audio-context-fallback',
+      severity: 'info',
+      titleKey: 'export.preflight.checks.worker-audio-context-fallback.title',
+      detailKey: 'export.preflight.checks.worker-audio-context-fallback.detail',
+    })
+    return 'main-thread'
+  }
+
+  options.checks.push({
+    id: 'worker-export-ready',
+    severity: 'ok',
+    titleKey: 'export.preflight.checks.worker-export-ready.title',
+    detailKey: 'export.preflight.checks.worker-export-ready.detail',
+  })
+  return 'worker'
+}
+
+function getEstimatedFileSize(
+  settings: ClientExportSettings,
+  durationSeconds: number,
+  smartCopyAssessment: SmartCopyAssessment | undefined,
+  smartCopyActive: boolean,
+): number {
+  if (smartCopyActive && smartCopyAssessment?.source) {
+    return smartCopyAssessment.source.fileSize
+  }
+  return estimateFileSize(settings, Math.max(0, durationSeconds))
+}
+
 export async function assessExportPreflight({
   settings,
   fps,
@@ -250,10 +388,17 @@ export async function assessExportPreflight({
   offlineAudioContextAvailable = typeof OfflineAudioContext !== 'undefined',
   audioEncoderSupported,
   brokenMediaIds = [],
+  smartCopyAssessment,
 }: AssessExportPreflightOptions): Promise<ExportPreflightResult> {
   const checks: ExportPreflightCheck[] = []
   const estimatedDurationSeconds = framesToSeconds(durationFrames, fps)
-  const resolved = await resolveSettingsForPreflight(settings, fps, supportedVideoCodecs)
+  const smartCopyActive = settings.smartCopy !== false && smartCopyAssessment?.eligible === true
+  const resolved = await resolveSettingsForAssessment(
+    settings,
+    fps,
+    supportedVideoCodecs,
+    smartCopyActive,
+  )
   const tracks = composition.tracks ?? []
   const referencedMediaIds = collectTimelineMediaIds(tracks)
   const brokenReferencedCount = brokenMediaIds.filter((mediaId) =>
@@ -312,91 +457,35 @@ export async function assessExportPreflight({
     }
   }
 
-  if (resolved.clientSettings.mode === 'audio') {
-    checks.push({
-      id: 'audio-export-ready',
-      severity: 'ok',
-      titleKey: 'export.preflight.checks.audio-export-ready.title',
-      detailKey: resolved.clientSettings.audioCodec
-        ? 'export.preflight.checks.audio-export-ready.detail'
-        : 'export.preflight.checks.audio-export-ready.detailDefaultCodec',
-      detailParams: {
-        container: resolved.clientSettings.container.toUpperCase(),
-        codec: resolved.clientSettings.audioCodec,
-      },
-    })
-  } else if (resolved.codecFallback) {
-    checks.push({
-      id: 'video-codec-fallback',
-      severity: 'warning',
-      titleKey: 'export.preflight.checks.video-codec-fallback.title',
-      detailKey: 'export.preflight.checks.video-codec-fallback.detail',
-      detailParams: {
-        codec: describeCodec(resolved.codecFallback),
-        container: resolved.clientSettings.container.toUpperCase(),
-      },
-      fixKey: 'export.preflight.checks.video-codec-fallback.fix',
-    })
-  } else {
-    checks.push({
-      id: 'video-codec-supported',
-      severity: 'ok',
-      titleKey: 'export.preflight.checks.video-codec-supported.title',
-      detailKey: 'export.preflight.checks.video-codec-supported.detail',
-      detailParams: {
-        codec: describeCodec(resolved.clientSettings.codec),
-        container: resolved.clientSettings.container.toUpperCase(),
-      },
-    })
-  }
-
-  const audioCodecCheck = await assessVideoAudioCodec(
-    resolved.clientSettings,
-    tracks,
-    audioEncoderSupported,
+  appendFormatReadinessCheck(
+    checks,
+    { ...resolved, clientSettings: resolved.clientSettings },
+    smartCopyActive,
   )
-  if (audioCodecCheck) checks.push(audioCodecCheck)
 
-  let predictedRenderPath: ExportPreflightResult['predictedRenderPath'] = 'worker'
-
-  if (!workerAvailable) {
-    predictedRenderPath = 'main-thread'
-    checks.push({
-      id: 'worker-unavailable-fallback',
-      severity: 'info',
-      titleKey: 'export.preflight.checks.worker-unavailable-fallback.title',
-      detailKey: 'export.preflight.checks.worker-unavailable-fallback.detail',
-      fixKey: 'export.preflight.checks.worker-unavailable-fallback.fix',
-    })
-  } else if (resolved.clientSettings.mode === 'video' && hasAnimatedImage(tracks)) {
-    predictedRenderPath = 'main-thread'
-    checks.push({
-      id: 'worker-animated-image-fallback',
-      severity: 'warning',
-      titleKey: 'export.preflight.checks.worker-animated-image-fallback.title',
-      detailKey: 'export.preflight.checks.worker-animated-image-fallback.detail',
-      fixKey: 'export.preflight.checks.worker-animated-image-fallback.fix',
-    })
-  } else if (hasAudibleItem(tracks) && !offlineAudioContextAvailable) {
-    predictedRenderPath = 'main-thread'
-    checks.push({
-      id: 'worker-audio-context-fallback',
-      severity: 'info',
-      titleKey: 'export.preflight.checks.worker-audio-context-fallback.title',
-      detailKey: 'export.preflight.checks.worker-audio-context-fallback.detail',
-    })
-  } else {
-    checks.push({
-      id: 'worker-export-ready',
-      severity: 'ok',
-      titleKey: 'export.preflight.checks.worker-export-ready.title',
-      detailKey: 'export.preflight.checks.worker-export-ready.detail',
-    })
+  if (!smartCopyActive) {
+    const audioCodecCheck = await assessVideoAudioCodec(
+      resolved.clientSettings,
+      tracks,
+      audioEncoderSupported,
+    )
+    if (audioCodecCheck) checks.push(audioCodecCheck)
   }
 
-  const estimatedFileSizeBytes = estimateFileSize(
+  const predictedRenderPath = appendRenderPathCheck({
+    checks,
+    smartCopyActive,
+    workerAvailable,
+    settings: resolved.clientSettings,
+    tracks,
+    offlineAudioContextAvailable,
+  })
+
+  const estimatedFileSizeBytes = getEstimatedFileSize(
     resolved.clientSettings,
-    Math.max(0, estimatedDurationSeconds),
+    estimatedDurationSeconds,
+    smartCopyAssessment,
+    smartCopyActive,
   )
 
   if (estimatedFileSizeBytes >= 2 * 1024 * 1024 * 1024) {

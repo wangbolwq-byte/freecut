@@ -6,6 +6,7 @@ import { GizmoOverlay } from './gizmo-overlay'
 import { MaskEditorContainer } from './mask-editor-container'
 import { CornerPinContainer } from './corner-pin-container'
 import { PowerWindowOverlayContainer } from './power-window-overlay'
+import { SpatialEffectPointOverlayContainer } from './spatial-effect-point-overlay'
 import { PreviewPerfPanel } from './preview-perf-panel'
 import { PreviewStage } from './preview-stage'
 import { RollingEditOverlay } from './rolling-edit-overlay'
@@ -33,6 +34,8 @@ import { usePreviewTransitionModel } from '../hooks/use-preview-transition-model
 import { usePreviewViewModel } from '../hooks/use-preview-view-model'
 import { usePreviewTransitionSessionController } from '../hooks/use-preview-transition-session-controller'
 import { useGizmoStore } from '../stores/gizmo-store'
+import { usePowerWindowEditorStore } from '../stores/power-window-editor-store'
+import { useSpatialEffectEditorStore } from '../stores/spatial-effect-editor-store'
 import { FAST_SCRUB_RENDERER_ENABLED } from '../utils/preview-constants'
 import {
   drawSourceToPreviewDisplayCanvas,
@@ -51,6 +54,7 @@ interface VideoPreviewProps {
     height: number
   }
   suspendOverlay?: boolean
+  chrome?: PreviewOverlayChrome
 }
 
 type PreviewOverlayChrome = 'edit' | 'color'
@@ -77,8 +81,16 @@ const VideoPreviewBase = memo(function VideoPreviewBase({
   const colorGradeComparisonMode = useGizmoStore((s) => s.colorGradeComparisonMode)
   const colorGradeSplitPosition = useGizmoStore((s) => s.colorGradeSplitPosition)
   const setColorGradeSplitPosition = useGizmoStore((s) => s.setColorGradeSplitPosition)
-  const currentFrame = usePlaybackStore((s) => s.currentFrame)
-  const previewFrame = usePlaybackStore((s) => s.previewFrame)
+  // Frame values are only consumed by the color-grade comparison branch near
+  // the bottom of this component. Returning a stable sentinel while comparison
+  // is off keeps ordinary playback/scrubbing from re-rendering this large tree.
+  const comparisonEnabled = colorGradeComparisonMode !== 'off'
+  const comparisonCurrentFrame = usePlaybackStore((s) =>
+    comparisonEnabled ? s.currentFrame : null,
+  )
+  const comparisonPreviewFrame = usePlaybackStore((s) =>
+    comparisonEnabled ? s.previewFrame : null,
+  )
   // Capture the playhead once at mount so a workspace-driven remount (switching
   // to/from Color swaps VideoPreview<->ColorVideoPreview, remounting the Player)
   // starts the fresh clock at the current frame. Without this the new Player
@@ -88,7 +100,9 @@ const VideoPreviewBase = memo(function VideoPreviewBase({
   if (initialPlayheadFrameRef.current === null) {
     initialPlayheadFrameRef.current = usePlaybackStore.getState().currentFrame
   }
-  const displayedFrame = usePreviewBridgeStore((s) => s.displayedFrame)
+  const comparisonDisplayedFrame = usePreviewBridgeStore((s) =>
+    comparisonEnabled ? s.displayedFrame : null,
+  )
   const livePreviewEdits = useGizmoStore((s) => s.preview)
   const [playerDisplayedFrame, setPlayerDisplayedFrame] = useState<number | null>(null)
   const latestPlayerDisplayedFrameRef = useRef<number | null>(null)
@@ -130,7 +144,6 @@ const VideoPreviewBase = memo(function VideoPreviewBase({
     hasSlide4Up,
     activeGizmoItemType,
     isGizmoInteracting,
-    isPlaying,
     zoom,
     useProxy,
     busAudioEq,
@@ -154,6 +167,8 @@ const VideoPreviewBase = memo(function VideoPreviewBase({
     scrubOffscreenCanvasRef,
     scrubFrameDirtyRef,
   )
+  const isPowerWindowEditing = usePowerWindowEditorStore((s) => s.isEditing)
+  const isSpatialEffectEditing = useSpatialEffectEditorStore((s) => s.isEditing)
   const shouldPreferPlayerForPreview = useCallback(
     (previewFrame: number | null) => {
       return (
@@ -403,7 +418,7 @@ const VideoPreviewBase = memo(function VideoPreviewBase({
           const { createCompositionRenderer } = await importCompositionRenderer()
           const renderer = await createCompositionRenderer(fastScrubInputProps, canvas, ctx, {
             mode: 'preview',
-            useProxyMedia: useProxy,
+            useProxyMedia: true,
             getPreviewTransformOverride,
             getPreviewEffectsOverride: getPreviewEffectsOverrideWithGradeApplied,
             getPreviewCornerPinOverride,
@@ -443,22 +458,42 @@ const VideoPreviewBase = memo(function VideoPreviewBase({
       isResolving,
       renderSize.height,
       renderSize.width,
-      useProxy,
     ])
 
-  const forceFastScrubOverlay = showGpuEffectsOverlay
+  // Enter the composited path in the same render that activates the editor.
+  // Waiting for the timeline-wide effect scan adds a reactive round trip that
+  // makes the first neutral-EV drag look stuck until another parameter changes.
+  const forceFastScrubOverlay =
+    showGpuEffectsOverlay || isPowerWindowEditing || isSpatialEffectEditing
+
+  // The split comparison is the only render-time branch that needs playback
+  // state. Keep the selected value stable for the normal (non-split) preview
+  // so pressing Play does not invalidate the entire VideoPreview tree.
+  const isPlayingForSplitComparison = usePlaybackStore(
+    (state) => colorGradeComparisonMode === 'split' && state.isPlaying,
+  )
 
   // While the GPU overlay owns the preview during playback, the DOM composition
   // tree is occluded — freeze its per-item visual recomputation so it stops
   // re-deriving transforms/masks/text on every frame behind the overlay. The
   // overlay composites the real frames; mount/visibility and video sync stay live.
   useEffect(() => {
-    const frozen = forceFastScrubOverlay && isPlaying
-    usePlaybackStore.getState().setCompositionVisualFrozen(frozen)
+    const applyFrozenState = (isPlaying: boolean) => {
+      usePlaybackStore.getState().setCompositionVisualFrozen(forceFastScrubOverlay && isPlaying)
+    }
+
+    applyFrozenState(usePlaybackStore.getState().isPlaying)
+    const unsubscribe = usePlaybackStore.subscribe((state, previousState) => {
+      if (state.isPlaying !== previousState.isPlaying) {
+        applyFrozenState(state.isPlaying)
+      }
+    })
+
     return () => {
+      unsubscribe()
       usePlaybackStore.getState().setCompositionVisualFrozen(false)
     }
-  }, [forceFastScrubOverlay, isPlaying])
+  }, [forceFastScrubOverlay])
 
   const {
     clearTransitionPlaybackSession,
@@ -490,7 +525,6 @@ const VideoPreviewBase = memo(function VideoPreviewBase({
     keyframes,
     activeGizmoItemType,
     isGizmoInteracting,
-    isPlaying,
     forceFastScrubOverlay,
     previewPerfRef,
     isGizmoInteractingRef,
@@ -556,7 +590,10 @@ const VideoPreviewBase = memo(function VideoPreviewBase({
   usePreviewRenderPump({
     fps,
     forceFastScrubOverlay,
-    combinedTracks,
+    // Scrub decoding must use the same proxy/source URLs as the renderer.
+    // Feeding unresolved project tracks here silently made the worker decode
+    // full-resolution originals while the composition rendered proxies.
+    combinedTracks: fastScrubScaledTracks,
     fastScrubBoundaryFrames,
     fastScrubBoundarySources,
     playbackTransitionOverlayWindows,
@@ -659,16 +696,25 @@ const VideoPreviewBase = memo(function VideoPreviewBase({
         projectSize={{ width: project.width, height: project.height }}
         zoom={zoom}
       />
+      <SpatialEffectPointOverlayContainer
+        containerRect={playerContainerRect}
+        playerSize={playerSize}
+        projectSize={{ width: project.width, height: project.height }}
+        zoom={zoom}
+      />
     </>
   ) : null
-  const shouldShowAfterDuringSplitPlayback = isPlaying && colorGradeComparisonMode === 'split'
+  const shouldShowAfterDuringSplitPlayback = isPlayingForSplitComparison
   const stageColorGradeComparisonMode = shouldShowAfterDuringSplitPlayback
     ? 'off'
     : colorGradeComparisonMode
-  const baseComparisonTargetFrame = Math.max(0, Math.round(previewFrame ?? currentFrame))
+  const baseComparisonTargetFrame = Math.max(
+    0,
+    Math.round(comparisonPreviewFrame ?? comparisonCurrentFrame ?? 0),
+  )
   const comparisonTargetFrame =
-    stageColorGradeComparisonMode === 'split' && displayedFrame !== null
-      ? displayedFrame
+    stageColorGradeComparisonMode === 'split' && comparisonDisplayedFrame !== null
+      ? comparisonDisplayedFrame
       : baseComparisonTargetFrame
 
   // Leaving split comparison clears the rendered after-frame. Kept as its own
@@ -751,7 +797,7 @@ const VideoPreviewBase = memo(function VideoPreviewBase({
   const isColorGradeComparisonActive = stageColorGradeComparisonMode !== 'off'
   const isSplitGradeComparison = stageColorGradeComparisonMode === 'split'
   const isColorGradeComparisonFrameReady =
-    displayedFrame === comparisonTargetFrame &&
+    comparisonDisplayedFrame === comparisonTargetFrame &&
     (isSplitGradeComparison
       ? splitAfterRenderedFrame === comparisonTargetFrame
       : stageColorGradeComparisonMode === 'before' ||
@@ -792,9 +838,10 @@ const VideoPreviewBase = memo(function VideoPreviewBase({
 })
 
 export const VideoPreview = memo(function VideoPreview(props: VideoPreviewProps) {
-  return <VideoPreviewBase {...props} overlayChrome="edit" />
+  const { chrome = 'edit', ...previewProps } = props
+  return <VideoPreviewBase {...previewProps} overlayChrome={chrome} />
 })
 
 export const ColorVideoPreview = memo(function ColorVideoPreview(props: VideoPreviewProps) {
-  return <VideoPreviewBase {...props} overlayChrome="color" />
+  return <VideoPreview {...props} chrome="color" />
 })

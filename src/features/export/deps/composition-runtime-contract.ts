@@ -16,6 +16,7 @@ export {
 export { expandTextTransformToFitContent } from '@/runtime/composition-runtime/utils/text-layout'
 export {
   resolveCompositionRenderPlan,
+  resolveLiveTransitionRenderPlan,
   collectFrameVideoCandidates,
   resolveFrameRenderScene,
 } from '@/runtime/composition-runtime/utils/scene-assembly'

@@ -295,7 +295,7 @@ export function TransitionPanel() {
     const leftEnd = leftClip.from + leftClip.durationInFrames
     const isAdjacent = Math.abs(leftEnd - rightClip.from) <= 1
     const handleLimit = isAdjacent
-      ? getMaxTransitionDurationForHandles(leftClip, rightClip, selectedTransition.alignment)
+      ? getMaxTransitionDurationForHandles(leftClip, rightClip, selectedTransition.alignment, fps)
       : Math.floor(Math.min(leftClip.durationInFrames, rightClip.durationInFrames) - 1)
     const combinedLimit = Math.min(handleLimit, definitionMaxDuration)
     return Math.max(minDuration, Math.max(selectedTransition.durationInFrames, combinedLimit))
@@ -476,12 +476,17 @@ export function TransitionPanel() {
     (alignment: number) => {
       if (!selectedTransitionId || !selectedTransition || !leftClip || !rightClip) return
 
-      const maxForPlacement = getMaxTransitionDurationForHandles(leftClip, rightClip, alignment)
+      const maxForPlacement = getMaxTransitionDurationForHandles(
+        leftClip,
+        rightClip,
+        alignment,
+        fps,
+      )
       if (maxForPlacement < selectedTransition.durationInFrames) return
 
       updateTransition(selectedTransitionId, { alignment })
     },
-    [leftClip, rightClip, selectedTransition, selectedTransitionId, updateTransition],
+    [fps, leftClip, rightClip, selectedTransition, selectedTransitionId, updateTransition],
   )
 
   // Handle timing change
@@ -708,7 +713,7 @@ export function TransitionPanel() {
             {PLACEMENT_OPTIONS.map(({ value, labelKey, titleKey }) => {
               const maxForPlacement =
                 leftClip && rightClip
-                  ? getMaxTransitionDurationForHandles(leftClip, rightClip, value)
+                  ? getMaxTransitionDurationForHandles(leftClip, rightClip, value, fps)
                   : 0
               const disabled = maxForPlacement < selectedTransition.durationInFrames
               const selected = selectedAlignment === value

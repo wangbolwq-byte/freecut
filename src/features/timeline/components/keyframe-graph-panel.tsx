@@ -8,7 +8,7 @@
 import { memo, useState, useCallback, useMemo, useRef, useEffect, type RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useHotkeys } from 'react-hotkeys-hook'
-import { X } from 'lucide-react'
+import { Maximize2, Minimize2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { useShallow } from 'zustand/react/shallow'
 import { cn } from '@/shared/ui/cn'
@@ -62,6 +62,7 @@ import * as timelineActions from '../stores/timeline-actions'
 import { HOTKEY_OPTIONS } from '@/config/hotkeys'
 import { useResolvedHotkeys } from '@/features/timeline/deps/settings'
 import { isEffectAnimatableProperty } from '@/types/keyframe'
+import { buildEffectPropertyResetPlan } from '@/features/timeline/utils/effect-property-reset'
 
 /** Height of the panel header bar in pixels */
 const GRAPH_PANEL_HEADER_HEIGHT = 32
@@ -98,14 +99,41 @@ interface KeyframeGraphPanelProps {
    * The user still chooses sheet / graph / split; split is no longer forced.
    */
   splitView?: boolean
+  /** Whether the Animate workspace has hidden preview chrome for focused editing. */
+  isFocusMode?: boolean
+  /** Toggle the Animate workspace's focused keyframe layout. */
+  onFocusModeChange?: (isFocusMode: boolean) => void
+  /** Motion workspace context: a dedicated selected-layer value-curve editor. */
+  surface?: 'default' | 'motion'
+  /** Initial parameter groups shown by this workspace; users can change them from Parameters. */
+  initialVisibleGroupIds?: readonly string[]
+  /** Optional property-column width for workspace-specific layouts. */
+  propertyColumnWidth?: number
 }
 
 type KeyframeEditorMode = 'graph' | 'dopesheet' | 'split'
 const KEYFRAME_EDITOR_MODE_STORAGE_KEY = 'timeline:keyframeEditorMode'
-const EASING_OPTIONS: Array<{ value: EasingType; labelKey: string; defaultLabel: string }> = [
-  { value: 'hold', labelKey: 'timeline.keyframeEditor.easing.hold', defaultLabel: 'Hold' },
-  { value: 'linear', labelKey: 'timeline.keyframeEditor.easing.linear', defaultLabel: 'Linear' },
-  { value: 'ease-in', labelKey: 'timeline.keyframeEditor.easing.easeIn', defaultLabel: 'Ease In' },
+const MOTION_INLINE_PROPERTY_GROUP_IDS = ['transform'] as const
+const EASING_OPTIONS: Array<{
+  value: EasingType
+  labelKey: string
+  defaultLabel: string
+}> = [
+  {
+    value: 'hold',
+    labelKey: 'timeline.keyframeEditor.easing.hold',
+    defaultLabel: 'Hold',
+  },
+  {
+    value: 'linear',
+    labelKey: 'timeline.keyframeEditor.easing.linear',
+    defaultLabel: 'Linear',
+  },
+  {
+    value: 'ease-in',
+    labelKey: 'timeline.keyframeEditor.easing.easeIn',
+    defaultLabel: 'Ease In',
+  },
   {
     value: 'ease-in-out',
     labelKey: 'timeline.keyframeEditor.easing.easeInOut',
@@ -268,6 +296,11 @@ export const KeyframeGraphPanel = memo(function KeyframeGraphPanel({
   placement = 'bottom',
   showCloseButton = true,
   splitView = false,
+  isFocusMode = false,
+  onFocusModeChange,
+  surface = 'default',
+  initialVisibleGroupIds,
+  propertyColumnWidth,
 }: KeyframeGraphPanelProps) {
   const { t } = useTranslation()
   const easingOptions = useMemo(
@@ -430,6 +463,8 @@ export const KeyframeGraphPanel = memo(function KeyframeGraphPanel({
 
   // Use _updateKeyframe directly (no undo per call) for dragging
   const _updateKeyframe = useKeyframesStore((s) => s._updateKeyframe)
+  const _addKeyframe = useKeyframesStore((s) => s._addKeyframe)
+  const _removeKeyframesForProperty = useKeyframesStore((s) => s._removeKeyframesForProperty)
   const currentProject = useProjectStore((s) => s.currentProject)
   const setKeyframeEditorShortcutScopeActive = useEditorStore(
     (s) => s.setKeyframeEditorShortcutScopeActive,
@@ -437,6 +472,7 @@ export const KeyframeGraphPanel = memo(function KeyframeGraphPanel({
 
   // Ref to store snapshot captured on drag start for undo batching
   const dragSnapshotRef = useRef<TimelineSnapshot | null>(null)
+  const valueScrubCreatedKeyframesRef = useRef(new Map<AnimatableProperty, string>())
   const [isPointerWithinEditor, setIsPointerWithinEditor] = useState(false)
   const [isFocusWithinEditor, setIsFocusWithinEditor] = useState(false)
 
@@ -473,7 +509,7 @@ export const KeyframeGraphPanel = memo(function KeyframeGraphPanel({
   // panel is too short to stack both panes, so a persisted "split" falls back
   // to the dopesheet there.
   const effectiveEditorMode: KeyframeEditorMode =
-    !splitView && editorMode === 'split' ? 'dopesheet' : editorMode
+    surface === 'motion' ? 'graph' : !splitView && editorMode === 'split' ? 'dopesheet' : editorMode
 
   useEffect(() => {
     if (!isOpen) {
@@ -634,6 +670,7 @@ export const KeyframeGraphPanel = memo(function KeyframeGraphPanel({
 
   // Handle drag start - capture snapshot for undo batching
   const handleDragStart = useCallback(() => {
+    valueScrubCreatedKeyframesRef.current.clear()
     dragSnapshotRef.current = captureSnapshot()
   }, [])
 
@@ -646,6 +683,7 @@ export const KeyframeGraphPanel = memo(function KeyframeGraphPanel({
         .addUndoEntry({ type: 'MOVE_KEYFRAME_GRAPH', payload: {} }, beforeSnapshot)
       useTimelineSettingsStore.getState().markDirty()
       dragSnapshotRef.current = null
+      valueScrubCreatedKeyframesRef.current.clear()
     }
   }, [])
 
@@ -853,7 +891,11 @@ export const KeyframeGraphPanel = memo(function KeyframeGraphPanel({
     const buildSkipReasons = (): string[] => {
       const reasons: string[] = []
       if (skippedUnsupported > 0) {
-        reasons.push(t('timeline.keyframeEditor.reasonUnsupported', { count: skippedUnsupported }))
+        reasons.push(
+          t('timeline.keyframeEditor.reasonUnsupported', {
+            count: skippedUnsupported,
+          }),
+        )
       }
       if (skippedBlocked > 0) {
         reasons.push(t('timeline.keyframeEditor.reasonBlocked', { count: skippedBlocked }))
@@ -932,8 +974,11 @@ export const KeyframeGraphPanel = memo(function KeyframeGraphPanel({
       event.preventDefault()
       setEditorMode('graph')
     },
-    { ...HOTKEY_OPTIONS, enabled: isOpen },
-    [isOpen],
+    {
+      ...HOTKEY_OPTIONS,
+      enabled: isOpen && (isPointerWithinEditor || isFocusWithinEditor),
+    },
+    [isFocusWithinEditor, isOpen, isPointerWithinEditor],
   )
 
   useHotkeys(
@@ -942,8 +987,24 @@ export const KeyframeGraphPanel = memo(function KeyframeGraphPanel({
       event.preventDefault()
       setEditorMode('dopesheet')
     },
-    { ...HOTKEY_OPTIONS, enabled: isOpen },
-    [isOpen],
+    {
+      ...HOTKEY_OPTIONS,
+      enabled: isOpen && (isPointerWithinEditor || isFocusWithinEditor),
+    },
+    [isFocusWithinEditor, isOpen, isPointerWithinEditor],
+  )
+
+  useHotkeys(
+    hotkeys.KEYFRAME_EDITOR_SPLIT,
+    (event) => {
+      event.preventDefault()
+      setEditorMode('split')
+    },
+    {
+      ...HOTKEY_OPTIONS,
+      enabled: isOpen && splitView && (isPointerWithinEditor || isFocusWithinEditor),
+    },
+    [isFocusWithinEditor, isOpen, isPointerWithinEditor, splitView],
   )
 
   useHotkeys(
@@ -1089,15 +1150,46 @@ export const KeyframeGraphPanel = memo(function KeyframeGraphPanel({
     const values: Partial<Record<AnimatableProperty, number>> = {}
     for (const property of availableProperties) {
       const propKeyframes = keyframesByProperty[property] ?? []
+      let selectedValue: number | undefined
+      for (let index = selectedEditorKeyframes.length - 1; index >= 0; index -= 1) {
+        const selected = selectedEditorKeyframes[index]!
+        if (selected.ref.property === property) {
+          selectedValue = selected.keyframe.value
+          break
+        }
+      }
       const baseValue = getBaseKeyframeValue(selectedItemForEditor, property, canvas)
-      values[property] = interpolatePropertyValue(propKeyframes, relativeFrame, baseValue)
+      values[property] =
+        selectedValue ?? interpolatePropertyValue(propKeyframes, relativeFrame, baseValue)
     }
     return values
-  }, [availableProperties, canvas, keyframesByProperty, relativeFrame, selectedItemForEditor])
+  }, [
+    availableProperties,
+    canvas,
+    keyframesByProperty,
+    relativeFrame,
+    selectedEditorKeyframes,
+    selectedItemForEditor,
+  ])
 
   const handlePropertyValueCommit = useCallback(
     (property: AnimatableProperty, value: number, options?: { allowCreate?: boolean }) => {
       if (!selectedItemForEditor) return
+
+      const selectedPropertyKeyframes = selectedEditorKeyframes.filter(
+        ({ ref }) => ref.property === property,
+      )
+      if (selectedPropertyKeyframes.length > 0) {
+        timelineActions.updateKeyframes(
+          selectedPropertyKeyframes.map(({ ref }) => ({
+            itemId: ref.itemId,
+            property: ref.property,
+            keyframeId: ref.keyframeId,
+            updates: { value },
+          })),
+        )
+        return
+      }
 
       const existingKeyframe = keyframesByProperty[property]?.find(
         (keyframe) => keyframe.frame === relativeFrame,
@@ -1134,7 +1226,89 @@ export const KeyframeGraphPanel = memo(function KeyframeGraphPanel({
         })
       }
     },
-    [keyframesByProperty, relativeFrame, selectKeyframe, selectedItemForEditor],
+    [
+      keyframesByProperty,
+      relativeFrame,
+      selectKeyframe,
+      selectedEditorKeyframes,
+      selectedItemForEditor,
+    ],
+  )
+
+  const handlePropertyValuePreview = useCallback(
+    (property: AnimatableProperty, value: number) => {
+      if (!selectedItemForEditor) return
+
+      const selectedRefs = selectedEditorKeyframes
+        .filter(({ ref }) => ref.property === property)
+        .map(({ ref }) => ref)
+      if (selectedRefs.length > 0) {
+        for (const ref of selectedRefs) {
+          _updateKeyframe(ref.itemId, ref.property, ref.keyframeId, { value })
+        }
+        return
+      }
+
+      const existing = keyframesByProperty[property]?.find(
+        (keyframe) => keyframe.frame === relativeFrame,
+      )
+      let keyframeId = existing?.id ?? valueScrubCreatedKeyframesRef.current.get(property)
+      if (!keyframeId) {
+        keyframeId = _addKeyframe(selectedItemForEditor.id, property, relativeFrame, value)
+        valueScrubCreatedKeyframesRef.current.set(property, keyframeId)
+        selectKeyframe({ itemId: selectedItemForEditor.id, property, keyframeId })
+      } else {
+        _updateKeyframe(selectedItemForEditor.id, property, keyframeId, { value })
+      }
+    },
+    [
+      _addKeyframe,
+      _updateKeyframe,
+      keyframesByProperty,
+      relativeFrame,
+      selectKeyframe,
+      selectedEditorKeyframes,
+      selectedItemForEditor,
+    ],
+  )
+
+  const handleResetPropertiesToDefault = useCallback(
+    (properties: AnimatableProperty[]) => {
+      if (!selectedItemForEditor || properties.length === 0) return
+      const effects = useItemsStore.getState().itemById[selectedItemForEditor.id]?.effects ?? []
+      const resetPlan = buildEffectPropertyResetPlan(effects, properties)
+      if (resetPlan.resettableProperties.length === 0) return
+      const propertySet = new Set(resetPlan.resettableProperties)
+
+      const keyframeState = useKeyframesStore.getState().keyframesByItemId[selectedItemForEditor.id]
+      const hasKeyframes = properties.some(
+        (property) =>
+          (keyframeState?.properties.find((entry) => entry.property === property)?.keyframes
+            .length ?? 0) > 0,
+      )
+      const hasValueChanges = resetPlan.effectUpdates.length > 0
+      if (!hasKeyframes && !hasValueChanges) return
+
+      const beforeSnapshot = captureSnapshot()
+      for (const property of resetPlan.resettableProperties) {
+        _removeKeyframesForProperty(selectedItemForEditor.id, property)
+      }
+      for (const update of resetPlan.effectUpdates) {
+        useItemsStore.getState()._updateEffect(selectedItemForEditor.id, update.effectId, {
+          effect: update.effect,
+        })
+      }
+      selectKeyframes(selectedKeyframes.filter((ref) => !propertySet.has(ref.property)))
+      useTimelineCommandStore.getState().addUndoEntry(
+        {
+          type: 'RESET_EFFECT_PROPERTIES',
+          payload: { count: resetPlan.resettableProperties.length },
+        },
+        beforeSnapshot,
+      )
+      useTimelineSettingsStore.getState().markDirty()
+    },
+    [_removeKeyframesForProperty, selectKeyframes, selectedItemForEditor, selectedKeyframes],
   )
 
   // Handle removing keyframes
@@ -1238,7 +1412,9 @@ export const KeyframeGraphPanel = memo(function KeyframeGraphPanel({
       <div className="h-8 flex items-center justify-between px-3 bg-secondary/30 border-b border-border">
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-muted-foreground">
-            {t('timeline.keyframeEditor.title')}
+            {surface === 'motion'
+              ? t('editor.compose.motionCurves')
+              : t('timeline.keyframeEditor.title')}
             {selectedItemForEditor && (
               <span className="ml-2 text-foreground">
                 - {selectedItemForEditor.label || selectedItemForEditor.type}
@@ -1250,46 +1426,88 @@ export const KeyframeGraphPanel = memo(function KeyframeGraphPanel({
           </span>
         </div>
 
-        <div className="flex items-center gap-1">
-          <Button
-            variant={effectiveEditorMode === 'dopesheet' ? 'secondary' : 'ghost'}
-            size="sm"
-            className="h-5 px-1.5 text-[10px]"
-            title={t('timeline.keyframeEditor.legend.sheetMode')}
-            aria-label={t('timeline.keyframeEditor.legend.sheetMode')}
-            onClick={(e) => {
-              e.stopPropagation()
-              setEditorMode('dopesheet')
-            }}
-          >
-            {t('timeline.keyframeEditor.sheet')}
-          </Button>
-          <Button
-            variant={effectiveEditorMode === 'graph' ? 'secondary' : 'ghost'}
-            size="sm"
-            className="h-5 px-1.5 text-[10px]"
-            title={t('timeline.keyframeEditor.legend.graphMode')}
-            aria-label={t('timeline.keyframeEditor.legend.graphMode')}
-            onClick={(e) => {
-              e.stopPropagation()
-              setEditorMode('graph')
-            }}
-          >
-            {t('timeline.keyframeEditor.graph')}
-          </Button>
-          {splitView && (
+        <div
+          className="flex items-center gap-0.5 rounded-md border border-border/60 bg-background/50 p-0.5"
+          role={surface === 'motion' ? undefined : 'tablist'}
+          aria-label={
+            surface === 'motion'
+              ? t('editor.compose.motionCurves')
+              : t('timeline.keyframeEditor.title')
+          }
+        >
+          {surface !== 'motion' && (
+            <>
+              <Button
+                variant={effectiveEditorMode === 'dopesheet' ? 'secondary' : 'ghost'}
+                size="sm"
+                className="h-6 px-2 text-[11px]"
+                role="tab"
+                aria-selected={effectiveEditorMode === 'dopesheet'}
+                title={t('timeline.keyframeEditor.legend.sheetMode')}
+                aria-label={t('timeline.keyframeEditor.legend.sheetMode')}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setEditorMode('dopesheet')
+                }}
+              >
+                {t('timeline.keyframeEditor.sheet')}
+              </Button>
+              <Button
+                variant={effectiveEditorMode === 'graph' ? 'secondary' : 'ghost'}
+                size="sm"
+                className="h-6 px-2 text-[11px]"
+                role="tab"
+                aria-selected={effectiveEditorMode === 'graph'}
+                title={t('timeline.keyframeEditor.legend.graphMode')}
+                aria-label={t('timeline.keyframeEditor.legend.graphMode')}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setEditorMode('graph')
+                }}
+              >
+                {t('timeline.keyframeEditor.graph')}
+              </Button>
+              {splitView && (
+                <Button
+                  variant={effectiveEditorMode === 'split' ? 'secondary' : 'ghost'}
+                  size="sm"
+                  className="h-6 px-2 text-[11px]"
+                  role="tab"
+                  aria-selected={effectiveEditorMode === 'split'}
+                  title={t('timeline.keyframeEditor.split')}
+                  aria-label={t('timeline.keyframeEditor.split')}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setEditorMode('split')
+                  }}
+                >
+                  {t('timeline.keyframeEditor.split')}
+                </Button>
+              )}
+            </>
+          )}
+          {onFocusModeChange && (
             <Button
-              variant={effectiveEditorMode === 'split' ? 'secondary' : 'ghost'}
-              size="sm"
-              className="h-5 px-1.5 text-[10px]"
-              title={t('timeline.keyframeEditor.split')}
-              aria-label={t('timeline.keyframeEditor.split')}
-              onClick={(e) => {
-                e.stopPropagation()
-                setEditorMode('split')
+              variant={isFocusMode ? 'secondary' : 'ghost'}
+              size="icon"
+              className="ml-0.5 h-6 w-6 p-0"
+              title={t(
+                isFocusMode
+                  ? 'timeline.keyframeEditor.exitFocusMode'
+                  : 'timeline.keyframeEditor.enterFocusMode',
+              )}
+              aria-label={t(
+                isFocusMode
+                  ? 'timeline.keyframeEditor.exitFocusMode'
+                  : 'timeline.keyframeEditor.enterFocusMode',
+              )}
+              aria-pressed={isFocusMode}
+              onClick={(event) => {
+                event.stopPropagation()
+                onFocusModeChange(!isFocusMode)
               }}
             >
-              {t('timeline.keyframeEditor.split')}
+              {isFocusMode ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
             </Button>
           )}
           {showCloseButton && (
@@ -1347,6 +1565,8 @@ export const KeyframeGraphPanel = memo(function KeyframeGraphPanel({
                   onAddKeyframes={handleAddKeyframes}
                   onDuplicateKeyframes={handleDuplicateKeyframes}
                   onPropertyValueCommit={handlePropertyValueCommit}
+                  onPropertyValuePreview={handlePropertyValuePreview}
+                  onResetPropertiesToDefault={handleResetPropertiesToDefault}
                   onRemoveKeyframes={handleRemoveKeyframes}
                   onCopyKeyframes={handleCopyKeyframes}
                   onCutKeyframes={handleCutKeyframes}
@@ -1363,7 +1583,20 @@ export const KeyframeGraphPanel = memo(function KeyframeGraphPanel({
                   canBakeMotion={canBakeProceduralMotion}
                   onBakeMotion={handleBakeProceduralMotion}
                   visualizationMode={effectiveEditorMode}
-                  spacious={splitView}
+                  spacious={splitView || surface === 'motion'}
+                  inlinePropertyGroupIds={
+                    surface === 'motion' ? MOTION_INLINE_PROPERTY_GROUP_IDS : undefined
+                  }
+                  initialVisibleGroupIds={initialVisibleGroupIds}
+                  propertyColumnWidth={propertyColumnWidth}
+                  shortcutsEnabled={isPointerWithinEditor || isFocusWithinEditor}
+                  shortcuts={{
+                    toggleKeyframe: hotkeys.KEYFRAME_TOGGLE,
+                    previousKeyframe: hotkeys.KEYFRAME_PREVIOUS,
+                    nextKeyframe: hotkeys.KEYFRAME_NEXT,
+                    toggleAutoKey: hotkeys.KEYFRAME_TOGGLE_AUTO,
+                    fitKeyframes: hotkeys.KEYFRAME_FIT,
+                  }}
                 />
               </ErrorBoundary>
             </>

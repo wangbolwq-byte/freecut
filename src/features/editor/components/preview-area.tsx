@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback, memo, useMemo, lazy, Suspense } from 'react'
 import { Columns2 } from 'lucide-react'
 import {
-  ColorVideoPreview,
   VideoPreview,
   PlaybackControls,
   AlignmentToolbar,
@@ -129,15 +128,14 @@ const ProgramPreviewSurface = memo(function ProgramPreviewSurface({
     </Suspense>
   ) : null
 
-  const PreviewComponent = chrome === 'color' ? ColorVideoPreview : VideoPreview
-
   return (
     <ErrorBoundary level="component">
       <div className="relative w-full h-full">
-        <PreviewComponent
+        <VideoPreview
           project={project}
           containerSize={containerSize}
           suspendOverlay={suspendOverlay}
+          chrome={chrome}
         />
         {skimPreviewOverlay && (
           <div className="absolute inset-0 z-40 bg-video-preview-background">

@@ -33,6 +33,7 @@ import {
   removeTextMotionEffect,
   updateTextMotionLive,
 } from '@/features/editor/deps/timeline-store'
+import { matchesAnimationPresetQuery } from '../animate-workspace/animation-preset-filter'
 
 const SLOTS: readonly TextMotionSlot[] = ['in', 'out', 'loop']
 
@@ -185,6 +186,8 @@ const TextMotionSlotRow = memo(function TextMotionSlotRow({
 export interface TextMotionSlotRowsProps {
   /** Selected text items (callers filter the selection to `type === 'text'`). */
   items: TextItem[]
+  /** Optional preset-browser query used by the Animate workspace. */
+  query?: string
 }
 
 /**
@@ -196,10 +199,29 @@ export interface TextMotionSlotRowsProps {
  */
 export const TextMotionSlotRows = memo(function TextMotionSlotRows({
   items,
+  query = '',
 }: TextMotionSlotRowsProps) {
   const { t } = useTranslation()
   const itemIds = useMemo(() => items.map((item) => item.id), [items])
   const firstSpec = items[0]?.textMotion
+  const filteredPresetsBySlot = useMemo(() => {
+    const filterSlot = (slot: TextMotionSlot) =>
+      PRESETS_BY_SLOT[slot].filter(
+        (preset) =>
+          firstSpec?.[slot]?.presetId === preset.id ||
+          matchesAnimationPresetQuery(t(preset.labelKey), query),
+      )
+
+    return {
+      in: filterSlot('in'),
+      out: filterSlot('out'),
+      loop: filterSlot('loop'),
+    }
+  }, [firstSpec, query, t])
+  const visiblePresetCount = SLOTS.reduce(
+    (count, slot) => count + filteredPresetsBySlot[slot].length,
+    0,
+  )
 
   // One coalesced undo per slider drag: snapshot on the first live change,
   // commit on release. A direct commit (select change, typed value) snapshots
@@ -240,21 +262,31 @@ export const TextMotionSlotRows = memo(function TextMotionSlotRows({
 
   if (items.length === 0) return null
 
+  if (visiblePresetCount === 0) {
+    return (
+      <p className="py-3 text-center text-xs text-muted-foreground" role="status">
+        {t('editor.animatePresets.noMatches')}
+      </p>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-3">
-      {SLOTS.map((slot) => (
-        <TextMotionSlotRow
-          key={slot}
-          slot={slot}
-          presets={PRESETS_BY_SLOT[slot]}
-          effect={firstSpec?.[slot]}
-          onApply={handleApply}
-          onRemove={handleRemove}
-          onLiveEdit={handleLiveEdit}
-          onCommitEdit={handleCommitEdit}
-          t={t}
-        />
-      ))}
+      {SLOTS.map((slot) =>
+        filteredPresetsBySlot[slot].length > 0 ? (
+          <TextMotionSlotRow
+            key={slot}
+            slot={slot}
+            presets={filteredPresetsBySlot[slot]}
+            effect={firstSpec?.[slot]}
+            onApply={handleApply}
+            onRemove={handleRemove}
+            onLiveEdit={handleLiveEdit}
+            onCommitEdit={handleCommitEdit}
+            t={t}
+          />
+        ) : null,
+      )}
     </div>
   )
 })

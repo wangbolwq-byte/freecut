@@ -15,7 +15,8 @@ import {
   type ExportableSequence,
 } from '@/features/export/deps/timeline-compositions'
 import { useProjectStore } from '@/features/export/deps/projects'
-import { resolveClientSettings } from './render-pipeline'
+import { mapRequestedClientSettings, resolveClientSettings } from './render-pipeline'
+import { assessSmartCopyEligibility } from './smart-copy'
 import type { ClientExportSettings } from './client-renderer'
 import type { RenderJob, RenderJobSnapshot } from '../stores/render-queue-store'
 
@@ -154,7 +155,24 @@ export async function buildRenderJob({
   sequence,
 }: BuildRenderJobOptions): Promise<RenderJob> {
   const cap = capture ?? captureTimeline(sequence)
-  const { clientSettings, exportMode } = await resolveClientSettings(settings, cap.fps)
+  const requested = mapRequestedClientSettings(settings, cap.fps)
+  const smartCopy = assessSmartCopyEligibility({
+    settings: requested.clientSettings,
+    tracks: cap.snapshot.tracks,
+    items: cap.snapshot.items,
+    transitions: cap.snapshot.transitions,
+    keyframes: cap.snapshot.keyframes,
+    fps: cap.snapshot.fps,
+    width: cap.snapshot.width,
+    height: cap.snapshot.height,
+    inPoint,
+    outPoint,
+    busAudioEq: cap.snapshot.busAudioEq,
+    masterBusDb: cap.snapshot.masterBusDb,
+  })
+  const { clientSettings, exportMode } = smartCopy.eligible
+    ? requested
+    : await resolveClientSettings(settings, cap.fps)
   return assembleJob(cap, clientSettings, exportMode, inPoint, outPoint, name)
 }
 

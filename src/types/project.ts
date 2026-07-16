@@ -6,6 +6,16 @@ import type { TextStylePresetId } from '@/shared/typography/text-style-preset-id
 import type { TextLayoutDrafts, TextSpan, TextStyleFields } from './text'
 import type { TextMotionSpec } from './text-motion'
 
+/**
+ * Selects the editing surface a stored composition naturally opens in.
+ *
+ * Both kinds use the same renderer and can be nested as timeline items. The
+ * distinction is deliberately editorial: sequences use the classic
+ * track/clip editor, while composite-2d compositions use the layer/property
+ * compositing workspace.
+ */
+export type CompositionEditorKind = 'sequence' | 'composite-2d'
+
 export interface Project {
   id: string
   name: string
@@ -91,6 +101,9 @@ export interface ProjectTimeline {
       reverseConformPreviewPath?: string
       reverseConformPreviewKey?: string
       reverseConformPreviewUsesProxy?: boolean
+      reverseConformPreviewIsSourceLevel?: boolean
+      reverseConformPreviewSourceDuration?: number
+      reverseConformPreviewFps?: number
       reverseConformStatus?: 'pending' | 'ready' | 'error'
       reverseConformLocalStart?: number
       text?: string
@@ -222,6 +235,8 @@ export interface ProjectTimeline {
   compositions?: Array<{
     id: string
     name: string
+    /** Missing on projects created before schema v14; normalized to sequence. */
+    editorKind?: CompositionEditorKind
     items: ProjectTimeline['items']
     tracks: ProjectTimeline['tracks']
     transitions?: ProjectTimeline['transitions']

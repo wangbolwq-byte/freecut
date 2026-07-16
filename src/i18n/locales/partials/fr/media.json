@@ -52,6 +52,7 @@
       }
     },
     "compositions": {
+      "compositionsGroup": "Compositions",
       "compoundClipsGroup": "Clips composés",
       "deleteBody": "Supprimer le clip composé « {{name}} » ? Cette action est irréversible.",
       "deleteInstancesDetail": "{{count}} instances de la timeline qui utilisent ce clip composé seront également supprimées.",

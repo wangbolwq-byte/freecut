@@ -89,6 +89,7 @@ export function useTimelineItemDropHandlers({
         edge,
         items: useItemsStore.getState().items,
         transitions: useTransitionsStore.getState().transitions,
+        timelineFps: useTimelineStore.getState().fps,
         alignment,
         allowDurationClamp: false,
       })
@@ -162,6 +163,7 @@ export function useTimelineItemDropHandlers({
         edge,
         items: useItemsStore.getState().items,
         transitions: useTransitionsStore.getState().transitions,
+        timelineFps: useTimelineStore.getState().fps,
         alignment: resolveTransitionDropAlignment(e),
         allowDurationClamp: false,
       })

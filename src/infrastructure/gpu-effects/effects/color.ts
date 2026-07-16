@@ -664,7 +664,7 @@ fn colorWheelsFragment(input: VertexOutput) -> @location(0) vec4f {
   params: {
     shadowsHue: {
       type: 'number',
-      label: 'Shadows Hue',
+      label: 'Lift Hue',
       default: 0,
       min: 0,
       max: 360,
@@ -673,7 +673,7 @@ fn colorWheelsFragment(input: VertexOutput) -> @location(0) vec4f {
     },
     shadowsAmount: {
       type: 'number',
-      label: 'Shadows Amount',
+      label: 'Lift Amount',
       default: 0,
       min: 0,
       max: 1,
@@ -682,7 +682,7 @@ fn colorWheelsFragment(input: VertexOutput) -> @location(0) vec4f {
     },
     midtonesHue: {
       type: 'number',
-      label: 'Midtones Hue',
+      label: 'Gamma Hue',
       default: 0,
       min: 0,
       max: 360,
@@ -691,7 +691,7 @@ fn colorWheelsFragment(input: VertexOutput) -> @location(0) vec4f {
     },
     midtonesAmount: {
       type: 'number',
-      label: 'Midtones Amount',
+      label: 'Gamma Amount',
       default: 0,
       min: 0,
       max: 1,
@@ -700,7 +700,7 @@ fn colorWheelsFragment(input: VertexOutput) -> @location(0) vec4f {
     },
     highlightsHue: {
       type: 'number',
-      label: 'Highlights Hue',
+      label: 'Gain Hue',
       default: 0,
       min: 0,
       max: 360,
@@ -709,7 +709,7 @@ fn colorWheelsFragment(input: VertexOutput) -> @location(0) vec4f {
     },
     highlightsAmount: {
       type: 'number',
-      label: 'Highlights Amount',
+      label: 'Gain Amount',
       default: 0,
       min: 0,
       max: 1,
@@ -1303,7 +1303,7 @@ fn powerWindowFragment(input: VertexOutput) -> @location(0) vec4f {
     feather: {
       type: 'number',
       label: 'Feather',
-      default: 0.15,
+      default: 0.3,
       min: 0,
       max: 1,
       step: 0.01,
@@ -1322,7 +1322,7 @@ fn powerWindowFragment(input: VertexOutput) -> @location(0) vec4f {
     exposure: {
       type: 'number',
       label: 'Exposure',
-      default: 0,
+      default: 0.3,
       min: -3,
       max: 3,
       step: 0.05,
@@ -1373,10 +1373,10 @@ fn powerWindowFragment(input: VertexOutput) -> @location(0) vec4f {
       readNumberParam(p, 'sizeX', 0.5),
       readNumberParam(p, 'sizeY', 0.5),
       readNumberParam(p, 'rotation', 0),
-      readNumberParam(p, 'feather', 0.15),
+      readNumberParam(p, 'feather', 0.3),
       p.invertMask === true ? 1 : 0,
       p.showMask === true ? 1 : 0,
-      readNumberParam(p, 'exposure', 0),
+      readNumberParam(p, 'exposure', 0.3),
       readNumberParam(p, 'saturation', 0),
       readNumberParam(p, 'temperature', 0),
       readNumberParam(p, 'tint', 0),

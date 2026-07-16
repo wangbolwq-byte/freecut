@@ -63,10 +63,12 @@ function modifierKind(modifier: MotionModifier): ProceduralBandKind {
 export function getProceduralBands(
   modifiers: readonly MotionModifier[] | undefined,
   durationInFrames: number,
+  frameOffset = 0,
 ): Map<AnimatableProperty, ProceduralBand> {
   const bands = new Map<AnimatableProperty, ProceduralBand>()
   if (!modifiers || modifiers.length === 0 || durationInFrames <= 0) return bands
-  const last = Math.max(0, durationInFrames - 1)
+  const first = Math.max(0, frameOffset)
+  const last = first + Math.max(0, durationInFrames - 1)
 
   for (const modifier of modifiers) {
     if (!modifier.enabled || modifier.amplitude <= 0) continue
@@ -75,7 +77,7 @@ export function getProceduralBands(
     for (const property of modifierProperties(modifier)) {
       const existing = bands.get(property)
       if (!existing) {
-        bands.set(property, { property, kind, fromFrame: 0, toFrame: last })
+        bands.set(property, { property, kind, fromFrame: first, toFrame: last })
         continue
       }
       if (kind === 'noise') existing.kind = 'noise'

@@ -7,7 +7,7 @@
  * panel inside a workspace, and their per-workspace tweaks are persisted
  * by the editor store (`editor:workspaceLayout:<id>` in localStorage).
  */
-export type EditorWorkspaceId = 'edit' | 'color' | 'animate'
+export type EditorWorkspaceId = 'edit' | 'color' | 'animate' | 'motion'
 
 export type EditorSidebarTab =
   | 'media'
@@ -52,6 +52,12 @@ const EDITOR_WORKSPACE_PRESETS: Record<EditorWorkspaceId, EditorWorkspaceLayout>
     activeTab: 'media',
     propertiesFullColumn: false,
   },
+  motion: {
+    colorScopesOpen: false,
+    clipInspectorTab: 'video',
+    activeTab: 'media',
+    propertiesFullColumn: false,
+  },
 }
 
 /**
@@ -66,6 +72,8 @@ export const EDITOR_WORKSPACE_TIMELINE_SIZE: Record<EditorWorkspaceId, number | 
   // layout (small preview + thin strip + keyframe editors), so the resizable
   // timeline panel is never mounted — the density default is unused here.
   animate: null,
+  // Motion reuses the standard split and swaps only the timeline surface.
+  motion: null,
 }
 
 const DEFAULT_EDITOR_WORKSPACE: EditorWorkspaceId = 'edit'
@@ -73,6 +81,7 @@ const DEFAULT_EDITOR_WORKSPACE: EditorWorkspaceId = 'edit'
 export function normalizeEditorWorkspaceId(value: unknown): EditorWorkspaceId {
   if (value === 'color') return 'color'
   if (value === 'animate') return 'animate'
+  if (value === 'motion' || value === 'compose') return 'motion'
   return DEFAULT_EDITOR_WORKSPACE
 }
 

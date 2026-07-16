@@ -46,6 +46,14 @@ function StatusIcon({ status }: { status: RenderJobStatus }) {
   }
 }
 
+function getJobProgressText(job: RenderJob, fallback: string): string {
+  if (job.progressMessage) return job.progressMessage
+  if (job.renderedFrames !== undefined && job.totalFrames !== undefined) {
+    return `${job.renderedFrames}/${job.totalFrames}`
+  }
+  return fallback
+}
+
 function JobRow({ job }: { job: RenderJob }) {
   const { t } = useTranslation()
   const cancelJob = useRenderQueueStore((s) => s.cancelJob)
@@ -67,6 +75,7 @@ function JobRow({ job }: { job: RenderJob }) {
   const isRendering = job.status === 'rendering'
   const isFinished =
     job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled'
+  const progressText = getJobProgressText(job, t(`export.renderQueue.status.${job.status}`))
 
   return (
     <div className="rounded-lg border border-border bg-muted/20 p-3">
@@ -85,10 +94,8 @@ function JobRow({ job }: { job: RenderJob }) {
             <div className="mt-2 space-y-1">
               <Progress value={job.progress} className="h-1.5 w-full" />
               <div className="flex justify-between text-[11px] text-muted-foreground tabular-nums">
-                <span>
-                  {job.renderedFrames !== undefined && job.totalFrames !== undefined
-                    ? `${job.renderedFrames}/${job.totalFrames}`
-                    : t(`export.renderQueue.status.${job.status}`)}
+                <span className="min-w-0 truncate pr-2" title={job.progressMessage}>
+                  {progressText}
                 </span>
                 <span>{Math.round(job.progress)}%</span>
               </div>

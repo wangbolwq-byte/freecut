@@ -82,6 +82,8 @@ export class VideoFrameExtractor {
   private currentSample: MediabunnySample | null = null
   private nextSample: MediabunnySample | null = null
   private iteratorDone = false
+  private streamGeneration = 0
+  private disposed = false
   private lastRequestedTimestamp: number | null = null
   private sampleLoopError: unknown = null
   private lastFailureKind: 'none' | 'no-sample' | 'decode-error' = 'none'
@@ -104,6 +106,7 @@ export class VideoFrameExtractor {
    * Initialize the extractor - must be called before drawFrame()
    */
   async init(): Promise<boolean> {
+    this.disposed = false
     try {
       const [mb] = await Promise.all([import('mediabunny'), ensureProResDecoderRegistered()])
       const source = createMediabunnyInputSource(mb, this.src)
@@ -358,7 +361,13 @@ export class VideoFrameExtractor {
       return null
     }
 
-    const nextResult = await this.sampleIterator.next()
+    const iterator = this.sampleIterator
+    const generation = this.streamGeneration
+    const nextResult = await iterator.next()
+    if (this.disposed || generation !== this.streamGeneration || iterator !== this.sampleIterator) {
+      if (!nextResult.done) this.closeSample(nextResult.value)
+      return null
+    }
     if (nextResult.done) {
       this.iteratorDone = true
       return null
@@ -528,10 +537,12 @@ export class VideoFrameExtractor {
   }
 
   private closeStreamState(): void {
-    if (this.sampleIterator) {
-      void this.sampleIterator.return?.()
-    }
+    const iterator = this.sampleIterator
     this.sampleIterator = null
+    this.streamGeneration += 1
+    if (iterator) {
+      void iterator.return().catch(() => {})
+    }
     this.iteratorDone = true
     this.lastRequestedTimestamp = null
     this.sampleLoopError = null
@@ -670,6 +681,7 @@ export class VideoFrameExtractor {
    * Clean up resources
    */
   dispose(): void {
+    this.disposed = true
     this.closeStreamState()
 
     try {

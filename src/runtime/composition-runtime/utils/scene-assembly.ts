@@ -186,6 +186,25 @@ export function resolveCompositionRenderPlan<TTrack extends TimelineTrack>({
   }
 }
 
+export function resolveLiveTransitionRenderPlan<TTrack extends TimelineTrack>({
+  renderPlan,
+  transitions,
+  getCurrentItem,
+}: {
+  renderPlan: CompositionRenderPlan<TTrack>
+  transitions: Transition[]
+  getCurrentItem: <TItem extends TransitionClipItem>(item: TItem) => TItem
+}): CompositionRenderPlan<TTrack> {
+  const transitionClipItems = renderPlan.transitionClipItems.map((item) => getCurrentItem(item))
+
+  return {
+    ...renderPlan,
+    transitionClipItems,
+    transitionClipMap: buildItemIdMap(transitionClipItems),
+    transitionWindows: resolveTransitionWindowsForItems(transitions, transitionClipItems),
+  }
+}
+
 export function collectVisibleShapeMasks(
   visibleTracks: TimelineTrack[],
 ): ShapeMaskWithTrackOrder[] {

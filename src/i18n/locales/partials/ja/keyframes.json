@@ -5,6 +5,8 @@
       "graph": "グラフ",
       "sheet": "シート",
       "split": "分割",
+      "enterFocusMode": "キーフレームエディターに集中",
+      "exitFocusMode": "キーフレーム集中モードを終了",
       "selectItem": "キーフレームを編集する項目を選択",
       "parameters": "パラメーター",
       "parameterDisplayOptions": "パラメーター表示オプション",

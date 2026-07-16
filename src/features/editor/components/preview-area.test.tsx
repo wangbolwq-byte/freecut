@@ -11,7 +11,9 @@ vi.mock('@/features/editor/deps/preview', async () => {
 
   return {
     ...actual,
-    VideoPreview: () => <div data-testid="video-preview" />,
+    VideoPreview: ({ chrome }: { chrome?: 'edit' | 'color' }) => (
+      <div data-testid={chrome === 'color' ? 'color-video-preview' : 'video-preview'} />
+    ),
     ColorVideoPreview: () => <div data-testid="color-video-preview" />,
     AlignmentToolbar: () => <div data-testid="alignment-toolbar" />,
     PlaybackControls: () => <div data-testid="playback-controls" />,
@@ -197,6 +199,18 @@ describe('PreviewArea mask editor toolbar', () => {
     expect(screen.getByTestId('color-video-preview')).toBeInTheDocument()
     expect(screen.queryByTestId('alignment-toolbar')).not.toBeInTheDocument()
     expect(screen.getByTestId('playback-controls')).toBeInTheDocument()
+  })
+
+  it('preserves the program preview DOM while switching workspace chrome', () => {
+    const { rerender } = render(<PreviewArea project={{ width: 1920, height: 1080, fps: 30 }} />)
+    const previewNode = screen.getByTestId('video-preview')
+
+    act(() => {
+      useEditorStore.setState({ workspace: 'color' })
+    })
+    rerender(<PreviewArea project={{ width: 1920, height: 1080, fps: 30 }} />)
+
+    expect(screen.getByTestId('color-video-preview')).toBe(previewNode)
   })
 
   it('shows the compound clip skim preview in the program monitor while hover preview is active', async () => {

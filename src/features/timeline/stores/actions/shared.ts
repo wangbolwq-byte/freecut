@@ -11,6 +11,7 @@ import { emitDomainEvent } from '@/shared/utils/domain-events'
 import { useTimelineCommandStore } from '../timeline-command-store'
 import { useItemsStore } from '../items-store'
 import { useTransitionsStore } from '../transitions-store'
+import { useTimelineSettingsStore } from '../timeline-settings-store'
 import { useKeyframesStore } from '../keyframes-store'
 import { useCompositionsStore, type SubComposition } from '../compositions-store'
 import { useCompositionNavigationStore } from '../composition-navigation-store'
@@ -40,7 +41,13 @@ export function applyTransitionRepairs(
   const items = useItemsStore.getState().items
   const transitions = useTransitionsStore.getState().transitions
   const { valid, repaired, broken } = withPerfMeasure('tl.repairTransitions', () =>
-    repairTransitions(changedClipIds, items, transitions, deletedClipIds),
+    repairTransitions(
+      changedClipIds,
+      items,
+      transitions,
+      deletedClipIds,
+      useTimelineSettingsStore.getState().fps,
+    ),
   )
 
   // Merge valid + repaired transitions

@@ -33,7 +33,7 @@ export interface DopesheetPropertyGroup {
 
 export type RenderedSheetEntry =
   | { type: 'group'; group: DopesheetPropertyGroup; top: number }
-  | { type: 'row'; row: DopesheetPropertyRow; top: number }
+  | { type: 'row'; row: DopesheetPropertyRow; top: number; indented: boolean }
 
 export interface DragState {
   anchorKeyframeId: string

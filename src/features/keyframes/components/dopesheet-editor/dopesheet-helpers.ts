@@ -1,5 +1,5 @@
 import type { AnimatableProperty, Keyframe } from '@/types/keyframe'
-import { getPropertyAccordionGroups } from './property-groups'
+import { getPropertyDisplayGroups } from './property-groups'
 import type { DopesheetPropertyGroup, DopesheetPropertyRow } from './dopesheet-types'
 
 /** Minimal row shape needed to build the frame-independent group structure. */
@@ -68,7 +68,7 @@ export function buildGroupedPropertyStructure<R extends GroupableRow>(
 ): DopesheetPropertyGroupStructure<R>[] {
   const rowByProperty = new Map<AnimatableProperty, R>(rows.map((row) => [row.property, row]))
 
-  return getPropertyAccordionGroups(rows.map((row) => row.property))
+  return getPropertyDisplayGroups(rows.map((row) => row.property))
     .map((group) => {
       const groupedRows = group.properties.flatMap((property) => {
         const row = rowByProperty.get(property)

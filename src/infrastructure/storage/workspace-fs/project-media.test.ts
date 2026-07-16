@@ -40,6 +40,32 @@ afterEach(() => {
 })
 
 describe('workspace-fs project-media', () => {
+  it('shares concurrent project media loads during editor startup', async () => {
+    const root = createRoot()
+    setWorkspaceRoot(asHandle(root))
+    await createProject(makeProject('p1'))
+    await associateMediaWithProject('p1', 'm1')
+    const media = {
+      id: 'm1',
+      fileName: 'clip.mp4',
+      mimeType: 'video/mp4',
+    } as MediaMetadata
+    let resolveMedia!: (value: MediaMetadata) => void
+    mediaMocks.getMedia.mockImplementation(
+      () => new Promise<MediaMetadata>((resolve) => (resolveMedia = resolve)),
+    )
+
+    const first = getMediaForProject('p1')
+    const second = getMediaForProject('p1')
+    expect(first).toBe(second)
+    await vi.waitFor(() => expect(mediaMocks.getMedia).toHaveBeenCalledOnce())
+    resolveMedia(media)
+
+    await expect(first).resolves.toEqual([media])
+    await expect(second).resolves.toEqual([media])
+    expect(mediaMocks.getMedia).toHaveBeenCalledOnce()
+  })
+
   it('associateMediaWithProject writes media-links.json', async () => {
     const root = createRoot()
     setWorkspaceRoot(asHandle(root))

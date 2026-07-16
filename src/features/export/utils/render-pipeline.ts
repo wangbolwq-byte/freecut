@@ -55,6 +55,34 @@ export interface ResolvedClientSettings {
   codecFallback?: ClientCodec
 }
 
+/** Map the requested UI settings without probing encoder support. */
+export function mapRequestedClientSettings(
+  settings: ExportSettings | ExtendedExportSettings,
+  fps: number,
+): Omit<ResolvedClientSettings, 'codecFallback'> {
+  const extended = isExtendedSettings(settings)
+  const exportMode = extended ? settings.mode : 'video'
+  const videoContainer = extended ? settings.videoContainer : undefined
+  const audioContainer = extended ? settings.audioContainer : undefined
+  const subtitleMode = extended ? (settings.subtitleMode ?? 'burn') : 'burn'
+  const renderWholeProject = extended ? (settings.renderWholeProject ?? false) : false
+  const clientSettings = mapToClientSettings(settings, fps)
+
+  if (exportMode === 'video' && videoContainer) {
+    clientSettings.container = videoContainer as ClientVideoContainer
+  } else if (exportMode === 'audio' && audioContainer) {
+    clientSettings.container = audioContainer as ClientAudioContainer
+    clientSettings.mode = 'audio'
+    clientSettings.audioCodec = getDefaultAudioCodec(audioContainer)
+    clientSettings.audioBitrate = getAudioBitrateForQuality(settings.quality)
+  }
+
+  clientSettings.mode = exportMode
+  clientSettings.subtitleMode = exportMode === 'video' ? subtitleMode : 'off'
+
+  return { clientSettings, exportMode, renderWholeProject }
+}
+
 /**
  * Map UI export settings to ClientExportSettings, applying the container
  * override and codec fallback. Throws if no supported video codec exists.
@@ -67,26 +95,11 @@ export async function resolveClientSettings(
   fps: number,
 ): Promise<ResolvedClientSettings> {
   const extended = isExtendedSettings(settings)
-  const exportMode = extended ? settings.mode : 'video'
   const videoContainer = extended ? settings.videoContainer : undefined
-  const audioContainer = extended ? settings.audioContainer : undefined
-  const subtitleMode = extended ? (settings.subtitleMode ?? 'burn') : 'burn'
-  const renderWholeProject = extended ? (settings.renderWholeProject ?? false) : false
-
-  const clientSettings = mapToClientSettings(settings, fps)
-
-  // Override container if specified in extended settings.
-  if (exportMode === 'video' && videoContainer) {
-    clientSettings.container = videoContainer as ClientVideoContainer
-  } else if (exportMode === 'audio' && audioContainer) {
-    clientSettings.container = audioContainer as ClientAudioContainer
-    clientSettings.mode = 'audio'
-    clientSettings.audioCodec = getDefaultAudioCodec(audioContainer)
-    clientSettings.audioBitrate = getAudioBitrateForQuality(settings.quality)
-  }
-
-  clientSettings.mode = exportMode
-  clientSettings.subtitleMode = exportMode === 'video' ? subtitleMode : 'off'
+  const { clientSettings, exportMode, renderWholeProject } = mapRequestedClientSettings(
+    settings,
+    fps,
+  )
 
   let codecFallback: ClientCodec | undefined
 

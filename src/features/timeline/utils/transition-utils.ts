@@ -38,14 +38,15 @@ export function getMaxTransitionDurationForHandles(
   leftClip: TimelineItem,
   rightClip: TimelineItem,
   alignment: number | undefined,
+  timelineFps: number = 30,
 ): number {
   const maxByClipDuration = Math.floor(
     Math.min(leftClip.durationInFrames, rightClip.durationInFrames) - 1,
   )
   if (maxByClipDuration < 1) return 0
 
-  const outgoingTailHandle = getAvailableHandle(leftClip, 'end')
-  const incomingHeadHandle = getAvailableHandle(rightClip, 'start')
+  const outgoingTailHandle = getAvailableHandle(leftClip, 'end', timelineFps)
+  const incomingHeadHandle = getAvailableHandle(rightClip, 'start', timelineFps)
 
   const canFitDuration = (duration: number): boolean => {
     const portions = calculateTransitionPortions(duration, alignment)
@@ -82,6 +83,7 @@ export function canAddTransition(
   rightClip: TimelineItem,
   durationInFrames: number,
   alignment?: number,
+  timelineFps: number = 30,
 ): CanAddTransitionResult {
   // Check same track
   if (leftClip.trackId !== rightClip.trackId) {
@@ -112,8 +114,8 @@ export function canAddTransition(
     }
   }
 
-  const leftHandle = getAvailableHandle(leftClip, 'end')
-  const rightHandle = getAvailableHandle(rightClip, 'start')
+  const leftHandle = getAvailableHandle(leftClip, 'end', timelineFps)
+  const rightHandle = getAvailableHandle(rightClip, 'start', timelineFps)
 
   if (isAdjacent) {
     const portions = calculateTransitionPortions(durationInFrames, alignment)
@@ -165,13 +167,19 @@ export function clampRippleTrimDeltaToPreserveTransition(
         rightClip,
         transition.durationInFrames,
         transition.alignment,
+        timelineFps,
       ).canAdd
     }
 
     const leftClip = neighbor
     const rightClip = applyAnchoredTrimPreview(item, 'start', delta, timelineFps)
-    return canAddTransition(leftClip, rightClip, transition.durationInFrames, transition.alignment)
-      .canAdd
+    return canAddTransition(
+      leftClip,
+      rightClip,
+      transition.durationInFrames,
+      transition.alignment,
+      timelineFps,
+    ).canAdd
   }
 
   return clampDeltaToLastValidValue(requestedDelta, isValid)
@@ -201,6 +209,7 @@ export function clampRollingTrimDeltaToPreserveTransition(
       rightPreview,
       transition.durationInFrames,
       transition.alignment,
+      timelineFps,
     ).canAdd
   }
 
@@ -212,6 +221,7 @@ export function clampSlipDeltaToPreserveTransitions(
   requestedDelta: number,
   items: TimelineItem[],
   transitions: Transition[],
+  timelineFps: number = 30,
 ): number {
   if (requestedDelta === 0) return requestedDelta
 
@@ -239,6 +249,7 @@ export function clampSlipDeltaToPreserveTransitions(
         rightClip,
         transition.durationInFrames,
         transition.alignment,
+        timelineFps,
       ).canAdd
     })
   }
@@ -321,6 +332,7 @@ export function clampSlideDeltaToPreserveTransitions(
         rightClip,
         transition.durationInFrames,
         transition.alignment,
+        timelineFps,
       ).canAdd
     })
   }
@@ -360,7 +372,11 @@ function clampDeltaToLastValidValue(
  * @param side 'start' for head handle, 'end' for tail handle
  * @returns Number of available frames for transition
  */
-function getAvailableHandle(clip: TimelineItem, side: 'start' | 'end'): number {
+function getAvailableHandle(
+  clip: TimelineItem,
+  side: 'start' | 'end',
+  timelineFps: number,
+): number {
   // Non-media items have infinite handles (no source constraints)
   if (clip.type === 'text' || clip.type === 'shape' || clip.type === 'adjustment') {
     return Infinity
@@ -377,17 +393,18 @@ function getAvailableHandle(clip: TimelineItem, side: 'start' | 'end'): number {
   }
 
   // Video items have source-based constraints
-  const { sourceStart, sourceEnd, sourceDuration, speed } = getSourceProperties(clip)
+  const { sourceStart, sourceEnd, sourceDuration, sourceFps, speed } = getSourceProperties(clip)
+  const effectiveSourceFps = sourceFps ?? timelineFps
   const effectiveSourceEnd = sourceEnd ?? sourceDuration ?? 0
   const effectiveSourceDuration = sourceDuration ?? 0
 
   if (side === 'start') {
     // Head handle: how much source is available before current start
-    return sourceToTimelineFrames(sourceStart, speed)
+    return sourceToTimelineFrames(sourceStart, speed, effectiveSourceFps, timelineFps)
   } else {
     // Tail handle: how much source is available after current end
     const availableAfter = getAvailableSourceFrames(effectiveSourceDuration, effectiveSourceEnd)
-    return sourceToTimelineFrames(availableAfter, speed)
+    return sourceToTimelineFrames(availableAfter, speed, effectiveSourceFps, timelineFps)
   }
 }
 

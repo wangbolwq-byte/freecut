@@ -7,8 +7,9 @@ import { useTimelineStore } from '../stores/timeline-store'
 import { useSelectionStore } from '@/shared/state/selection'
 
 // Utilities and hooks
-import { useTimelineZoomContext } from '../contexts/timeline-zoom-context'
+import { useTimelineCommittedZoomContext } from '../contexts/timeline-zoom-context'
 import { resolveMarkerNames } from '@/shared/timeline/marker-names'
+import { pixelsToFrameNow } from '../utils/zoom-conversions'
 
 // Types
 import type { ProjectMarker } from '@/types/timeline'
@@ -28,7 +29,7 @@ export const TimelineProjectMarkers = memo(function TimelineProjectMarkers() {
   const updateMarker = useTimelineStore((s) => s.updateMarker)
   const selectedMarkerId = useSelectionStore((s) => s.selectedMarkerId)
   const selectMarker = useSelectionStore((s) => s.selectMarker)
-  const { frameToPixels, pixelsToFrame } = useTimelineZoomContext()
+  const { frameToPixels } = useTimelineCommittedZoomContext()
 
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -39,14 +40,13 @@ export const TimelineProjectMarkers = memo(function TimelineProjectMarkers() {
   )
 
   // Use refs to avoid stale closures
-  const pixelsToFrameRef = useRef(pixelsToFrame)
+  const pixelsToFrameRef = useRef(pixelsToFrameNow)
   const updateMarkerRef = useRef(updateMarker)
 
   // Update refs when functions change
   useEffect(() => {
-    pixelsToFrameRef.current = pixelsToFrame
     updateMarkerRef.current = updateMarker
-  }, [pixelsToFrame, updateMarker])
+  }, [updateMarker])
 
   // Handle drag start and selection
   const handleMouseDown = useCallback(

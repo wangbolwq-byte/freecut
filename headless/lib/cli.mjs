@@ -1,12 +1,14 @@
 // Shared CLI helpers for the headless scripts: argv parsing + Chrome launch args.
 
 /** Parse `--key value` / boolean `--flag` argv into an object; positionals go in `_`. */
-export function parseArgs(argv) {
+export function parseArgs(argv, { allowed, aliases = {} } = {}) {
   const args = { _: [] }
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i]
     if (token.startsWith('--')) {
-      const key = token.slice(2)
+      const rawKey = token.slice(2)
+      const key = aliases[rawKey] ?? rawKey
+      if (allowed && !allowed.has(key)) throw new Error(`Unknown option: --${rawKey}`)
       const next = argv[i + 1]
       if (next === undefined || next.startsWith('--')) args[key] = true
       else {
@@ -38,7 +40,12 @@ export function chromeLaunchArgs() {
       : process.platform === 'darwin'
         ? '--use-angle=metal'
         : '--use-angle=vulkan'
-  const base = ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--ignore-gpu-blocklist', angle]
+  const base = [
+    '--enable-unsafe-webgpu',
+    '--enable-features=Vulkan',
+    '--ignore-gpu-blocklist',
+    angle,
+  ]
   const extra = (process.env.FREECUT_CHROME_ARGS ?? '').split(/\s+/).filter(Boolean)
   return [...base, ...extra]
 }

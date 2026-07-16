@@ -1,2 +1,8 @@
 export { ClockProvider } from './ClockProvider'
-export { useClock, useClockFrame, useClockIsPlaying, useClockPlaybackRate } from './clock-hooks'
+export {
+  useClock,
+  useClockFrame,
+  useClockFrameSelector,
+  useClockIsPlaying,
+  useClockPlaybackRate,
+} from './clock-hooks'

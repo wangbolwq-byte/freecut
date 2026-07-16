@@ -1,5 +1,5 @@
 import type { PointerEvent as ReactPointerEvent } from 'react'
-import { useIoRangeReadoutStore } from './io-range-readout-store'
+import { useIoRangeReadoutStore, type IoDragReadout } from './io-range-readout-store'
 
 /**
  * Start a pointer drag for an IO marker / range strip.
@@ -12,14 +12,14 @@ import { useIoRangeReadoutStore } from './io-range-readout-store'
  *   second touch can't hijack the active drag.
  *
  * `onMove` receives the pointer's `clientX` (all IO surfaces resolve position
- * from X only). If it returns a string, that label is shown as a cursor-following
- * readout via {@link IoDragReadout}; return nothing to skip the readout. Returns
- * a cleanup fn (store it to tear the drag down on unmount), or `null` for a
- * non-primary button.
+ * from X only). Returning a string shows a cursor-following readout. Returning
+ * an {@link IoDragReadout} anchors it to surface geometry instead. Return
+ * nothing to skip the readout. Returns a cleanup fn (store it to tear the drag
+ * down on unmount), or `null` for a non-primary button.
  */
 export function beginIoPointerDrag(
   e: ReactPointerEvent,
-  onMove: (clientX: number) => string | void,
+  onMove: (clientX: number) => string | IoDragReadout | void,
   onEnd?: () => void,
 ): (() => void) | null {
   if (e.button !== 0) return null
@@ -36,10 +36,12 @@ export function beginIoPointerDrag(
   }
 
   const publish = (clientX: number, clientY: number) => {
-    const label = onMove(clientX)
+    const update = onMove(clientX)
     useIoRangeReadoutStore
       .getState()
-      .setReadout(typeof label === 'string' ? { label, x: clientX, y: clientY } : null)
+      .setReadout(
+        typeof update === 'string' ? { label: update, x: clientX, y: clientY } : (update ?? null),
+      )
   }
 
   // Function declarations (hoisted) so move/end/cleanup can reference each other.

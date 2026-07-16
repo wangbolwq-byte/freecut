@@ -8,7 +8,10 @@
 
 import type { Transition } from '@/types/transition'
 import type { TimelineItem } from '@/types/timeline'
-import { calculateTransitionPortions } from '@/shared/timeline/transitions/transition-planner'
+import {
+  calculateTransitionPortions,
+  solveClipTransitionPressure,
+} from '@/shared/timeline/transitions/transition-planner'
 
 /**
  * Frame range representing a blocked region (inclusive start, exclusive end)
@@ -70,22 +73,13 @@ export function getTransitionBlockedRanges(
 
   // Keep blocked ranges chain-safe for clips with both incoming and outgoing transitions.
   if (incomingTransition && outgoingTransition) {
-    const available = Math.max(0, clip.durationInFrames)
-    const total = incomingPortion + outgoingPortion
-    if (total > available && total > 0) {
-      const scale = available / total
-      incomingPortion = Math.floor(incomingPortion * scale)
-      outgoingPortion = Math.floor(outgoingPortion * scale)
-
-      const remainder = available - (incomingPortion + outgoingPortion)
-      if (remainder > 0) {
-        if (incomingPortion <= outgoingPortion) {
-          incomingPortion += remainder
-        } else {
-          outgoingPortion += remainder
-        }
-      }
-    }
+    const adjusted = solveClipTransitionPressure(
+      clip.durationInFrames,
+      incomingPortion,
+      outgoingPortion,
+    )
+    incomingPortion = adjusted.incomingPortion
+    outgoingPortion = adjusted.outgoingPortion
   }
 
   if (incomingTransition && incomingPortion > 0) {

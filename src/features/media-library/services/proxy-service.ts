@@ -166,6 +166,7 @@ class ProxyService {
   private pendingJobsByKey = new Map<string, QueuedProxyJob>()
   private pendingJobOrder: string[] = []
   private activeJobPhaseByKey = new Map<string, 'loading' | 'processing'>()
+  private activeJobPriorityByKey = new Map<string, ProxyJobPriority>()
   private progressEmissionByProxyKey = new Map<string, ProgressEmissionState>()
   private statusListener: ProxyStatusListener | null = null
   private mediaResolver: ProxyMediaResolver | null = null
@@ -311,6 +312,9 @@ class ProxyService {
         existingJob.priority = 'user'
         this.insertPendingJob(existingJob)
       }
+      if ((options?.priority ?? 'user') === 'user') {
+        this.activeJobPriorityByKey.set(resolvedProxyKey, 'user')
+      }
       this.emitStatusForProxyKey(
         resolvedProxyKey,
         'generating',
@@ -348,6 +352,7 @@ class ProxyService {
 
     if (this.pendingJobsByKey.has(resolvedProxyKey)) {
       this.removePendingJob(resolvedProxyKey)
+      this.activeJobPriorityByKey.delete(resolvedProxyKey)
       return
     }
 
@@ -358,6 +363,7 @@ class ProxyService {
 
     if (activePhase === 'loading') {
       this.activeJobPhaseByKey.delete(resolvedProxyKey)
+      this.activeJobPriorityByKey.delete(resolvedProxyKey)
       this.drainQueue()
       return
     }
@@ -369,12 +375,28 @@ class ProxyService {
     } as ProxyWorkerRequest)
   }
 
+  cancelBackgroundProxy(mediaId: string, proxyKey?: string): void {
+    const resolvedProxyKey = this.resolveProxyKey(mediaId, proxyKey)
+    const pendingPriority = this.pendingJobsByKey.get(resolvedProxyKey)?.priority
+    const activePriority = this.activeJobPriorityByKey.get(resolvedProxyKey)
+    if (pendingPriority !== 'background' && activePriority !== 'background') return
+    this.cancelProxy(mediaId, resolvedProxyKey)
+  }
+
   /**
    * Get proxy blob URL if available
    */
   getProxyBlobUrl(mediaId: string, proxyKey?: string): string | null {
     const resolvedProxyKey = this.resolveProxyKey(mediaId, proxyKey)
     return this.proxyBlobUrlByKey.get(resolvedProxyKey) ?? null
+  }
+
+  getMediaIdByProxyUrl(url: string): string | null {
+    for (const [proxyKey, proxyUrl] of this.proxyBlobUrlByKey) {
+      if (proxyUrl !== url) continue
+      return this.mediaIdsByProxyKey.get(proxyKey)?.values().next().value ?? null
+    }
+    return null
   }
 
   /**
@@ -650,6 +672,7 @@ class ProxyService {
       case 'complete': {
         const wasCancelled = !this.generatingProxyKeys.has(proxyKey)
         this.activeJobPhaseByKey.delete(proxyKey)
+        this.activeJobPriorityByKey.delete(proxyKey)
         this.generatingProxyKeys.delete(proxyKey)
         this.progressByProxyKey.delete(proxyKey)
         this.clearProgressEmissionState(proxyKey)
@@ -664,6 +687,7 @@ class ProxyService {
 
       case 'cancelled': {
         this.activeJobPhaseByKey.delete(proxyKey)
+        this.activeJobPriorityByKey.delete(proxyKey)
         this.generatingProxyKeys.delete(proxyKey)
         this.progressByProxyKey.delete(proxyKey)
         this.clearProgressEmissionState(proxyKey)
@@ -674,6 +698,7 @@ class ProxyService {
       case 'error': {
         const wasCancelled = !this.generatingProxyKeys.has(proxyKey)
         this.activeJobPhaseByKey.delete(proxyKey)
+        this.activeJobPriorityByKey.delete(proxyKey)
         this.generatingProxyKeys.delete(proxyKey)
         this.progressByProxyKey.delete(proxyKey)
         this.clearProgressEmissionState(proxyKey)
@@ -941,6 +966,7 @@ class ProxyService {
 
   private async runQueuedJob(job: QueuedProxyJob): Promise<void> {
     const { proxyKey } = job
+    this.activeJobPriorityByKey.set(proxyKey, job.priority)
     try {
       const worker = this.getWorker()
 
@@ -965,6 +991,7 @@ class ProxyService {
       } catch (error) {
         if (!this.generatingProxyKeys.has(proxyKey)) {
           this.activeJobPhaseByKey.delete(proxyKey)
+          this.activeJobPriorityByKey.delete(proxyKey)
           this.drainQueue()
           return
         }
@@ -975,6 +1002,7 @@ class ProxyService {
 
       if (!this.generatingProxyKeys.has(proxyKey)) {
         this.activeJobPhaseByKey.delete(proxyKey)
+        this.activeJobPriorityByKey.delete(proxyKey)
         this.drainQueue()
         return
       }
@@ -999,6 +1027,7 @@ class ProxyService {
 
   private failQueuedJob(proxyKey: string, message: string, error?: unknown): void {
     this.activeJobPhaseByKey.delete(proxyKey)
+    this.activeJobPriorityByKey.delete(proxyKey)
     this.generatingProxyKeys.delete(proxyKey)
     this.progressByProxyKey.delete(proxyKey)
     this.clearProgressEmissionState(proxyKey)

@@ -1,6 +1,15 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronDown, Plus, Trash2, WandSparkles, X } from 'lucide-react'
+import { ChevronDown, ListFilter, Plus, Search, Trash2, WandSparkles, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { useShallow } from 'zustand/react/shallow'
 import type { CanvasSettings } from '@/types/transform'
@@ -9,6 +18,7 @@ import type { TextItem, TimelineItem } from '@/types/timeline'
 import type { MotionModifierType } from '@/types/motion'
 import { cn } from '@/shared/ui/cn'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -61,6 +71,7 @@ import {
 import { MotionPresetThumbnail } from './motion-preset-thumbnail'
 import { SaveAnimationPresetDialog } from './save-animation-preset-dialog'
 import { TextMotionSlotRows } from '../text-motion/text-motion-slot-rows'
+import { filterAnimationPresetCandidates } from './animation-preset-filter'
 
 // Every transform/opacity property any built-in motion preset can write. In
 // Replace mode we clear these (within the new preset's frame window) so a fresh
@@ -278,30 +289,27 @@ const MotionPresetSection = memo(function MotionPresetSection({
           const disabled = reason !== null
           const label = t(`editor.motionPresets.items.${preset.labelKey}`)
 
-          const tile = (
-            <button
-              type="button"
-              disabled={disabled}
-              onClick={() => onApply(preset)}
-              className={cn(
-                'group flex h-full w-full flex-col items-center gap-1 rounded-md border border-border/60 p-1.5 text-[10px]',
-                disabled
-                  ? 'cursor-not-allowed text-muted-foreground/50'
-                  : 'text-muted-foreground hover:border-border hover:bg-secondary/40 hover:text-foreground',
-              )}
-            >
-              <MotionPresetThumbnail thumbnail={preset.thumbnail} />
-              <span className="w-full truncate text-center leading-tight">{label}</span>
-            </button>
-          )
-
-          if (!reason) return <div key={preset.id}>{tile}</div>
           return (
             <Tooltip key={preset.id}>
               <TooltipTrigger asChild>
-                <div>{tile}</div>
+                <button
+                  type="button"
+                  aria-disabled={disabled}
+                  onClick={() => {
+                    if (!disabled) onApply(preset)
+                  }}
+                  className={cn(
+                    'group flex min-h-16 w-full flex-col items-center gap-1 rounded-md border border-border/60 p-1.5 text-[10px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                    disabled
+                      ? 'cursor-not-allowed text-muted-foreground/50'
+                      : 'text-muted-foreground hover:border-border hover:bg-secondary/40 hover:text-foreground',
+                  )}
+                >
+                  <MotionPresetThumbnail thumbnail={preset.thumbnail} />
+                  <span className="w-full truncate text-center leading-tight">{label}</span>
+                </button>
               </TooltipTrigger>
-              <TooltipContent>{reason}</TooltipContent>
+              {reason && <TooltipContent>{reason}</TooltipContent>}
             </Tooltip>
           )
         })}
@@ -364,6 +372,9 @@ export const AnimationPresetLibrary = memo(function AnimationPresetLibrary({
   // 'replace' (default) clears a preset's target properties before applying so
   // reapplying an entrance/exit preset swaps it; 'add' layers onto what's there.
   const [applyMode, setApplyMode] = useState<'replace' | 'add'>('replace')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [compatibleOnly, setCompatibleOnly] = useState(false)
+  const deferredSearchQuery = useDeferredValue(searchQuery)
 
   useEffect(() => {
     if (!projectId) {
@@ -485,6 +496,39 @@ export const AnimationPresetLibrary = memo(function AnimationPresetLibrary({
       return null
     },
     [motionPropertySets, selectedItems, t],
+  )
+
+  const filteredMotionPresetsByCategory = useMemo(
+    () =>
+      MOTION_PRESET_CATEGORIES.reduce(
+        (map, category) => {
+          map[category] = filterAnimationPresetCandidates(
+            presetsByCategory[category].map((preset) => ({
+              item: preset,
+              label: t(`editor.motionPresets.items.${preset.labelKey}`),
+              compatible: motionReason(preset) === null,
+            })),
+            deferredSearchQuery,
+            compatibleOnly,
+          )
+          return map
+        },
+        {} as Record<MotionPresetCategory, MotionPreset[]>,
+      ),
+    [compatibleOnly, deferredSearchQuery, motionReason, t],
+  )
+  const filteredModulators = useMemo(
+    () =>
+      filterAnimationPresetCandidates(
+        MOTION_MODULATORS.map((modulator) => ({
+          item: modulator,
+          label: t(`editor.motionGenerator.modulators.${modulator.labelKey}`),
+          compatible: modulatorReason(modulator) === null,
+        })),
+        deferredSearchQuery,
+        compatibleOnly,
+      ),
+    [compatibleOnly, deferredSearchQuery, modulatorReason, t],
   )
 
   const handleApplyMotion = useCallback(
@@ -751,6 +795,33 @@ export const AnimationPresetLibrary = memo(function AnimationPresetLibrary({
     },
     [compatibilityByPresetId, selectedItem, t],
   )
+  const filteredSavedPresets = useMemo(
+    () =>
+      filterAnimationPresetCandidates(
+        presets.map((preset) => ({
+          item: preset,
+          label: preset.name,
+          compatible: incompatibilityReason(preset) === null,
+        })),
+        deferredSearchQuery,
+        compatibleOnly,
+      ),
+    [compatibleOnly, deferredSearchQuery, incompatibilityReason, presets],
+  )
+  const visibleMotionPresetCount = useMemo(
+    () =>
+      MOTION_PRESET_CATEGORIES.reduce(
+        (count, category) => count + filteredMotionPresetsByCategory[category].length,
+        0,
+      ),
+    [filteredMotionPresetsByCategory],
+  )
+  const filtersActive = deferredSearchQuery.trim().length > 0 || compatibleOnly
+  const hasVisiblePresetResults =
+    visibleMotionPresetCount > 0 ||
+    filteredModulators.length > 0 ||
+    filteredSavedPresets.length > 0 ||
+    selectedTextItems.length > 0
 
   // --- "Applied to this clip" summary (state the panel otherwise hides) ---
   const keyframedPropertyCount = useMemo(
@@ -792,7 +863,7 @@ export const AnimationPresetLibrary = memo(function AnimationPresetLibrary({
                   onClick={() => setDialogOpen(true)}
                 >
                   <Plus className="h-3 w-3" />
-                  {t('editor.animatePresets.saveButton')}
+                  {t('editor.animatePresets.saveButtonLong')}
                 </Button>
               </span>
             </TooltipTrigger>
@@ -800,6 +871,47 @@ export const AnimationPresetLibrary = memo(function AnimationPresetLibrary({
               <TooltipContent>{t('editor.animatePresets.noAnimationToSave')}</TooltipContent>
             )}
           </Tooltip>
+        </div>
+
+        <div className="flex items-center gap-1.5 border-b border-border/70 p-2">
+          <div className="relative min-w-0 flex-1">
+            <Search
+              className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <Input
+              type="search"
+              name="animation-preset-search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder={t('editor.animatePresets.searchPlaceholder')}
+              aria-label={t('editor.animatePresets.searchPlaceholder')}
+              autoComplete="off"
+              className="h-7 pl-7 pr-7 text-[11px]"
+            />
+            {searchQuery.length > 0 ? (
+              <button
+                type="button"
+                aria-label={t('editor.animatePresets.clearSearch')}
+                className="absolute right-1 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                onClick={() => setSearchQuery('')}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            ) : null}
+          </div>
+          <Button
+            type="button"
+            variant={compatibleOnly ? 'secondary' : 'ghost'}
+            size="sm"
+            className="h-7 shrink-0 gap-1 px-2 text-[10px]"
+            aria-pressed={compatibleOnly}
+            title={t('editor.animatePresets.compatibleOnlyHint')}
+            onClick={() => setCompatibleOnly((current) => !current)}
+          >
+            <ListFilter className="h-3 w-3" />
+            {t('editor.animatePresets.compatibleOnly')}
+          </Button>
         </div>
 
         <ScrollArea className="min-h-0 flex-1">
@@ -884,127 +996,150 @@ export const AnimationPresetLibrary = memo(function AnimationPresetLibrary({
               </div>
             </div>
 
-            {MOTION_PRESET_CATEGORIES.map((category) => (
-              <MotionPresetSection
-                key={category}
-                category={category}
-                presets={presetsByCategory[category]}
-                reasonFor={motionReason}
-                onApply={handleApplyMotion}
-                t={t}
-              />
-            ))}
+            {MOTION_PRESET_CATEGORIES.map((category) =>
+              filteredMotionPresetsByCategory[category].length > 0 ? (
+                <MotionPresetSection
+                  key={category}
+                  category={category}
+                  presets={filteredMotionPresetsByCategory[category]}
+                  reasonFor={motionReason}
+                  onApply={handleApplyMotion}
+                  t={t}
+                />
+              ) : null,
+            )}
 
-            <Separator />
+            {filteredModulators.length > 0 ? <Separator /> : null}
 
             {/* ── Procedural generators. Click applies with defaults (runs live,
                 non-destructive); the per-row flyout tunes the live modifier and
                 Bake flattens them into keyframes. ── */}
-            <StageSection
-              title={t('editor.animateStages.continuousTitle')}
-              hint={t('editor.animateStages.continuousHint')}
-            >
-              <div className="grid grid-cols-3 gap-1.5">
-                {MOTION_MODULATORS.map((modulator) => (
-                  <ContinuousMotionRow
-                    key={modulator.id}
-                    modulator={modulator}
-                    active={activeModulatorIds.has(modulator.id)}
-                    reason={modulatorReason(modulator)}
-                    settings={modulatorSettingsByType.get(modulator.id) ?? null}
-                    onApply={() => handleApplyModulator(modulator)}
-                    onRemove={() => handleRemoveModulator(modulator)}
-                    onLiveEdit={(settings) => handleModulatorLiveEdit(modulator.id, settings)}
-                    onCommitEdit={(settings) => handleModulatorCommitEdit(modulator.id, settings)}
-                    t={t}
-                  />
-                ))}
-              </div>
+            {filteredModulators.length > 0 ? (
+              <StageSection
+                title={t('editor.animateStages.continuousTitle')}
+                hint={t('editor.animateStages.continuousHint')}
+                defaultOpen={false}
+              >
+                <div className="grid grid-cols-3 gap-1.5">
+                  {filteredModulators.map((modulator) => (
+                    <ContinuousMotionRow
+                      key={modulator.id}
+                      modulator={modulator}
+                      active={activeModulatorIds.has(modulator.id)}
+                      reason={modulatorReason(modulator)}
+                      settings={modulatorSettingsByType.get(modulator.id) ?? null}
+                      onApply={() => handleApplyModulator(modulator)}
+                      onRemove={() => handleRemoveModulator(modulator)}
+                      onLiveEdit={(settings) => handleModulatorLiveEdit(modulator.id, settings)}
+                      onCommitEdit={(settings) => handleModulatorCommitEdit(modulator.id, settings)}
+                      t={t}
+                    />
+                  ))}
+                </div>
 
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 w-full justify-start gap-1.5 px-2 text-[11px]"
-                      disabled={!hasBakeableMotion}
-                      onClick={handleBakeMotion}
-                    >
-                      <WandSparkles className="h-3.5 w-3.5" />
-                      {t('editor.motionGenerator.bakeToKeyframes')}
-                    </Button>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>{t('editor.motionGenerator.bakeToKeyframesHint')}</TooltipContent>
-              </Tooltip>
-            </StageSection>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-full justify-start gap-1.5 px-2 text-[11px]"
+                        disabled={!hasBakeableMotion}
+                        onClick={handleBakeMotion}
+                      >
+                        <WandSparkles className="h-3.5 w-3.5" />
+                        {t('editor.motionGenerator.bakeToKeyframes')}
+                      </Button>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>{t('editor.motionGenerator.bakeToKeyframesHint')}</TooltipContent>
+                </Tooltip>
+              </StageSection>
+            ) : null}
 
             {/* ── Motion text: per-character / word / line In-Out-Loop slots.
                 Parametric (evaluated at render time), text clips only. ── */}
             {selectedTextItems.length > 0 && (
               <>
                 <Separator />
-                <StageSection title={t('textMotion.sectionTitle')} hint={t('textMotion.hint')}>
-                  <TextMotionSlotRows items={selectedTextItems} />
+                <StageSection
+                  title={t('textMotion.sectionTitle')}
+                  hint={t('textMotion.hint')}
+                  defaultOpen={false}
+                >
+                  <TextMotionSlotRows items={selectedTextItems} query={deferredSearchQuery} />
                 </StageSection>
               </>
             )}
 
-            <Separator />
+            {!hasVisiblePresetResults && filtersActive ? (
+              <div
+                className="rounded-md border border-dashed border-border/70 px-3 py-6 text-center text-xs text-muted-foreground"
+                role="status"
+              >
+                {t('editor.animatePresets.noMatches')}
+              </div>
+            ) : null}
+
+            {!filtersActive || filteredSavedPresets.length > 0 ? <Separator /> : null}
 
             {/* ── Saved animations — user-captured presets, also declarative ── */}
-            <section className="flex flex-col gap-1">
-              <h3 className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                {t('editor.animatePresets.animationsHeading')}
-              </h3>
-              {presets.length === 0 ? (
-                <p className="text-xs text-muted-foreground">{t('editor.animatePresets.empty')}</p>
-              ) : (
-                presets.map((preset) => {
-                  const reason = incompatibilityReason(preset)
-                  const disabled = reason !== null
-                  const row = (
-                    <div
-                      key={preset.id}
-                      className="group flex items-center gap-1 rounded-md border border-border/60"
-                    >
-                      <button
-                        type="button"
-                        disabled={disabled}
-                        onClick={() => handleApply(preset)}
-                        className={cn(
-                          'min-w-0 flex-1 truncate px-2 py-1.5 text-left text-xs',
-                          disabled
-                            ? 'cursor-not-allowed text-muted-foreground/60'
-                            : 'hover:bg-secondary/40',
-                        )}
+            {!filtersActive || filteredSavedPresets.length > 0 ? (
+              <section className="flex flex-col gap-1">
+                <h3 className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  {t('editor.animatePresets.animationsHeading')}
+                </h3>
+                {presets.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t('editor.animatePresets.empty')}
+                  </p>
+                ) : (
+                  filteredSavedPresets.map((preset) => {
+                    const reason = incompatibilityReason(preset)
+                    const disabled = reason !== null
+                    const row = (
+                      <div
+                        key={preset.id}
+                        className="group flex items-center gap-1 rounded-md border border-border/60"
                       >
-                        {preset.name}
-                      </button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 shrink-0 opacity-0 group-hover:opacity-100"
-                        aria-label={t('editor.animatePresets.deleteLabel')}
-                        onClick={() => void handleDelete(preset)}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  )
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              aria-disabled={disabled}
+                              onClick={() => {
+                                if (!disabled) handleApply(preset)
+                              }}
+                              className={cn(
+                                'min-w-0 flex-1 truncate px-2 py-1.5 text-left text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring',
+                                disabled
+                                  ? 'cursor-not-allowed text-muted-foreground/60'
+                                  : 'hover:bg-secondary/40',
+                              )}
+                            >
+                              {preset.name}
+                            </button>
+                          </TooltipTrigger>
+                          {reason ? <TooltipContent>{reason}</TooltipContent> : null}
+                        </Tooltip>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                          aria-label={t('editor.animatePresets.deleteLabel')}
+                          onClick={() => void handleDelete(preset)}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    )
 
-                  if (!disabled) return row
-                  return (
-                    <Tooltip key={preset.id}>
-                      <TooltipTrigger asChild>{row}</TooltipTrigger>
-                      <TooltipContent>{reason}</TooltipContent>
-                    </Tooltip>
-                  )
-                })
-              )}
-            </section>
+                    return row
+                  })
+                )}
+              </section>
+            ) : null}
           </div>
         </ScrollArea>
 

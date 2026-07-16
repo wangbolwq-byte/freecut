@@ -454,7 +454,7 @@ const DecodedPitchCorrectedAudio: React.FC<DecodedPitchCorrectedAudioProps> = Re
       volumeMultiplier = 1,
     } = props
 
-    const { frame, fps, playing } = useAudioPlaybackState({
+    const { frame, fps, playing, isPreviewScrubbing } = useAudioPlaybackState({
       itemId,
       liveGainItemIds,
       volume,
@@ -482,7 +482,7 @@ const DecodedPitchCorrectedAudio: React.FC<DecodedPitchCorrectedAudioProps> = Re
     const nativeFallback = <NativePitchCorrectedAudio {...props} />
 
     useEffect(() => {
-      if (!mediaId || !src) return
+      if (!mediaId || !src || isPreviewScrubbing) return
 
       let cancelled = false
       const effectiveSourceFps = sourceFps ?? fps
@@ -548,6 +548,7 @@ const DecodedPitchCorrectedAudio: React.FC<DecodedPitchCorrectedAudioProps> = Re
       }
     }, [
       fps,
+      isPreviewScrubbing,
       isReversed,
       mediaId,
       reverseSourceEnd,

@@ -15,6 +15,7 @@
   --color-timeline-baseclip: oklch(0.42 0 0);
   --color-timeline-video: oklch(0.3991 0.0401 250);
   --color-timeline-audio: oklch(0.22 0.02 302);
+  --color-timeline-motion-segment: oklch(0.38 0 0);
   --color-timeline-image: oklch(0.62 0.17 250);
   --color-timeline-text: oklch(0.671 0 290);
   --color-timeline-shape: oklch(0.68 0.19 45);

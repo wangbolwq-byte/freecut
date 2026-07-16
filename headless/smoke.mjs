@@ -12,8 +12,7 @@ import { chromeLaunchArgs } from './lib/cli.mjs'
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
 const HEADED = process.argv.includes('--head')
 const urlArg = process.argv.indexOf('--url')
-const HARNESS_URL =
-  urlArg !== -1 ? process.argv[urlArg + 1] : 'http://localhost:5173/headless.html'
+const HARNESS_URL = urlArg !== -1 ? process.argv[urlArg + 1] : 'http://localhost:5173/headless.html'
 
 const input = {
   tracks: [
@@ -68,7 +67,11 @@ const input = {
 const main = async () => {
   const outPath = path.join(ROOT, 'output', 'smoke.webm')
   console.log(`Launching Chrome (headless=${!HEADED}) -> ${HARNESS_URL}`)
-  const browser = await chromium.launch({ channel: 'chrome', headless: !HEADED, args: chromeLaunchArgs() })
+  const browser = await chromium.launch({
+    channel: 'chrome',
+    headless: !HEADED,
+    args: chromeLaunchArgs(),
+  })
   try {
     const context = await browser.newContext({ acceptDownloads: true })
     const page = await context.newPage()
@@ -79,7 +82,9 @@ const main = async () => {
       const pct = typeof progress?.progress === 'number' ? progress.progress.toFixed(0) : '?'
       const frame = progress?.currentFrame ?? '?'
       const total = progress?.totalFrames ?? '?'
-      process.stdout.write(`\r  ${progress?.phase ?? 'render'}: ${pct}% (frame ${frame}/${total})   `)
+      process.stdout.write(
+        `\r  ${progress?.phase ?? 'render'}: ${pct}% (frame ${frame}/${total})   `,
+      )
     })
 
     await page.goto(HARNESS_URL, { waitUntil: 'load', timeout: 60_000 })
@@ -87,7 +92,10 @@ const main = async () => {
     console.log('Harness ready. Rendering...')
 
     const downloadPromise = page.waitForEvent('download', { timeout: 300_000 })
-    const summary = await page.evaluate((renderInput) => window.freecut.renderTimeline(renderInput), input)
+    const summary = await page.evaluate(
+      (renderInput) => window.freecut.renderTimeline(renderInput),
+      input,
+    )
     process.stdout.write('\n')
     console.log('Render summary:', summary)
 

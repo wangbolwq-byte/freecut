@@ -2,14 +2,14 @@
 #
 # Builds the harness (dist/) and runs serve.mjs with one warm headless Chrome.
 # Google Chrome (not Chromium) is used so H.264/AAC (proprietary codecs) work;
-# Mesa lavapipe provides software Vulkan so WebGPU effects can render without a
-# physical GPU. For best performance / guaranteed effects, run on a GPU host
-# with passthrough (see README) instead of software Vulkan.
+# Mesa lavapipe provides software Vulkan for non-effect WebGPU capability
+# detection. GPU-effect projects are rejected on software adapters because
+# they can produce blank/corrupt frames; use a native Linux GPU host instead.
 #
 # Build (context = repo root):
 #   docker build -f headless/Dockerfile -t freecut-headless .
-# Run (mount your workspace read-only):
-#   docker run --rm -p 8787:8787 -v /path/to/FreeCutProjects:/workspace:ro freecut-headless
+# Run (the lifecycle service requires a writable workspace for locks/atomic writes):
+#   docker run --rm -p 8787:8787 -v /path/to/FreeCutProjects:/workspace freecut-headless
 #   curl localhost:8787/health    # -> {"ok":true,"gpu":true,...}
 FROM node:24-bookworm
 
@@ -47,7 +47,11 @@ RUN npm run build
 # provides software WebGPU. --no-sandbox is required running Chrome as root.
 # (To force software even on a GPU host: -e VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json)
 ENV FREECUT_CHROME_ARGS="--no-sandbox"
-ENV FREECUT_WORKSPACE=/workspace
+# The container port must accept traffic from the published Docker interface.
+# Native serve.mjs runs remain loopback-only unless explicitly overridden.
+ENV FREECUT_HOST=0.0.0.0
 
 EXPOSE 8787
-CMD ["sh", "-c", "node headless/serve.mjs --workspace \"$FREECUT_WORKSPACE\" --port 8787"]
+# Exec form keeps Node as PID 1 so Docker's SIGTERM reaches the graceful
+# shutdown handler and releases the workspace writer lock.
+CMD ["node", "headless/serve.mjs", "--workspace", "/workspace", "--port", "8787"]

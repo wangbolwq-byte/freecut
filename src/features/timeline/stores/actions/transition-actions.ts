@@ -61,8 +61,14 @@ export function addTransition(
 
       const leftEnd = leftClip.from + leftClip.durationInFrames
       const isAdjacent = areFramesAligned(leftEnd, rightClip.from)
+      const timelineFps = useTimelineSettingsStore.getState().fps
       if (isAdjacent) {
-        const maxHandleDuration = getMaxTransitionDurationForHandles(leftClip, rightClip, alignment)
+        const maxHandleDuration = getMaxTransitionDurationForHandles(
+          leftClip,
+          rightClip,
+          alignment,
+          timelineFps,
+        )
         if (maxHandleDuration < 1) {
           getLogger().warn(
             '[addTransition] Cannot add transition: insufficient source handle at cut',
@@ -73,7 +79,7 @@ export function addTransition(
       }
 
       // Validate that transition can be added (includes handle check)
-      const validation = canAddTransition(leftClip, rightClip, duration, alignment)
+      const validation = canAddTransition(leftClip, rightClip, duration, alignment, timelineFps)
       if (!validation.canAdd) {
         getLogger().warn('[addTransition] Cannot add transition:', validation.reason)
         return false
@@ -139,6 +145,7 @@ function _validateAndUpdateTransition(id: string, updates: TransitionUpdates): b
       rightClip,
       nextTransition.durationInFrames,
       nextTransition.alignment,
+      useTimelineSettingsStore.getState().fps,
     )
     if (!validation.canAdd) {
       getLogger().warn('[updateTransition] Cannot update transition:', validation.reason)

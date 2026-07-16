@@ -277,14 +277,13 @@ export const AnimateTimelineStrip = memo(function AnimateTimelineStrip() {
 
   return (
     <section
-      className="panel-bg shrink-0 overflow-hidden border-b border-border bg-[#24252b]"
+      className="panel-bg h-[212px] shrink-0 overflow-hidden border-b border-border bg-[#24252b] [@media(max-height:900px)]:h-[120px]"
       aria-label={t('editor.animateTimeline.label')}
       data-testid="animate-timeline-strip"
-      style={{ height: STRIP_HEIGHT }}
     >
       <div className="flex h-full flex-col">
         <div
-          className="flex shrink-0 gap-1 overflow-x-auto overflow-y-hidden border-b border-black/40 px-1 pt-1"
+          className="flex shrink-0 gap-1 overflow-x-auto overflow-y-hidden border-b border-black/40 px-1 pt-1 [@media(max-height:900px)]:hidden"
           data-testid="animate-timeline-filmstrip-scroll"
           style={{
             height: MINI_FILM_TILE_STRIP_HEIGHT,

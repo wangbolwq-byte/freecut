@@ -4,8 +4,11 @@
 
 export {
   DopesheetEditor,
+  CompactNavigator,
+  KEYFRAME_EDGE_INSET,
   getAnimatablePropertiesForItem,
   getEffectPropertyBaseValue,
+  getProceduralBands,
   captureAnimationFromItem,
   getPresetCompatibility,
   buildBakeMotionPlan,

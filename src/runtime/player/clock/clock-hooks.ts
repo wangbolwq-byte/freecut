@@ -36,6 +36,35 @@ export function useClockFrame(): number {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
+/**
+ * Subscribe to a derived Clock frame value.
+ *
+ * React compares the selected snapshot with Object.is before rendering. This
+ * lets range-based consumers keep a stable snapshot while the playhead is
+ * outside their active range instead of re-rendering for every unrelated
+ * framechange.
+ */
+export function useClockFrameSelector<T>(selector: (frame: number) => T): T {
+  const clock = useClock()
+
+  const subscribe = useCallback(
+    (callback: () => void) => {
+      clock.addEventListener('framechange', callback)
+      clock.addEventListener('seek', callback)
+
+      return () => {
+        clock.removeEventListener('framechange', callback)
+        clock.removeEventListener('seek', callback)
+      }
+    },
+    [clock],
+  )
+
+  const getSnapshot = useCallback(() => selector(clock.currentFrame), [clock, selector])
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
 export function useClockIsPlaying(): boolean {
   const clock = useClock()
 

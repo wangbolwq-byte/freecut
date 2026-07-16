@@ -2,6 +2,7 @@ import type { TimelineItem, TimelineTrack } from '@/types/timeline'
 import { DEFAULT_TRACK_HEIGHT } from '../constants'
 
 type CompositionLike = {
+  editorKind?: 'sequence' | 'composite-2d'
   items: TimelineItem[]
   tracks: TimelineTrack[]
 }
@@ -62,9 +63,10 @@ export function hydrateTracksFromItems(
 
 export function normalizeSubComposition<TComposition extends CompositionLike>(
   composition: TComposition,
-): TComposition {
+): TComposition & { editorKind: 'sequence' | 'composite-2d' } {
   return {
     ...composition,
+    editorKind: composition.editorKind === 'composite-2d' ? 'composite-2d' : 'sequence',
     tracks: hydrateTracksFromItems(composition.items, composition.tracks),
   }
 }

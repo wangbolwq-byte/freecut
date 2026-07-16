@@ -10,7 +10,12 @@ import { useSequencesStore } from './sequences-store'
 import { useCompositionsStore } from './compositions-store'
 import { useCompositionNavigationStore, getActiveTabId } from './composition-navigation-store'
 import { useTimelineCommandStore } from './timeline-command-store'
-import { createSequence } from './actions/composition-actions'
+import {
+  createCompositeComposition,
+  createSequence,
+  openCompositionAsTab,
+} from './actions/composition-actions'
+import { buildTimelineFromStores } from './timeline-persistence'
 
 describe('createSequence registers a visible tab', () => {
   beforeEach(() => {
@@ -19,6 +24,44 @@ describe('createSequence registers a visible tab', () => {
     setDefaultRootTimelineTracks()
     useItemsStore.getState().setItems([])
     useSequencesStore.getState().reset()
+  })
+
+  it('creates a composite-2d root without leaking it into classic sequence tabs', () => {
+    const id = createCompositeComposition({
+      name: 'Title Design',
+      durationInFrames: 180,
+    })
+
+    const composition = useCompositionsStore.getState().compositionById[id]
+    expect(composition).toMatchObject({
+      id,
+      name: 'Title Design',
+      editorKind: 'composite-2d',
+      durationInFrames: 180,
+    })
+    expect(useSequencesStore.getState().topLevelSequenceIds).not.toContain(id)
+    expect(useCompositionNavigationStore.getState().activeCompositionId).toBe(id)
+
+    openCompositionAsTab(id)
+    expect(useSequencesStore.getState().topLevelSequenceIds).not.toContain(id)
+  })
+
+  it('persists the composite kind and keeps creation undoable from its source context', () => {
+    const id = createCompositeComposition({ name: 'Lower Third', durationInFrames: 180 })
+
+    useCompositionNavigationStore.getState().switchToSequence(null)
+    const serialized = buildTimelineFromStores()
+    expect(serialized.compositions?.find((composition) => composition.id === id)).toMatchObject({
+      editorKind: 'composite-2d',
+      durationInFrames: 180,
+    })
+    expect(serialized.topLevelSequenceIds ?? []).not.toContain(id)
+
+    useTimelineCommandStore.getState().undo()
+    expect(useCompositionsStore.getState().compositionById[id]).toBeUndefined()
+
+    useTimelineCommandStore.getState().redo()
+    expect(useCompositionsStore.getState().compositionById[id]?.editorKind).toBe('composite-2d')
   })
 
   afterEach(() => resetTimelineCompositionTestState())

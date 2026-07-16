@@ -1,4 +1,3 @@
-import { renderAudioOnly, renderComposition } from '../utils/canvas-render-orchestrator'
 import { isGifUrl, isWebpUrl } from '@/shared/utils/media-utils'
 import { createLogger } from '@/shared/logging/logger'
 import type { ImageItem } from '@/types/timeline'
@@ -41,6 +40,11 @@ self.addEventListener('error', (event) => {
 })
 
 const activeRequests = new Map<string, AbortController>()
+
+// Keep the heavy render graph behind a dynamic import. Static ESM imports are
+// evaluated before this worker's body, which meant browser-only dependencies
+// (including React Refresh during development) ran before the `window` shim.
+const loadRenderers = () => import('../utils/canvas-render-orchestrator')
 
 function compositionHasAnimatedImage(
   tracks: Array<{ items: Array<{ type: string; src?: string; label?: string }> }>,
@@ -107,6 +111,8 @@ self.onmessage = async (event: MessageEvent<ExportRenderWorkerRequest>) => {
     if (compositionHasAudio(tracks) && typeof OfflineAudioContext === 'undefined') {
       throw new Error('WORKER_REQUIRES_MAIN_THREAD:audio-context')
     }
+
+    const { renderAudioOnly, renderComposition } = await loadRenderers()
 
     const onProgress = (progress: RenderProgress) => {
       const response: ExportRenderWorkerResponse = {

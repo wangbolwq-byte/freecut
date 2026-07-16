@@ -152,4 +152,81 @@ describe('timeline duplicate item actions', () => {
       trackId: 'track-2',
     })
   })
+
+  it('deep-copies keyframes onto an item duplicated to a new track', () => {
+    useItemsStore.getState().setItems([makeVideoItem()])
+    useKeyframesStore.getState().setKeyframes([
+      {
+        itemId: 'clip-1',
+        properties: [
+          {
+            property: 'x',
+            keyframes: [
+              {
+                id: 'source-keyframe',
+                frame: 12,
+                value: 240,
+                easing: 'cubic-bezier',
+                easingConfig: {
+                  type: 'cubic-bezier',
+                  bezier: { x1: 0.25, y1: 0.1, x2: 0.25, y2: 1 },
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ])
+
+    const [duplicatedItem] = duplicateItemsWithTrackChanges(
+      [
+        {
+          id: 'track-2',
+          name: 'V2',
+          order: 0,
+          kind: 'video',
+          height: 80,
+          locked: false,
+          syncLock: true,
+          visible: true,
+          muted: false,
+          solo: false,
+          volume: 0,
+          items: [],
+        },
+      ],
+      ['clip-1'],
+      [{ from: 100, trackId: 'track-2' }],
+    )
+
+    expect(duplicatedItem).toBeDefined()
+    const source = useKeyframesStore.getState().keyframesByItemId['clip-1']!
+    const copy = useKeyframesStore.getState().keyframesByItemId[duplicatedItem!.id]!
+
+    expect(copy).toEqual({
+      itemId: duplicatedItem!.id,
+      properties: [
+        {
+          property: 'x',
+          keyframes: [
+            {
+              id: expect.any(String),
+              frame: 12,
+              value: 240,
+              easing: 'cubic-bezier',
+              easingConfig: {
+                type: 'cubic-bezier',
+                bezier: { x1: 0.25, y1: 0.1, x2: 0.25, y2: 1 },
+              },
+            },
+          ],
+        },
+      ],
+    })
+    expect(copy.properties[0]!.keyframes[0]!.id).not.toBe('source-keyframe')
+    expect(copy.properties[0]!.keyframes[0]).not.toBe(source.properties[0]!.keyframes[0])
+    expect(copy.properties[0]!.keyframes[0]!.easingConfig?.bezier).not.toBe(
+      source.properties[0]!.keyframes[0]!.easingConfig?.bezier,
+    )
+  })
 })

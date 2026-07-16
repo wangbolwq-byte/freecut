@@ -56,6 +56,28 @@ describe('export-snapshot sourcing', () => {
     ])
   })
 
+  it('lists composite-2d compositions without promoting them to classic tabs', () => {
+    useCompositionsStore.getState().addComposition({
+      id: 'motion-title',
+      name: 'Motion title',
+      editorKind: 'composite-2d',
+      tracks: [],
+      items: [],
+      transitions: [],
+      keyframes: [],
+      fps: 30,
+      width: 1080,
+      height: 1080,
+      durationInFrames: 150,
+    })
+
+    expect(listExportableSequences()).toContainEqual({
+      id: 'motion-title',
+      name: 'Motion title',
+    })
+    expect(useSequencesStore.getState().topLevelSequenceIds).not.toContain('motion-title')
+  })
+
   it('reads a non-active sequence from the registry without switching to it', () => {
     seedSequence('seq-a', 'a-clip', 1280, 720)
     // We stay on Main; exporting seq-a must still see its own content/canvas.

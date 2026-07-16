@@ -1155,8 +1155,8 @@ fn halftoneFragment(input: VertexOutput) -> @location(0) vec4f {
   return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), opacity);
 }`,
   params: {
-    colorFront: { type: 'color', label: 'Front Color', default: '#2b2b2b' },
-    colorBack: { type: 'color', label: 'Back Color', default: '#f2f1e8' },
+    colorFront: { type: 'color', label: 'Front Color', default: '#2b2b2b', animatable: true },
+    colorBack: { type: 'color', label: 'Back Color', default: '#f2f1e8', animatable: true },
     originalColors: { type: 'boolean', label: 'Original Colors', default: false },
     inverted: { type: 'boolean', label: 'Inverted', default: false },
     grid: {
@@ -2186,12 +2186,14 @@ fn asciiFragment(input: VertexOutput) -> @location(0) vec4f {
       type: 'color',
       label: 'Text Color',
       default: '#ffffff',
+      animatable: true,
       visibleWhen: (params) => params.matchSourceColor !== true,
     },
     bgColor: {
       type: 'color',
       label: 'Background',
       default: '#0a0a0f',
+      animatable: true,
       visibleWhen: (params) => params.transparentBg !== true,
     },
     transparentBg: { type: 'boolean', label: 'Transparent Background', default: false },
@@ -2560,8 +2562,8 @@ fn inkFragment(input: VertexOutput) -> @location(0) vec4f {
       step: 0.05,
       animatable: true,
     },
-    inkColor: { type: 'color', label: 'Ink', default: '#141414' },
-    paperColor: { type: 'color', label: 'Paper', default: '#f4f1e8' },
+    inkColor: { type: 'color', label: 'Ink', default: '#141414', animatable: true },
+    paperColor: { type: 'color', label: 'Paper', default: '#f4f1e8', animatable: true },
   },
   packUniforms: (p, w, h) => {
     const ink = parseHexColor((p.inkColor as string) ?? '#141414', [0.08, 0.08, 0.08, 1])

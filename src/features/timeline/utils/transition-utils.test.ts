@@ -90,6 +90,20 @@ describe('transition-utils', () => {
     expect(result.canAdd).toBe(true)
   })
 
+  it('converts source handles into timeline frames using both frame rates', () => {
+    const left = {
+      ...createVideoClip('A', 0, 100, 0, 100, 115),
+      sourceFps: 60,
+    }
+    const right = {
+      ...createVideoClip('B', 100, 100, 15, 115, 300),
+      sourceFps: 60,
+    }
+
+    expect(canAddTransition(left, right, 30, 0.5, 30).canAdd).toBe(false)
+    expect(getMaxTransitionDurationForHandles(left, right, 0.5, 30)).toBe(14)
+  })
+
   it('rejects transition when adjacent clips have no spare handle', () => {
     const left = createVideoClip('A', 0, 100, 0, 100, 100)
     const right = createVideoClip('B', 100, 100, 0, 100, 100)

@@ -99,6 +99,9 @@ export default defineConfig({
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
+    // Keep every UI dependency on the same React dispatcher. This also prevents
+    // an optimizer refresh from leaving Radix on a stale React module during HMR.
+    dedupe: ['react', 'react-dom'],
   },
   server: {
     port: 5173,
@@ -309,7 +312,16 @@ export default defineConfig({
       '@mediabunny/aac-encoder',
       '@huggingface/transformers',
     ],
-    // Pre-bundle lucide-react for faster dev startup (avoids analyzing 1500+ icons on each reload)
-    include: ['lucide-react'],
+    // Pre-bundle the React runtime and root provider together so dependency
+    // optimizer refreshes cannot mix old/new dispatchers in a live dev session.
+    // Lucide stays explicit to avoid analyzing its full icon graph on startup.
+    include: [
+      'react',
+      'react-dom',
+      'react/jsx-runtime',
+      'react/jsx-dev-runtime',
+      '@radix-ui/react-tooltip',
+      'lucide-react',
+    ],
   },
 })

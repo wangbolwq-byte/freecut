@@ -1,9 +1,9 @@
 import {
   memo,
   useCallback,
+  useEffect,
   useLayoutEffect,
   useRef,
-  useState,
   type KeyboardEvent,
   type MouseEventHandler,
   type PointerEventHandler,
@@ -18,8 +18,13 @@ import { usePlaybackStore } from '@/shared/state/playback'
 import { EDITOR_LAYOUT_CSS_VALUES } from '@/config/editor-layout'
 import { FAST_SCRUB_RENDERER_ENABLED } from '../utils/preview-constants'
 import { getPreviewDisplayCanvasStyle } from '../utils/preview-display-canvas'
-import { getPreviewPixelSnapOffset, ZERO_PIXEL_SNAP_OFFSET } from '../utils/preview-pixel-snap'
+import { getPreviewPixelSnapOffset } from '../utils/preview-pixel-snap'
 import type { ColorGradeComparisonMode } from '../stores/gizmo-store'
+import {
+  isPlaybackColdStartPending,
+  markPlaybackColdStart,
+  resolvePlaybackColdStartVisibleFrame,
+} from '../utils/playback-cold-start-event'
 
 interface PreviewStageProps {
   backgroundRef: RefObject<HTMLDivElement | null>
@@ -47,6 +52,18 @@ interface PreviewStageProps {
   perfPanel?: ReactNode
   comparisonOverlay?: ReactNode
   overlayControls?: ReactNode
+}
+
+function canObservePlaybackPresentation(watchGeneration: number, generation: number): boolean {
+  return (
+    watchGeneration === generation &&
+    usePlaybackStore.getState().isPlaying &&
+    isPlaybackColdStartPending()
+  )
+}
+
+function supportsVideoFrameCallback(video: HTMLVideoElement): boolean {
+  return typeof video.requestVideoFrameCallback === 'function'
 }
 
 export const PreviewStage = memo(function PreviewStage({
@@ -78,8 +95,136 @@ export const PreviewStage = memo(function PreviewStage({
   const { t } = useTranslation()
   const useProxy = usePlaybackStore((s) => s.useProxy)
   const pixelSnapAnchorRef = useRef<HTMLDivElement | null>(null)
+  const pixelSnappedPlayerRef = useRef<HTMLDivElement | null>(null)
   const playerSurfaceRef = useRef<HTMLDivElement | null>(null)
-  const [pixelSnapOffset, setPixelSnapOffset] = useState(ZERO_PIXEL_SNAP_OFFSET)
+  const renderedOverlayVisibleRef = useRef(isRenderedOverlayVisible)
+  renderedOverlayVisibleRef.current = isRenderedOverlayVisible
+
+  // Observe the browser's actual video presentation rather than treating a
+  // Clock tick as visible output. The subscription is imperative so playback
+  // transitions do not invalidate the PreviewStage React tree.
+  useEffect(() => {
+    let generation = 0
+    const videoCallbackHandles = new Map<HTMLVideoElement, number>()
+    const rafHandles = new Set<number>()
+
+    const cancelPresentationWatch = () => {
+      generation += 1
+      for (const [video, handle] of videoCallbackHandles) {
+        video.cancelVideoFrameCallback?.(handle)
+      }
+      videoCallbackHandles.clear()
+      for (const handle of rafHandles) cancelAnimationFrame(handle)
+      rafHandles.clear()
+    }
+
+    const scheduleRaf = (callback: () => void) => {
+      const handle = requestAnimationFrame(() => {
+        rafHandles.delete(handle)
+        callback()
+      })
+      rafHandles.add(handle)
+    }
+
+    const isVisiblyComposited = (video: HTMLVideoElement) => {
+      const style = getComputedStyle(video)
+      return (
+        video.isConnected &&
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        style.opacity !== '0' &&
+        video.getClientRects().length > 0
+      )
+    }
+
+    const armVideo = (video: HTMLVideoElement, watchGeneration: number) => {
+      if (typeof video.requestVideoFrameCallback !== 'function') return
+      const handle = video.requestVideoFrameCallback(() => {
+        videoCallbackHandles.delete(video)
+        if (
+          watchGeneration !== generation ||
+          !usePlaybackStore.getState().isPlaying ||
+          renderedOverlayVisibleRef.current
+        ) {
+          return
+        }
+        const frame = Math.max(0, Math.round(playerRef.current?.getCurrentFrame() ?? 0))
+        if (resolvePlaybackColdStartVisibleFrame(frame, 'dom_video')) {
+          cancelPresentationWatch()
+          return
+        }
+        // A callback for the already-paused frame can race the first Clock
+        // advance. Keep listening until an advancing frame is presented.
+        armVideo(video, watchGeneration)
+      })
+      videoCallbackHandles.set(video, handle)
+    }
+
+    const armPresentationWatch = (watchGeneration: number, attempt = 0) => {
+      if (!canObservePlaybackPresentation(watchGeneration, generation)) return
+      // The rendered canvas owns the visible surface in this mode and reports
+      // directly from its draw path.
+      if (renderedOverlayVisibleRef.current) return
+
+      const surface = playerSurfaceRef.current
+      const videos = surface
+        ? Array.from(surface.querySelectorAll('video')).filter(isVisiblyComposited)
+        : []
+      const observableVideos = videos.filter(supportsVideoFrameCallback)
+      if (observableVideos.length > 0) {
+        markPlaybackColdStart({
+          active_dom_video_count: observableVideos.length,
+          active_video_ready_state_at_play: Math.min(
+            ...observableVideos.map((video) => video.readyState),
+          ),
+          active_video_network_state_at_play: Math.max(
+            ...observableVideos.map((video) => video.networkState),
+          ),
+        })
+        for (const video of observableVideos) armVideo(video, watchGeneration)
+        return
+      }
+
+      if (attempt < 2) {
+        scheduleRaf(() => armPresentationWatch(watchGeneration, attempt + 1))
+        return
+      }
+
+      // Static/image-only compositions have no media presentation callback.
+      // Two animation frames after the committed Clock update is the earliest
+      // paint-confirmed fallback for that surface.
+      scheduleRaf(() => {
+        scheduleRaf(() => {
+          const frame = Math.max(0, Math.round(playerRef.current?.getCurrentFrame() ?? 0))
+          if (resolvePlaybackColdStartVisibleFrame(frame, 'composition_paint')) {
+            cancelPresentationWatch()
+          }
+        })
+      })
+    }
+
+    const subscribe = usePlaybackStore.subscribe
+    if (typeof subscribe !== 'function') {
+      return cancelPresentationWatch
+    }
+
+    const unsubscribe = subscribe((state, previousState) => {
+      if (state.isPlaying && !previousState.isPlaying) {
+        cancelPresentationWatch()
+        const watchGeneration = generation
+        // Other playback subscribers begin the wide event in the same store
+        // dispatch. Arm after that synchronous subscriber pass completes.
+        queueMicrotask(() => armPresentationWatch(watchGeneration))
+      } else if (!state.isPlaying && previousState.isPlaying) {
+        cancelPresentationWatch()
+      }
+    })
+
+    return () => {
+      unsubscribe()
+      cancelPresentationWatch()
+    }
+  }, [playerRef])
 
   const setPixelSnappedPlayerContainerRef = useCallback(
     (el: HTMLDivElement | null) => {
@@ -99,9 +244,18 @@ export const PreviewStage = memo(function PreviewStage({
       rafId = null
       const rect = anchor.getBoundingClientRect()
       const nextOffset = getPreviewPixelSnapOffset(rect, window.devicePixelRatio)
-      setPixelSnapOffset((prev) =>
-        prev.x === nextOffset.x && prev.y === nextOffset.y ? prev : nextOffset,
-      )
+      const player = pixelSnappedPlayerRef.current
+      if (!player) return
+      const nextTransform =
+        nextOffset.x !== 0 || nextOffset.y !== 0
+          ? `translate3d(${nextOffset.x}px, ${nextOffset.y}px, 0)`
+          : ''
+      if (player.style.transform !== nextTransform) {
+        // ResizeObserver/rAF runs before paint. Write the transient correction
+        // directly so panel drags cannot spend one frame at stale geometry
+        // while waiting for a React state commit.
+        player.style.transform = nextTransform
+      }
     }
 
     const scheduleUpdate = () => {
@@ -128,10 +282,6 @@ export const PreviewStage = memo(function PreviewStage({
     }
   }, [playerSize.height, playerSize.width])
 
-  const pixelSnapTransform =
-    pixelSnapOffset.x !== 0 || pixelSnapOffset.y !== 0
-      ? `translate3d(${pixelSnapOffset.x}px, ${pixelSnapOffset.y}px, 0)`
-      : undefined
   const isTimelineEmpty = inputProps.tracks.every((track) => track.items.length === 0)
   const isSplitGradeComparison = colorGradeComparisonMode === 'split'
   const splitPosition = Math.max(0.05, Math.min(0.95, colorGradeSplitPosition))
@@ -207,11 +357,11 @@ export const PreviewStage = memo(function PreviewStage({
           }}
         >
           <div
+            ref={pixelSnappedPlayerRef}
             className="relative"
             style={{
               width: `${playerSize.width}px`,
               height: `${playerSize.height}px`,
-              transform: pixelSnapTransform,
             }}
           >
             <div

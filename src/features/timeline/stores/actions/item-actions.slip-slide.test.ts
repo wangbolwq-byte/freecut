@@ -4,7 +4,11 @@ import { resetTimelineItemsTestState } from '@/features/timeline/test-helpers'
 import { useItemsStore } from '../items-store'
 import { usePlaybackStore } from '@/shared/state/playback'
 import { usePreviewBridgeStore } from '@/shared/state/preview-bridge'
+import { useKeyframesStore } from '../keyframes-store'
 import { slipItem, slideItem } from './item-actions'
+import { addTransition } from './transition-actions'
+import { useTransitionsStore } from '../transitions-store'
+import { canAddTransition } from '../../utils/transition-utils'
 
 function makeVideoItem(overrides: Partial<VideoItem> = {}): VideoItem {
   return {
@@ -480,5 +484,138 @@ describe('slideItem', () => {
     // Middle clip source window remains unchanged when clips are not a split-contiguous chain.
     expect(updatedMiddle.sourceStart).toBe(50)
     expect(updatedMiddle.sourceEnd).toBe(150)
+  })
+
+  it('uses one commit-time delta when a neighbor cannot absorb the requested slide', () => {
+    useItemsStore.getState().setItems([
+      makeVideoItem({
+        id: 'left',
+        from: 0,
+        durationInFrames: 100,
+        sourceStart: 0,
+        sourceEnd: 100,
+        sourceDuration: 500,
+      }),
+      makeVideoItem({
+        id: 'middle',
+        from: 100,
+        durationInFrames: 100,
+        sourceStart: 100,
+        sourceEnd: 200,
+        sourceDuration: 500,
+      }),
+      makeVideoItem({
+        id: 'right',
+        from: 200,
+        durationInFrames: 5,
+        sourceStart: 200,
+        sourceEnd: 205,
+        sourceDuration: 500,
+      }),
+    ])
+
+    slideItem('middle', 10, 'left', 'right')
+
+    expect(getVideoItem('left')).toMatchObject({ durationInFrames: 104 })
+    expect(getVideoItem('middle')).toMatchObject({ from: 104 })
+    expect(getVideoItem('right')).toMatchObject({ from: 204, durationInFrames: 1 })
+  })
+
+  it('clamps a slide before an existing keyframe enters the centered transition region', () => {
+    useItemsStore.getState().setItems([
+      makeVideoItem({
+        id: 'left',
+        from: 0,
+        durationInFrames: 60,
+        sourceStart: 0,
+        sourceEnd: 60,
+        sourceDuration: 180,
+      }),
+      makeVideoItem({
+        id: 'middle',
+        from: 60,
+        durationInFrames: 60,
+        sourceStart: 60,
+        sourceEnd: 120,
+        sourceDuration: 240,
+      }),
+      makeVideoItem({
+        id: 'right',
+        from: 120,
+        durationInFrames: 60,
+        sourceStart: 120,
+        sourceEnd: 180,
+        sourceDuration: 300,
+      }),
+    ])
+    expect(addTransition('left', 'middle', 'crossfade', 12)).toBe(true)
+    useKeyframesStore.getState()._addKeyframe('left', 'opacity', 45, 0.5)
+
+    slideItem('middle', -10, 'left', 'right')
+
+    expect(getVideoItem('left')).toMatchObject({ durationInFrames: 52 })
+    expect(getVideoItem('middle')).toMatchObject({ from: 52 })
+    expect(
+      useKeyframesStore.getState().keyframesByItemId.left?.properties[0]?.keyframes[0]?.frame,
+    ).toBe(45)
+  })
+
+  it('preserves a centered A-B transition when the keyed A clip slides toward B', () => {
+    useItemsStore.getState().setItems([
+      makeVideoItem({
+        id: 'left-neighbor',
+        from: 0,
+        durationInFrames: 200,
+        sourceStart: 0,
+        sourceEnd: 200,
+        sourceDuration: 600,
+      }),
+      makeVideoItem({
+        id: 'clip-a',
+        from: 200,
+        durationInFrames: 200,
+        mediaId: 'media-a',
+        sourceStart: 100,
+        sourceEnd: 300,
+        sourceDuration: 500,
+      }),
+      makeVideoItem({
+        id: 'clip-b',
+        from: 400,
+        durationInFrames: 300,
+        mediaId: 'media-b',
+        sourceStart: 100,
+        sourceEnd: 400,
+        sourceDuration: 900,
+      }),
+    ])
+    expect(addTransition('clip-a', 'clip-b', 'crossfade', 108)).toBe(true)
+    useKeyframesStore.getState()._addKeyframe('clip-a', 'opacity', 120, 0.75)
+
+    slideItem('clip-a', 30, 'left-neighbor', 'clip-b')
+
+    const updatedA = getVideoItem('clip-a')
+    const updatedB = getVideoItem('clip-b')
+    const transition = useTransitionsStore
+      .getState()
+      .transitions.find(
+        (candidate) => candidate.leftClipId === 'clip-a' && candidate.rightClipId === 'clip-b',
+      )
+
+    expect(updatedA).toMatchObject({ from: 230, durationInFrames: 200 })
+    expect(updatedB).toMatchObject({ from: 430, durationInFrames: 270 })
+    expect(transition).toMatchObject({
+      leftClipId: 'clip-a',
+      rightClipId: 'clip-b',
+      durationInFrames: 108,
+      alignment: 0.5,
+    })
+    expect(
+      canAddTransition(updatedA, updatedB, transition!.durationInFrames, transition!.alignment, 30)
+        .canAdd,
+    ).toBe(true)
+    expect(
+      useKeyframesStore.getState().keyframesByItemId['clip-a']?.properties[0]?.keyframes[0]?.frame,
+    ).toBe(120)
   })
 })

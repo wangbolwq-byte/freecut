@@ -20,6 +20,7 @@ interface AudioPlaybackState {
   frame: number
   fps: number
   playing: boolean
+  isPreviewScrubbing: boolean
   resolvedVolume: number
   resolvedPitchShiftSemitones: number
   resolvedAudioEqStages: ResolvedAudioEqSettings[]
@@ -54,6 +55,12 @@ export function useAudioPlaybackState({
   const frame = sequenceContext?.localFrame ?? 0
   const { fps } = useVideoConfig()
   const playing = useIsPlaying()
+  // Subscribe to the scrub lifecycle, not the changing preview frame itself.
+  // Audio is silent while the pointer is down, so adapters can defer decode and
+  // graph allocation until the scrub settles on its final frame.
+  const hasPreviewFrame = usePlaybackStore((state) => state.previewFrame !== null)
+  const hasActiveGizmo = useGizmoStore((state) => state.activeGizmo !== null)
+  const isPreviewScrubbing = !playing && hasPreviewFrame && !hasActiveGizmo
 
   const itemPreview = useGizmoStore(useCallback((state) => state.preview?.[itemId], [itemId]))
   const preview = itemPreview?.properties
@@ -137,6 +144,7 @@ export function useAudioPlaybackState({
     frame,
     fps,
     playing,
+    isPreviewScrubbing,
     resolvedVolume:
       itemVolume *
       masterBusGain *

@@ -2,17 +2,21 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
+import { usePlaybackStore } from '@/shared/state/playback'
 import { _resetZoomStoreForTest, useZoomStore } from './zoom-store'
 
 describe('zoom-store interaction split', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    usePlaybackStore.setState({ isPlaying: false })
     _resetZoomStoreForTest()
   })
 
   afterEach(() => {
     vi.runOnlyPendingTimers()
     vi.useRealTimers()
+    vi.unstubAllGlobals()
+    usePlaybackStore.setState({ isPlaying: false })
     _resetZoomStoreForTest()
   })
 
@@ -58,6 +62,76 @@ describe('zoom-store interaction split', () => {
     expect(useZoomStore.getState()).toMatchObject({
       level: 1.6,
       contentLevel: 1.6,
+      isZoomInteracting: false,
+    })
+  })
+
+  it('cancels and replaces playback-aware committed geometry work', () => {
+    let nextId = 1
+    const animationFrames = new Map<number, FrameRequestCallback>()
+    const idleCallbacks = new Map<number, IdleRequestCallback>()
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn((callback: FrameRequestCallback) => {
+        const id = nextId++
+        animationFrames.set(id, callback)
+        return id
+      }),
+    )
+    vi.stubGlobal(
+      'cancelAnimationFrame',
+      vi.fn((id: number) => animationFrames.delete(id)),
+    )
+    vi.stubGlobal(
+      'requestIdleCallback',
+      vi.fn((callback: IdleRequestCallback) => {
+        const id = nextId++
+        idleCallbacks.set(id, callback)
+        return id
+      }),
+    )
+    vi.stubGlobal(
+      'cancelIdleCallback',
+      vi.fn((id: number) => idleCallbacks.delete(id)),
+    )
+    usePlaybackStore.setState({ isPlaying: true })
+
+    useZoomStore.getState().setZoomLevelImmediate(1.4)
+    vi.advanceTimersByTime(100)
+    expect(useZoomStore.getState().contentLevel).toBe(1)
+    expect(animationFrames.size).toBe(1)
+
+    const firstFrame = animationFrames.entries().next().value as
+      | [number, FrameRequestCallback]
+      | undefined
+    expect(firstFrame).toBeDefined()
+    animationFrames.delete(firstFrame![0])
+    firstFrame![1](100)
+    expect(idleCallbacks.size).toBe(1)
+
+    // A new wheel target invalidates the queued idle commit before it can wake
+    // the rich timeline subtree.
+    useZoomStore.getState().setZoomLevelImmediate(1.6)
+    expect(idleCallbacks.size).toBe(0)
+    vi.advanceTimersByTime(100)
+
+    const finalFrame = animationFrames.entries().next().value as
+      | [number, FrameRequestCallback]
+      | undefined
+    expect(finalFrame).toBeDefined()
+    animationFrames.delete(finalFrame![0])
+    finalFrame![1](200)
+    const finalIdle = idleCallbacks.entries().next().value as
+      | [number, IdleRequestCallback]
+      | undefined
+    expect(finalIdle).toBeDefined()
+    idleCallbacks.delete(finalIdle![0])
+    finalIdle![1]({ didTimeout: false, timeRemaining: () => 8 })
+
+    expect(useZoomStore.getState()).toMatchObject({
+      level: 1.6,
+      contentLevel: 1.6,
+      contentPixelsPerSecond: 160,
       isZoomInteracting: false,
     })
   })

@@ -42,6 +42,7 @@ export function repairTransitions(
   currentItems: TimelineItem[],
   currentTransitions: Transition[],
   deletedClipIds: Set<string> = new Set(),
+  timelineFps: number = 30,
 ): TransitionRepairResult {
   const valid: Transition[] = []
   const repaired: TransitionRepairResult['repaired'] = []
@@ -76,7 +77,13 @@ export function repairTransitions(
       continue
     }
 
-    const result = tryRepairTransition(transition, itemsById, deletedClipIds, trackItems)
+    const result = tryRepairTransition(
+      transition,
+      itemsById,
+      deletedClipIds,
+      trackItems,
+      timelineFps,
+    )
 
     if (result.status === 'valid') {
       valid.push(transition)
@@ -106,6 +113,7 @@ function tryRepairTransition(
   itemsById: Map<string, TimelineItem>,
   deletedClipIds: Set<string>,
   trackItems: Map<string, TimelineItem[]>,
+  timelineFps: number,
 ): RepairAttemptResult {
   const leftClip = itemsById.get(transition.leftClipId)
   const rightClip = itemsById.get(transition.rightClipId)
@@ -184,6 +192,7 @@ function tryRepairTransition(
       leftClip,
       rightClip,
       transition.alignment,
+      timelineFps,
     )
     if (maxDuration <= 0) {
       return {

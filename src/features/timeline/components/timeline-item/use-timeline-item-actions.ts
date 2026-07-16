@@ -60,6 +60,51 @@ const logger = createLogger('UseTimelineItemActions')
 
 const SCENE_DETECTION_OVERLAY_ID = 'scene-detection'
 
+interface SelectionCapabilities {
+  canJoin: boolean
+  canLink: boolean
+  canUnlink: boolean
+}
+
+let cachedSelectionIds: string[] | null = null
+let cachedSelectionItems: TimelineItemType[] | null = null
+let cachedSelectionCapabilities: SelectionCapabilities = {
+  canJoin: false,
+  canLink: false,
+  canUnlink: false,
+}
+
+/**
+ * Context-menu capabilities are selection-wide, but every mounted clip renders
+ * its own menu trigger. Cache the shared calculation by the stable Zustand
+ * array references so a multi-select drag does the work once instead of once
+ * per selected clip on both drag start and drag end.
+ */
+function getSelectionCapabilities(): SelectionCapabilities {
+  const selectedItemIds = useSelectionStore.getState().selectedItemIds
+  const itemsState = useItemsStore.getState()
+  const items = itemsState.items
+
+  if (selectedItemIds === cachedSelectionIds && items === cachedSelectionItems) {
+    return cachedSelectionCapabilities
+  }
+
+  const selectedItems = selectedItemIds
+    .map((id) => itemsState.itemById[id])
+    .filter((candidate): candidate is TimelineItemType => candidate !== undefined)
+
+  cachedSelectionIds = selectedItemIds
+  cachedSelectionItems = items
+  cachedSelectionCapabilities = {
+    canJoin: selectedItems.length >= 2 && canJoinMultipleItems(selectedItems),
+    canLink: selectedItemIds.length >= 2 && canLinkSelection(items, selectedItemIds),
+    canUnlink:
+      selectedItemIds.length > 0 && selectedItemIds.some((id) => hasLinkedItems(items, id)),
+  }
+
+  return cachedSelectionCapabilities
+}
+
 interface UseTimelineItemActionsParams {
   item: TimelineItemType
   isBroken: boolean
@@ -75,38 +120,11 @@ export function useTimelineItemActions({
   rightNeighbor,
   segmentOverlays,
 }: UseTimelineItemActionsParams) {
-  const getCanJoinSelected = useCallback(() => {
-    const selectedItemIds = useSelectionStore.getState().selectedItemIds
-    if (selectedItemIds.length < 2) {
-      return false
-    }
+  const getCanJoinSelected = useCallback(() => getSelectionCapabilities().canJoin, [])
 
-    const items = useTimelineStore.getState().items
-    const selectedItems = selectedItemIds
-      .map((id) => items.find((candidate) => candidate.id === id))
-      .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined)
-    return canJoinMultipleItems(selectedItems)
-  }, [])
+  const getCanLinkSelected = useCallback(() => getSelectionCapabilities().canLink, [])
 
-  const getCanLinkSelected = useCallback(() => {
-    const selectedItemIds = useSelectionStore.getState().selectedItemIds
-    if (selectedItemIds.length < 2) {
-      return false
-    }
-
-    const items = useTimelineStore.getState().items
-    return canLinkSelection(items, selectedItemIds)
-  }, [])
-
-  const getCanUnlinkSelected = useCallback(() => {
-    const selectedItemIds = useSelectionStore.getState().selectedItemIds
-    if (selectedItemIds.length === 0) {
-      return false
-    }
-
-    const items = useTimelineStore.getState().items
-    return selectedItemIds.some((id) => hasLinkedItems(items, id))
-  }, [])
+  const getCanUnlinkSelected = useCallback(() => getSelectionCapabilities().canUnlink, [])
 
   const handleJoinSelected = useCallback(() => {
     const selectedItemIds = useSelectionStore.getState().selectedItemIds

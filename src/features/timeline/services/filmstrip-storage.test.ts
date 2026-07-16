@@ -66,6 +66,7 @@ describe('filmstripStorage', () => {
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
 
     fsMocks.readJson.mockResolvedValue({
+      version: 2,
       width: 160,
       height: 90,
       isComplete: true,

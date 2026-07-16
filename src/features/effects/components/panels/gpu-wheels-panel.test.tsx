@@ -44,6 +44,15 @@ function makeProps(params: Record<string, number | boolean | string> = {}) {
 }
 
 describe('GpuWheelsPanel', () => {
+  it('uses Lift, Gamma, and Gain names in the compact sidebar wheels', () => {
+    render(<GpuWheelsPanel {...makeProps()} layout="sidebar" />)
+
+    expect(screen.getByRole('button', { name: 'Adjust Lift wheel' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Adjust Gamma wheel' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Adjust Gain wheel' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Adjust Shadows wheel' })).not.toBeInTheDocument()
+  })
+
   it('renders a Resolve-style four-wheel primaries dock', () => {
     render(<GpuWheelsPanel {...makeProps()} layout="dock" />)
 
@@ -68,6 +77,47 @@ describe('GpuWheelsPanel', () => {
     ]) {
       expect(screen.getByLabelText(label)).toBeInTheDocument()
     }
+  })
+
+  it('keeps reset controls beside every top and bottom dock parameter', () => {
+    const props = makeProps({ temperature: 25 })
+    render(<GpuWheelsPanel {...props} layout="dock" />)
+
+    for (const label of [
+      'Temperature',
+      'Tint',
+      'Contrast',
+      'Pivot',
+      'Mid/Detail',
+      'Color Boost',
+      'Shadows',
+      'Highlights',
+      'Saturation',
+      'Hue',
+      'Lum Mix',
+    ]) {
+      expect(screen.getByRole('button', { name: `Reset ${label} to default` })).toBeInTheDocument()
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset Temperature to default' }))
+    expect(props.onParamChange).toHaveBeenCalledWith('fx-wheels', 'temperature', 0)
+    expect(screen.getByRole('button', { name: 'Reset Tint to default' })).toBeDisabled()
+    expect(screen.getByText('Temperature')).toHaveClass('whitespace-nowrap', 'text-right')
+    expect(screen.getByText('Mid/Detail')).toHaveAttribute('title', 'Mid/Detail')
+  })
+
+  it('keeps definition-driven resets beside sidebar numeric parameters', () => {
+    const props = makeProps({ exposure: 1.2 })
+    render(<GpuWheelsPanel {...props} layout="sidebar" />)
+
+    fireEvent.click(screen.getByRole('button', { name: /reset to defaults: exposure/i }))
+
+    expect(props.onParamChange).toHaveBeenCalledWith(
+      'fx-wheels',
+      'exposure',
+      definition.params.exposure?.default,
+    )
+    expect(screen.getByRole('button', { name: /reset to defaults: temperature/i })).toBeDisabled()
   })
 
   it('previews numeric wheel value edits live and commits once on blur', () => {

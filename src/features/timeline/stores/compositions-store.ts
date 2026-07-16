@@ -3,6 +3,7 @@ import type { TimelineItem, TimelineTrack, ProjectMarker } from '@/types/timelin
 import type { AudioEqSettings } from '@/types/audio'
 import type { Transition } from '@/types/transition'
 import type { ItemKeyframes } from '@/types/keyframe'
+import type { CompositionEditorKind } from '@/types/project'
 import { normalizeSubComposition } from '../utils/sub-composition-normalizer'
 
 /**
@@ -13,6 +14,8 @@ import { normalizeSubComposition } from '../utils/sub-composition-normalizer'
 export interface SubComposition {
   id: string
   name: string
+  /** Missing only in legacy/test inputs; the store normalizer writes sequence. */
+  editorKind?: CompositionEditorKind
   items: TimelineItem[]
   tracks: TimelineTrack[]
   transitions: Transition[]

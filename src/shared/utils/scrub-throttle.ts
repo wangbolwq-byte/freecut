@@ -17,6 +17,12 @@ interface ShouldCommitScrubFrameParams {
   targetFrame: number
   pixelsPerSecond: number
   nowMs: number
+  /**
+   * Overview timelines compress very long durations into a small surface.
+   * Their target-frame deltas are too large to be useful as a throttle bypass,
+   * so they need a time-based cadence that lets the latest render settle.
+   */
+  overview?: boolean
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -46,6 +52,14 @@ function getBypassFrameDelta(velocityPxPerMs: number, pixelsPerSecond: number): 
   return 2 + zoomPenalty
 }
 
+function getOverviewMinIntervalMs(pixelsPerSecond: number): number {
+  if (pixelsPerSecond <= 1) return 50
+  if (pixelsPerSecond <= 4) return 42
+  if (pixelsPerSecond <= 12) return 33
+  if (pixelsPerSecond <= 45) return 24
+  return 0
+}
+
 export function createScrubThrottleState(
   params: CreateScrubThrottleStateParams = {},
 ): ScrubThrottleState {
@@ -66,6 +80,7 @@ export function shouldCommitScrubFrame({
   targetFrame,
   pixelsPerSecond,
   nowMs,
+  overview = false,
 }: ShouldCommitScrubFrameParams): boolean {
   const nextFrame = Math.round(targetFrame)
   const pointerDt = Math.max(1, nowMs - state.lastPointerTimeMs)
@@ -77,15 +92,22 @@ export function shouldCommitScrubFrame({
   const frameDelta = Math.abs(nextFrame - state.lastCommittedFrame)
   if (frameDelta === 0) return false
 
-  const minIntervalMs = clamp(
+  const defaultMinIntervalMs = clamp(
     getVelocityMsBucket(velocityPxPerMs) + getZoomMsBucket(pixelsPerSecond),
     0,
     18,
   )
+  const minIntervalMs = overview
+    ? Math.max(defaultMinIntervalMs, getOverviewMinIntervalMs(pixelsPerSecond))
+    : defaultMinIntervalMs
   const elapsedSinceCommit = nowMs - state.lastCommittedTimeMs
   const bypassFrameDelta = getBypassFrameDelta(velocityPxPerMs, pixelsPerSecond)
+  const allowFrameDeltaBypass = !overview || pixelsPerSecond > 45
 
-  if (elapsedSinceCommit < minIntervalMs && frameDelta < bypassFrameDelta) {
+  if (
+    elapsedSinceCommit < minIntervalMs &&
+    (!allowFrameDeltaBypass || frameDelta < bypassFrameDelta)
+  ) {
     return false
   }
 

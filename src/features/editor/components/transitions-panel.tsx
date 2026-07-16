@@ -158,6 +158,7 @@ export const TransitionsPanel = memo(function TransitionsPanel() {
   const updateTransition = useTimelineStore((s) => s.updateTransition)
   const items = useTimelineStore((s) => s.items)
   const transitions = useTimelineStore((s) => s.transitions)
+  const fps = useTimelineStore((s) => s.fps)
   // Get selection
   const selectedItemIds = useSelectionStore((s) => s.selectedItemIds)
   const selectionCount = selectedItemIds.length
@@ -169,8 +170,9 @@ export const TransitionsPanel = memo(function TransitionsPanel() {
       selectedItemIds: [selectedId],
       items,
       transitions,
+      timelineFps: fps,
     })
-  }, [selectedId, items, transitions])
+  }, [fps, selectedId, items, transitions])
 
   const setDraggedTransition = useTransitionDragStore((s) => s.setDraggedTransition)
   const setInvalidHint = useTransitionDragStore((s) => s.setInvalidHint)
@@ -209,12 +211,17 @@ export const TransitionsPanel = memo(function TransitionsPanel() {
       if (!config) return
 
       // Get fresh state at click time
-      const { items: currentItems, transitions: currentTransitions } = useTimelineStore.getState()
+      const {
+        items: currentItems,
+        transitions: currentTransitions,
+        fps: currentFps,
+      } = useTimelineStore.getState()
       const currentSelectedIds = useSelectionStore.getState().selectedItemIds
       const info = resolveTransitionTargetFromSelection({
         selectedItemIds: currentSelectedIds,
         items: currentItems,
         transitions: currentTransitions,
+        timelineFps: currentFps,
       })
 
       if (!info || (!info.hasExisting && !info.canApply)) return

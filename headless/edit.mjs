@@ -34,6 +34,21 @@ import path from 'node:path'
 import { loadProject, collectAddClipMedia, persistEditedProject } from './lib/workspace.mjs'
 import { parseArgs } from './lib/cli.mjs'
 import { startHarness } from './lib/render-core.mjs'
+import { editRequestSchema, validate } from './lib/contract.mjs'
+
+const EDIT_OPTIONS = new Set([
+  'workspace',
+  'project',
+  'ops',
+  'out',
+  'in-place',
+  'build',
+  'harness-url',
+  'head',
+  'help',
+  'json',
+])
+const HELP = `Usage: node headless/edit.mjs --workspace <dir> --project <id|project.json> --ops <ops.json> [--out <path> | --in-place] [--json]\n`
 
 function loadOps(args) {
   if (!args.ops) throw new Error('Missing --ops <file.json>')
@@ -46,14 +61,18 @@ function loadOps(args) {
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2))
+  const args = parseArgs(process.argv.slice(2), { allowed: EDIT_OPTIONS })
+  if (args.help) {
+    console.log(HELP)
+    return
+  }
   if (!args.workspace) throw new Error('Missing --workspace <dir>')
   if (!args.project) throw new Error('Missing --project <id|project.json>')
 
-  const ops = loadOps(args)
+  const ops = validate(editRequestSchema, { project: args.project, ops: loadOps(args) }).ops
   const { project, projectJsonPath } = loadProject(args.workspace, args.project)
-  console.log(`Project: ${project.name ?? project.id} (${projectJsonPath})`)
-  console.log(`Ops: ${ops.length}`)
+  if (!args.json) console.log(`Project: ${project.name ?? project.id} (${projectJsonPath})`)
+  if (!args.json) console.log(`Ops: ${ops.length}`)
 
   // Collect metadata for media referenced by addClip ops (for duration/fps/codec).
   const media = collectAddClipMedia(args.workspace, ops)
@@ -89,13 +108,17 @@ async function main() {
     await closeServers()
   }
 
-  console.log('\nApplied ops:')
+  if (!args.json) console.log('\nApplied ops:')
   for (const r of result.results) {
-    console.log(`  ${r.ok ? 'ok ' : 'ERR'} ${r.op}${r.detail ? ' ' + JSON.stringify(r.detail) : ''}`)
+    if (!args.json)
+      console.log(
+        `  ${r.ok ? 'ok ' : 'ERR'} ${r.op}${r.detail ? ' ' + JSON.stringify(r.detail) : ''}`,
+      )
   }
   const edited = result.project
   const itemCount = edited.timeline?.items?.length ?? 0
-  console.log(`Result: ${itemCount} items, ${edited.timeline?.tracks?.length ?? 0} tracks`)
+  if (!args.json)
+    console.log(`Result: ${itemCount} items, ${edited.timeline?.tracks?.length ?? 0} tracks`)
 
   // Write back (safe by default: dry run unless --out or --in-place).
   let outPath = null
@@ -103,16 +126,21 @@ async function main() {
   else if (args['in-place']) outPath = projectJsonPath
 
   if (!outPath) {
-    console.log('\nDRY RUN (no --out / --in-place): nothing written.')
+    if (args.json) console.log(JSON.stringify({ ...result, written: null }))
+    else console.log('\nDRY RUN (no --out / --in-place): nothing written.')
     return
   }
 
+  let writtenProject
   if (args['in-place']) {
-    persistEditedProject(args.workspace, projectJsonPath, edited)
+    writtenProject = persistEditedProject(args.workspace, projectJsonPath, edited)
   } else {
-    fs.writeFileSync(outPath, `${JSON.stringify({ ...edited, updatedAt: Date.now() }, null, 2)}\n`)
+    writtenProject = { ...edited, updatedAt: Date.now() }
+    fs.writeFileSync(outPath, `${JSON.stringify(writtenProject, null, 2)}\n`)
   }
-  console.log(`\nWrote: ${outPath}`)
+  if (args.json)
+    console.log(JSON.stringify({ ...result, project: writtenProject, written: outPath }))
+  else console.log(`\nWrote: ${outPath}`)
 }
 
 main().catch((e) => {

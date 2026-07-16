@@ -4,6 +4,7 @@ import { usePlaybackStore } from '@/shared/state/playback'
 import { useTimelineStore } from '@/features/preview/deps/timeline-store'
 import { createLogger } from '@/shared/logging/logger'
 import { getDecoderPrewarmMetricsSnapshot } from '../utils/decoder-prewarm'
+import { recordPreviewDecoderMetrics } from '@/shared/logging/preview-scrub-performance'
 import { getEffectivePreviewQuality, getFrameBudgetMs } from '../utils/adaptive-preview-quality'
 import {
   PREVIEW_PERF_PUBLISH_INTERVAL_MS,
@@ -22,6 +23,8 @@ import type {
 } from './use-preview-transition-session-controller'
 
 const logger = createLogger('VideoPreview')
+const PREVIEW_PERF_ENABLED = import.meta.env.DEV || import.meta.env.MODE === 'perf'
+const PREVIEW_PERF_LOG_ENABLED = import.meta.env.MODE === 'perf'
 
 interface PreviewPerfStats extends PreviewWarmPerfStats {
   resolveSamples: number
@@ -80,7 +83,7 @@ export function usePreviewPerfPublisher({
   })
 
   const trackPlayerSeek = useCallback((targetFrame: number) => {
-    if (!import.meta.env.DEV) return
+    if (!PREVIEW_PERF_ENABLED) return
     pendingSeekLatencyRef.current = {
       targetFrame,
       startedAtMs: performance.now(),
@@ -88,7 +91,7 @@ export function usePreviewPerfPublisher({
   }, [])
 
   const resolvePendingSeekLatency = useCallback((frame: number) => {
-    if (!import.meta.env.DEV) return
+    if (!PREVIEW_PERF_ENABLED) return
     const pending = pendingSeekLatencyRef.current
     if (!pending || pending.targetFrame !== frame) return
 
@@ -100,7 +103,7 @@ export function usePreviewPerfPublisher({
   }, [])
 
   useEffect(() => {
-    if (!import.meta.env.DEV) return
+    if (!PREVIEW_PERF_ENABLED) return
 
     const publish = () => {
       const stats = previewPerfRef.current
@@ -127,6 +130,7 @@ export function usePreviewPerfPublisher({
         ? Math.max(0, seekNow - pendingSeekLatencyRef.current.startedAtMs)
         : 0
       const preseekMetrics = getDecoderPrewarmMetricsSnapshot()
+      recordPreviewDecoderMetrics(preseekMetrics)
       const snapshot: PreviewPerfSnapshot = {
         ts: Date.now(),
         unresolvedQueue: getUnresolvedQueueSize(),
@@ -173,6 +177,22 @@ export function usePreviewPerfPublisher({
         preseekWaitResolved: preseekMetrics.waitResolved,
         preseekWaitTimeouts: preseekMetrics.waitTimeouts,
         preseekCachedBitmaps: preseekMetrics.cacheBitmaps,
+        preseekCachedSources: preseekMetrics.cacheSources,
+        preseekCacheSourceEvictions: preseekMetrics.cacheSourceEvictions,
+        activePreseekRequests: preseekMetrics.activeRequests,
+        activePreseekWorkerPosts: preseekMetrics.activeWorkerPosts,
+        activePreseekCancellations: preseekMetrics.activeCancellations,
+        activePreseekSuperseded: preseekMetrics.activeSupersededRequests,
+        activePreseekLookaheadPosts: preseekMetrics.activeLookaheadPosts,
+        activePreseekExtractorCount: preseekMetrics.activeExtractorCount,
+        activePreseekExtractorPeak: preseekMetrics.activeExtractorPeak,
+        activePreseekReadyNotifications: preseekMetrics.activeReadyNotifications,
+        scrubProxyFallbackRequests: preseekMetrics.fallbackRequests,
+        scrubProxyFallbackHits: preseekMetrics.fallbackCacheHits,
+        scrubProxyFallbackBitmaps: preseekMetrics.fallbackBitmaps,
+        scrubProxyFallbackEvictions: preseekMetrics.fallbackSourceEvictions,
+        scrubProxyFallbackReady: preseekMetrics.fallbackReadyNotifications,
+        scrubProxyExactReplacements: preseekMetrics.exactFallbackReplacements,
         staleScrubOverlayDrops: stats.staleScrubOverlayDrops,
         scrubDroppedFrames: stats.scrubDroppedFrames,
         scrubUpdates: stats.scrubUpdates,
@@ -214,8 +234,8 @@ export function usePreviewPerfPublisher({
       }
 
       window.__PREVIEW_PERF__ = snapshot
-      if (window.__PREVIEW_PERF_LOG__) {
-        logger.warn('PreviewPerf', snapshot)
+      if (PREVIEW_PERF_LOG_ENABLED || window.__PREVIEW_PERF_LOG__) {
+        logger.warn('PreviewPerf', JSON.stringify(snapshot))
       }
     }
 

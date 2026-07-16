@@ -53,3 +53,11 @@ export function useTimelineZoomContext(): TimelineZoomValue {
     (s) => s.pixelsPerSecond,
   )
 }
+
+/** Settled geometry hook for expensive clip and waveform content. */
+export function useTimelineCommittedZoomContext(): TimelineZoomValue {
+  return useTimelineZoomValue(
+    (s) => s.contentLevel,
+    (s) => s.contentPixelsPerSecond,
+  )
+}

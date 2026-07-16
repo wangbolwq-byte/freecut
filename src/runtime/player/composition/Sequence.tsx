@@ -11,8 +11,8 @@
  * - No dependency on Composition's internals
  */
 
-import React, { useMemo, memo } from 'react'
-import { useClockFrame } from '../clock'
+import React, { useCallback, useMemo, memo } from 'react'
+import { useClockFrameSelector } from '../clock'
 import { SequenceContext, type SequenceContextValue, useSequenceContext } from './sequence-context'
 
 // ============================================
@@ -61,9 +61,6 @@ export const Sequence = memo<SequenceProps>(
     className,
     premountFor = 0,
   }) => {
-    // Get the global frame from the clock
-    const globalFrame = useClockFrame()
-
     // Get parent sequence context (for nested sequences like sub-compositions)
     const parentContext = useSequenceContext()
     const parentFrom = parentContext?.from ?? 0
@@ -74,15 +71,28 @@ export const Sequence = memo<SequenceProps>(
     const endFrame = absoluteFrom + durationInFrames
     const premountStart = absoluteFrom - premountFor
 
+    // Keep one stable snapshot while outside the mount range and one while
+    // premounted. Active sequences still receive every frame. This prevents
+    // inactive timeline items from fanning every Clock tick into React work.
+    const selectRelevantFrame = useCallback(
+      (frame: number): number | null => {
+        if (frame < premountStart || frame >= endFrame) return null
+        if (frame < absoluteFrom) return absoluteFrom - 1
+        return frame
+      },
+      [absoluteFrom, endFrame, premountStart],
+    )
+    const relevantFrame = useClockFrameSelector(selectRelevantFrame)
+
     // Calculate visibility using absolute frame positions
-    const isVisible = globalFrame >= absoluteFrom && globalFrame < endFrame
+    const isVisible = relevantFrame !== null && relevantFrame >= absoluteFrom
     // Mount content if visible OR within premount range
-    const shouldMount = globalFrame >= premountStart && globalFrame < endFrame
+    const shouldMount = relevantFrame !== null
 
     // Calculate local frame (0-based within this sequence)
     // NOTE: During premount, localFrame can be negative (before the sequence starts).
     // This allows children to detect premount phase and avoid rendering content.
-    const localFrame = globalFrame - absoluteFrom
+    const localFrame = (relevantFrame ?? absoluteFrom) - absoluteFrom
 
     // Create context value — expose absoluteFrom so nested children
     // can continue to offset their own `from` correctly.

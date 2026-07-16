@@ -5,6 +5,8 @@
       "graph": "Graphique",
       "sheet": "Feuille",
       "split": "Divisé",
+      "enterFocusMode": "Concentrer l'éditeur d'images clés",
+      "exitFocusMode": "Quitter le mode de concentration des images clés",
       "selectItem": "Sélectionnez un élément pour modifier les images clés",
       "parameters": "Paramètres",
       "parameterDisplayOptions": "Options d’affichage des paramètres",

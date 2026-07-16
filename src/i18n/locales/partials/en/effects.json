@@ -68,7 +68,9 @@
     "matte": "Matte",
     "correction": "Correction",
     "ellipse": "Ellipse",
-    "rectangle": "Rectangle"
+    "rectangle": "Rectangle",
+    "editOnCanvas": "Edit on canvas",
+    "editingOnCanvas": "Editing on canvas"
   },
   "params": {
     "flow": "Flow",

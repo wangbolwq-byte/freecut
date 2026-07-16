@@ -83,16 +83,34 @@ export const HOTKEY_EDITOR_SECTIONS: readonly HotkeyEditorSection[] = [
     titleKey: 'projects.settings.hotkeys.sections.playback.title',
     blurbKey: 'projects.settings.hotkeys.sections.playback.blurb',
     items: [
-      { labelKey: 'projects.settings.hotkeys.items.playPause', keys: ['PLAY_PAUSE'] },
-      { labelKey: 'projects.settings.hotkeys.items.previousFrame', keys: ['PREVIOUS_FRAME'] },
-      { labelKey: 'projects.settings.hotkeys.items.nextFrame', keys: ['NEXT_FRAME'] },
-      { labelKey: 'projects.settings.hotkeys.items.goToStart', keys: ['GO_TO_START'] },
-      { labelKey: 'projects.settings.hotkeys.items.goToEnd', keys: ['GO_TO_END'] },
+      {
+        labelKey: 'projects.settings.hotkeys.items.playPause',
+        keys: ['PLAY_PAUSE'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.previousFrame',
+        keys: ['PREVIOUS_FRAME'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.nextFrame',
+        keys: ['NEXT_FRAME'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.goToStart',
+        keys: ['GO_TO_START'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.goToEnd',
+        keys: ['GO_TO_END'],
+      },
       {
         labelKey: 'projects.settings.hotkeys.items.previousSnapPoint',
         keys: ['PREVIOUS_SNAP_POINT'],
       },
-      { labelKey: 'projects.settings.hotkeys.items.nextSnapPoint', keys: ['NEXT_SNAP_POINT'] },
+      {
+        labelKey: 'projects.settings.hotkeys.items.nextSnapPoint',
+        keys: ['NEXT_SNAP_POINT'],
+      },
     ],
   },
   {
@@ -103,7 +121,10 @@ export const HOTKEY_EDITOR_SECTIONS: readonly HotkeyEditorSection[] = [
         labelKey: 'projects.settings.hotkeys.items.splitAtPlayhead',
         keys: ['SPLIT_AT_PLAYHEAD', 'SPLIT_AT_PLAYHEAD_ALT'],
       },
-      { labelKey: 'projects.settings.hotkeys.items.joinSelectedClips', keys: ['JOIN_ITEMS'] },
+      {
+        labelKey: 'projects.settings.hotkeys.items.joinSelectedClips',
+        keys: ['JOIN_ITEMS'],
+      },
       {
         labelKey: 'projects.settings.hotkeys.items.deleteSelectedItems',
         keys: ['DELETE_SELECTED', 'DELETE_SELECTED_ALT'],
@@ -116,7 +137,10 @@ export const HOTKEY_EDITOR_SECTIONS: readonly HotkeyEditorSection[] = [
         labelKey: 'projects.settings.hotkeys.items.insertFreezeFrame',
         keys: ['FREEZE_FRAME'],
       },
-      { labelKey: 'projects.settings.hotkeys.items.linkSelectedClips', keys: ['LINK_AUDIO_VIDEO'] },
+      {
+        labelKey: 'projects.settings.hotkeys.items.linkSelectedClips',
+        keys: ['LINK_AUDIO_VIDEO'],
+      },
       {
         labelKey: 'projects.settings.hotkeys.items.unlinkSelectedClips',
         keys: ['UNLINK_AUDIO_VIDEO'],
@@ -139,13 +163,34 @@ export const HOTKEY_EDITOR_SECTIONS: readonly HotkeyEditorSection[] = [
     titleKey: 'projects.settings.hotkeys.sections.tools.title',
     blurbKey: 'projects.settings.hotkeys.sections.tools.blurb',
     items: [
-      { labelKey: 'projects.settings.hotkeys.items.selectionTool', keys: ['SELECTION_TOOL'] },
-      { labelKey: 'projects.settings.hotkeys.items.trimEditTool', keys: ['TRIM_EDIT_TOOL'] },
-      { labelKey: 'projects.settings.hotkeys.items.razorTool', keys: ['RAZOR_TOOL'] },
-      { labelKey: 'projects.settings.hotkeys.items.splitAtCursor', keys: ['SPLIT_AT_CURSOR'] },
-      { labelKey: 'projects.settings.hotkeys.items.rateStretchTool', keys: ['RATE_STRETCH_TOOL'] },
-      { labelKey: 'projects.settings.hotkeys.items.slipTool', keys: ['SLIP_TOOL'] },
-      { labelKey: 'projects.settings.hotkeys.items.slideTool', keys: ['SLIDE_TOOL'] },
+      {
+        labelKey: 'projects.settings.hotkeys.items.selectionTool',
+        keys: ['SELECTION_TOOL'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.trimEditTool',
+        keys: ['TRIM_EDIT_TOOL'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.razorTool',
+        keys: ['RAZOR_TOOL'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.splitAtCursor',
+        keys: ['SPLIT_AT_CURSOR'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.rateStretchTool',
+        keys: ['RATE_STRETCH_TOOL'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.slipTool',
+        keys: ['SLIP_TOOL'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.slideTool',
+        keys: ['SLIDE_TOOL'],
+      },
     ],
   },
   {
@@ -155,13 +200,22 @@ export const HOTKEY_EDITOR_SECTIONS: readonly HotkeyEditorSection[] = [
       { labelKey: 'projects.settings.hotkeys.items.undo', keys: ['UNDO'] },
       { labelKey: 'projects.settings.hotkeys.items.redo', keys: ['REDO'] },
       { labelKey: 'projects.settings.hotkeys.items.zoomIn', keys: ['ZOOM_IN'] },
-      { labelKey: 'projects.settings.hotkeys.items.zoomOut', keys: ['ZOOM_OUT'] },
-      { labelKey: 'projects.settings.hotkeys.items.zoomToFit', keys: ['ZOOM_TO_FIT'] },
+      {
+        labelKey: 'projects.settings.hotkeys.items.zoomOut',
+        keys: ['ZOOM_OUT'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.zoomToFit',
+        keys: ['ZOOM_TO_FIT'],
+      },
       {
         labelKey: 'projects.settings.hotkeys.items.zoomTo100',
         keys: ['ZOOM_TO_100', 'ZOOM_TO_100_ALT'],
       },
-      { labelKey: 'projects.settings.hotkeys.items.toggleSnap', keys: ['TOGGLE_SNAP'] },
+      {
+        labelKey: 'projects.settings.hotkeys.items.toggleSnap',
+        keys: ['TOGGLE_SNAP'],
+      },
       {
         labelKey: 'projects.settings.hotkeys.items.toggleCanvasSnap',
         keys: ['TOGGLE_CANVAS_SNAP'],
@@ -193,10 +247,22 @@ export const HOTKEY_EDITOR_SECTIONS: readonly HotkeyEditorSection[] = [
     titleKey: 'projects.settings.hotkeys.sections.markers.title',
     blurbKey: 'projects.settings.hotkeys.sections.markers.blurb',
     items: [
-      { labelKey: 'projects.settings.hotkeys.items.addMarker', keys: ['ADD_MARKER'] },
-      { labelKey: 'projects.settings.hotkeys.items.removeMarker', keys: ['REMOVE_MARKER'] },
-      { labelKey: 'projects.settings.hotkeys.items.previousMarker', keys: ['PREVIOUS_MARKER'] },
-      { labelKey: 'projects.settings.hotkeys.items.nextMarker', keys: ['NEXT_MARKER'] },
+      {
+        labelKey: 'projects.settings.hotkeys.items.addMarker',
+        keys: ['ADD_MARKER'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.removeMarker',
+        keys: ['REMOVE_MARKER'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.previousMarker',
+        keys: ['PREVIOUS_MARKER'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.nextMarker',
+        keys: ['NEXT_MARKER'],
+      },
     ],
   },
   {
@@ -204,7 +270,10 @@ export const HOTKEY_EDITOR_SECTIONS: readonly HotkeyEditorSection[] = [
     blurbKey: 'projects.settings.hotkeys.sections.keyframes.blurb',
     scopeKey: 'projects.settings.hotkeys.scopes.keyframes',
     items: [
-      { labelKey: 'projects.settings.hotkeys.items.clearKeyframes', keys: ['CLEAR_KEYFRAMES'] },
+      {
+        labelKey: 'projects.settings.hotkeys.items.clearKeyframes',
+        keys: ['CLEAR_KEYFRAMES'],
+      },
       {
         labelKey: 'projects.settings.hotkeys.items.keyframeEditorGraph',
         keys: ['KEYFRAME_EDITOR_GRAPH'],
@@ -212,6 +281,30 @@ export const HOTKEY_EDITOR_SECTIONS: readonly HotkeyEditorSection[] = [
       {
         labelKey: 'projects.settings.hotkeys.items.keyframeEditorDopesheet',
         keys: ['KEYFRAME_EDITOR_DOPESHEET'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.keyframeEditorSplit',
+        keys: ['KEYFRAME_EDITOR_SPLIT'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.keyframeToggle',
+        keys: ['KEYFRAME_TOGGLE'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.keyframePrevious',
+        keys: ['KEYFRAME_PREVIOUS'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.keyframeNext',
+        keys: ['KEYFRAME_NEXT'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.keyframeToggleAuto',
+        keys: ['KEYFRAME_TOGGLE_AUTO'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.keyframeFit',
+        keys: ['KEYFRAME_FIT'],
       },
     ],
   },
@@ -221,18 +314,36 @@ export const HOTKEY_EDITOR_SECTIONS: readonly HotkeyEditorSection[] = [
     scopeKey: 'projects.settings.hotkeys.scopes.sourceMonitor',
     items: [
       { labelKey: 'projects.settings.hotkeys.items.markIn', keys: ['MARK_IN'] },
-      { labelKey: 'projects.settings.hotkeys.items.markOut', keys: ['MARK_OUT'] },
-      { labelKey: 'projects.settings.hotkeys.items.clearInOut', keys: ['CLEAR_IN_OUT'] },
-      { labelKey: 'projects.settings.hotkeys.items.insertEdit', keys: ['INSERT_EDIT'] },
-      { labelKey: 'projects.settings.hotkeys.items.overwriteEdit', keys: ['OVERWRITE_EDIT'] },
+      {
+        labelKey: 'projects.settings.hotkeys.items.markOut',
+        keys: ['MARK_OUT'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.clearInOut',
+        keys: ['CLEAR_IN_OUT'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.insertEdit',
+        keys: ['INSERT_EDIT'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.overwriteEdit',
+        keys: ['OVERWRITE_EDIT'],
+      },
     ],
   },
   {
     titleKey: 'projects.settings.hotkeys.sections.project.title',
     blurbKey: 'projects.settings.hotkeys.sections.project.blurb',
     items: [
-      { labelKey: 'projects.settings.hotkeys.items.saveProject', keys: ['SAVE'] },
-      { labelKey: 'projects.settings.hotkeys.items.exportVideo', keys: ['EXPORT'] },
+      {
+        labelKey: 'projects.settings.hotkeys.items.saveProject',
+        keys: ['SAVE'],
+      },
+      {
+        labelKey: 'projects.settings.hotkeys.items.exportVideo',
+        keys: ['EXPORT'],
+      },
       {
         labelKey: 'projects.settings.hotkeys.items.openSceneBrowser',
         keys: ['OPEN_SCENE_BROWSER'],

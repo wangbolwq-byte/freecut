@@ -1709,7 +1709,7 @@ function TextSectionComposer({ items, canvas, slots }: TextSectionComposerProps)
                 onChange={handleShadowBlurChange}
                 onLiveChange={handleShadowBlurLiveChange}
                 min={0}
-                max={80}
+                max={160}
                 step={1}
                 unit="px"
                 className="flex-1 min-w-0"

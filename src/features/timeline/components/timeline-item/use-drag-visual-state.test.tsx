@@ -159,6 +159,41 @@ describe('useDragVisualState', () => {
     })
   })
 
+  it('drives the anchor and follower alt-drag ghosts from the same preview offsets', async () => {
+    const anchor = makeVideoItem({ id: 'anchor', from: 20 })
+    const follower = makeVideoItem({ id: 'follower', from: 80 })
+    render(
+      <>
+        <DragVisualHarness item={anchor} isDragging />
+        <DragVisualHarness item={follower} />
+      </>,
+    )
+
+    dragPreviewOffsetByItemRef.current = {
+      [anchor.id]: { x: 14, y: 3 },
+      [follower.id]: { x: 14, y: 3 },
+    }
+    setDragState([anchor.id, follower.id], true)
+
+    const ghosts = screen.getAllByTestId('ghost')
+    await waitFor(() => {
+      expect(ghosts[0]?.style.display).toBe('block')
+      expect(ghosts[0]?.style.transform).toBe('translate(14px, 3px)')
+      expect(ghosts[1]?.style.display).toBe('block')
+      expect(ghosts[1]?.style.transform).toBe('translate(14px, 3px)')
+    })
+
+    dragPreviewOffsetByItemRef.current = {
+      [anchor.id]: { x: 38, y: 9 },
+      [follower.id]: { x: 38, y: 9 },
+    }
+
+    await waitFor(() => {
+      expect(ghosts[0]?.style.transform).toBe('translate(38px, 9px)')
+      expect(ghosts[1]?.style.transform).toBe('translate(38px, 9px)')
+    })
+  })
+
   it('honors updated host opacity after a drop into a dimmed track', async () => {
     const item = makeVideoItem()
     const { rerender } = render(<DragVisualHarness item={item} initialOpacity="1" />)

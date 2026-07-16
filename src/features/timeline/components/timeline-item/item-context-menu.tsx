@@ -286,7 +286,11 @@ const ItemContextMenuFull = memo(function ItemContextMenuFull({
   }, [onPendingActivationHandled, pendingActivation])
 
   return (
-    <ContextMenu>
+    // Keep the timeline menu non-modal. Several actions (including Reverse)
+    // hand off directly to a dialog; overlapping Radix modal layers can race
+    // while restoring `body` pointer events and leave the timeline unable to
+    // receive hover/move events after the dialog closes.
+    <ContextMenu modal={false}>
       <ContextMenuTrigger asChild disabled={trackLocked}>
         <span ref={triggerRef} data-item-context-anchor style={{ display: 'contents' }}>
           {children}

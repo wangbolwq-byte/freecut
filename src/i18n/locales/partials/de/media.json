@@ -52,6 +52,7 @@
       }
     },
     "compositions": {
+      "compositionsGroup": "Kompositionen",
       "compoundClipsGroup": "Zusammengesetzte Clips",
       "deleteBody": "Zusammengesetzten Clip \"{{name}}\" löschen? Dies kann nicht rückgängig gemacht werden.",
       "deleteInstancesDetail": "{{count}} Timeline-Instanzen, die diesen zusammengesetzten Clip verwenden, werden ebenfalls entfernt.",

@@ -7,7 +7,6 @@
  */
 
 import type { MotionModifier, MotionModifierType } from '@/types/motion'
-import type { AudioPulseModulation } from '@/types/effects'
 import type { AnimatableProperty } from '@/types/keyframe'
 import type { TimelineItem } from '@/types/timeline'
 import { useItemsStore } from '../items-store'
@@ -205,33 +204,6 @@ export function bakeMotionToKeyframes(plan: BakeMotionPlanEntry[]): number {
     event.failure(error)
     throw error
   }
-}
-
-/**
- * Attach (or replace) a procedural audio-pulse modulation on a specific effect
- * entry of an item. Single undo entry. Returns true when applied.
- */
-export function setEffectAudioPulse(
-  itemId: string,
-  effectId: string,
-  modulation: AudioPulseModulation,
-): boolean {
-  return execute(
-    'SET_EFFECT_AUDIO_PULSE',
-    () => {
-      const store = useItemsStore.getState()
-      const item = store.itemById[itemId]
-      if (!item?.effects?.some((entry) => entry.id === effectId)) return false
-      store._updateItem(itemId, {
-        effects: item.effects.map((entry) =>
-          entry.id === effectId ? { ...entry, audioPulse: modulation } : entry,
-        ),
-      })
-      useTimelineSettingsStore.getState().markDirty()
-      return true
-    },
-    { itemId, effectId },
-  )
 }
 
 /**

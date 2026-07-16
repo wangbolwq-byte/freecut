@@ -9,13 +9,14 @@
  * this hook's output, and group-expanded state depends on those rows.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AnimatableProperty } from '@/types/keyframe'
 import type { PropertyAccordionGroup } from './property-groups'
 
 interface UsePropertyFiltersOptions {
   allPropertyGroups: PropertyAccordionGroup[]
   availableProperties: AnimatableProperty[]
+  initialVisibleGroupIds?: readonly string[]
 }
 
 export interface UsePropertyFiltersReturn {
@@ -33,8 +34,19 @@ export interface UsePropertyFiltersReturn {
 export function usePropertyFilters({
   allPropertyGroups,
   availableProperties,
+  initialVisibleGroupIds,
 }: UsePropertyFiltersOptions): UsePropertyFiltersReturn {
-  const [visibleGroups, setVisibleGroups] = useState<Record<string, boolean>>({})
+  const initialVisibleGroupIdsRef = useRef(
+    initialVisibleGroupIds ? new Set(initialVisibleGroupIds) : null,
+  )
+  const [visibleGroups, setVisibleGroups] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(
+      allPropertyGroups.map((group) => [
+        group.id,
+        initialVisibleGroupIdsRef.current?.has(group.id) ?? true,
+      ]),
+    ),
+  )
   const [showKeyframedOnly, setShowKeyframedOnly] = useState(false)
   const [lockedProperties, setLockedProperties] = useState<
     Partial<Record<AnimatableProperty, boolean>>
@@ -50,7 +62,7 @@ export function usePropertyFilters({
 
       for (const groupId of groupIds) {
         if (next[groupId] === undefined) {
-          next[groupId] = true
+          next[groupId] = initialVisibleGroupIdsRef.current?.has(groupId) ?? true
           changed = true
         }
       }

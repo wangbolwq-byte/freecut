@@ -2,7 +2,7 @@ import type { LoadTimelineOptions } from '../types'
 import type { ItemKeyframes } from '@/types/keyframe'
 import type { AudioItem, CompositionItem, TimelineItem, TimelineTrack } from '@/types/timeline'
 import type { Transition } from '@/types/transition'
-import type { ProjectTimeline, Project } from '@/types/project'
+import type { CompositionEditorKind, ProjectTimeline, Project } from '@/types/project'
 
 import { createLogger, createOperationId } from '@/shared/logging/logger'
 import { usePreviewBridgeStore } from '@/shared/state/preview-bridge'
@@ -759,6 +759,7 @@ export function buildTimelineFromStores(): ProjectTimeline {
         compositions: comps.map((c) => ({
           id: c.id,
           name: c.name,
+          editorKind: c.editorKind ?? 'sequence',
           items: c.items as ProjectTimeline['items'],
           tracks: c.tracks as ProjectTimeline['tracks'],
           ...(c.transitions?.length && {
@@ -782,10 +783,15 @@ export function buildTimelineFromStores(): ProjectTimeline {
     // Standalone timeline tabs (multi-timeline) — keep only ids that resolve to
     // an existing composition so tabs never dangle.
     ...(() => {
-      const compIds = new Set(useCompositionsStore.getState().compositions.map((c) => c.id))
+      const sequenceIds = new Set(
+        useCompositionsStore
+          .getState()
+          .compositions.filter((composition) => composition.editorKind !== 'composite-2d')
+          .map((composition) => composition.id),
+      )
       const topLevelSequenceIds = useSequencesStore
         .getState()
-        .topLevelSequenceIds.filter((id) => compIds.has(id))
+        .topLevelSequenceIds.filter((id) => sequenceIds.has(id))
       return topLevelSequenceIds.length > 0 ? { topLevelSequenceIds } : {}
     })(),
   }
@@ -992,6 +998,12 @@ export async function saveTimeline(projectId: string): Promise<void> {
  * migrating from storage; it then runs media validation on top.
  */
 export async function hydrateTimelineStoresFromProject(project: Project): Promise<void> {
+  // Unwind the outgoing runtime context before replacing any live domain
+  // stores. If a Motion composition is active and root items are loaded first,
+  // resetToRoot() mistakes those freshly loaded root items for composition
+  // contents and saves them into the active composition on refresh.
+  useCompositionNavigationStore.getState().resetToRoot()
+
   // Swap in this project's saved track heights before any setTracks call, since
   // that is what resolves each track's height. Heights are a local view
   // preference and never come out of the project file.
@@ -1045,6 +1057,9 @@ export async function hydrateTimelineStoresFromProject(project: Project): Promis
         t.compositions.map(async (c) => ({
           id: c.id,
           name: c.name,
+          editorKind: (c.editorKind === 'composite-2d'
+            ? 'composite-2d'
+            : 'sequence') as CompositionEditorKind,
           items: await reverseConformService.hydrateItems(c.items as TimelineItem[]),
           tracks: c.tracks as TimelineTrack[],
           transitions: (c.transitions ?? []) as Transition[],
@@ -1067,18 +1082,18 @@ export async function hydrateTimelineStoresFromProject(project: Project): Promis
 
     // Restore standalone timeline tabs (multi-timeline). Filter to ids that
     // resolve to a hydrated composition so tabs never dangle.
-    const hydratedCompositionIds = new Set(
-      useCompositionsStore.getState().compositions.map((c) => c.id),
+    const hydratedSequenceIds = new Set(
+      useCompositionsStore
+        .getState()
+        .compositions.filter((composition) => composition.editorKind === 'sequence')
+        .map((c) => c.id),
     )
     useSequencesStore.getState().reset()
     useSequencesStore
       .getState()
       .setTopLevelSequenceIds(
-        (t.topLevelSequenceIds ?? []).filter((id) => hydratedCompositionIds.has(id)),
+        (t.topLevelSequenceIds ?? []).filter((id) => hydratedSequenceIds.has(id)),
       )
-
-    // Reset composition navigation to root on load
-    useCompositionNavigationStore.getState().resetToRoot()
 
     // Restore zoom and playback
     if (t.zoomLevel !== undefined) {
@@ -1104,7 +1119,6 @@ export async function hydrateTimelineStoresFromProject(project: Project): Promis
     useMarkersStore.getState().setOutPoint(null)
     useCompositionsStore.getState().setCompositions([])
     useSequencesStore.getState().reset()
-    useCompositionNavigationStore.getState().resetToRoot()
     useTimelineSettingsStore.getState().setScrollPosition(0)
     useZoomStore.getState().setZoomLevel(1)
     usePlaybackStore.getState().setCurrentFrame(0)

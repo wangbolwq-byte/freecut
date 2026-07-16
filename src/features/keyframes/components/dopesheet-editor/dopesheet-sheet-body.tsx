@@ -13,6 +13,7 @@ interface DopesheetSheetBodyProps {
   marqueeRect: KeyframeMarqueeRect | null
   marqueeJustEnded: boolean
   propertyColumnWidth?: number
+  subtractRulerHeight?: boolean
   onTimelineBackgroundPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void
 }
 
@@ -26,13 +27,14 @@ export function DopesheetSheetBody({
   marqueeRect,
   marqueeJustEnded,
   propertyColumnWidth = PROPERTY_COLUMN_WIDTH,
+  subtractRulerHeight = true,
   onTimelineBackgroundPointerDown,
 }: DopesheetSheetBodyProps) {
   return (
     <div
       ref={scrollAreaRef}
-      className="overflow-auto"
-      style={{ height: `calc(100% - ${RULER_HEIGHT}px)` }}
+      className={subtractRulerHeight ? 'overflow-auto' : 'overflow-hidden'}
+      style={{ height: subtractRulerHeight ? `calc(100% - ${RULER_HEIGHT}px)` : '100%' }}
     >
       {!hasRows ? (
         <DopesheetEmptyState

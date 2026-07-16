@@ -1,8 +1,11 @@
 import { useTranslation } from 'react-i18next'
 import { ChevronDown, ChevronRight, Eye, EyeOff, Palette, RotateCcw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { PropertyRow } from '@/shared/ui/property-controls'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { EffectMoveButtons, type EffectMoveProps } from './effect-move-buttons'
+
+const EFFECT_HEADER_CLASS =
+  'flex min-w-0 items-center justify-between gap-2 border-y border-border/60 bg-muted/35 px-2 py-1'
 
 interface EffectPanelHeaderActionsProps extends EffectMoveProps {
   effectId: string
@@ -15,7 +18,7 @@ interface EffectPanelHeaderActionsProps extends EffectMoveProps {
   onEditInColor?: () => void
 }
 
-export function EffectPanelHeaderActions({
+function EffectPanelHeaderActions({
   effectId,
   enabled,
   isDefault,
@@ -108,12 +111,16 @@ export function EffectPanelHeaderRow({
   onToggleCollapsed,
   ...actions
 }: EffectPanelHeaderRowProps) {
+  const { t } = useTranslation()
   if (onToggleCollapsed) {
     // Surface a "modified" dot while collapsed so a graded clip reads as graded
     // without expanding the panel.
     const showModifiedDot = collapsed === true && !actions.isDefault
+    const modifiedLabel = t('effects.panel.modifiedFromDefaults', {
+      defaultValue: 'Modified from defaults',
+    })
     return (
-      <div className="flex items-center justify-between gap-2 min-w-0 py-1">
+      <div className={EFFECT_HEADER_CLASS}>
         <button
           type="button"
           onClick={onToggleCollapsed}
@@ -127,10 +134,19 @@ export function EffectPanelHeaderRow({
           )}
           <span className="truncate">{label}</span>
           {showModifiedDot ? (
-            <span
-              className="ml-1 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-primary"
-              aria-hidden="true"
-            />
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    className="ml-0.5 inline-flex h-4 w-4 flex-shrink-0 items-center justify-center"
+                    aria-label={modifiedLabel}
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-primary" aria-hidden="true" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top">{modifiedLabel}</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           ) : null}
         </button>
         <div className="flex items-center gap-1 min-w-0 justify-end">
@@ -141,10 +157,11 @@ export function EffectPanelHeaderRow({
   }
 
   return (
-    <PropertyRow label={label}>
-      <div className="flex items-center gap-1 min-w-0 w-full justify-end">
+    <div className={EFFECT_HEADER_CLASS}>
+      <span className="min-w-0 truncate text-xs font-medium text-foreground/90">{label}</span>
+      <div className="flex min-w-0 items-center justify-end gap-1">
         <EffectPanelHeaderActions {...actions} />
       </div>
-    </PropertyRow>
+    </div>
   )
 }

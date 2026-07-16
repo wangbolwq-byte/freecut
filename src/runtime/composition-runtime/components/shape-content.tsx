@@ -3,6 +3,7 @@ import { Rect, Circle, Triangle, Ellipse, Star, Polygon, Heart } from '@/shared/
 import { useItemGizmoPreview } from '@/runtime/composition-runtime/deps/stores'
 import type { ShapeItem } from '@/types/timeline'
 import { useCompositionSpace } from '../contexts/composition-space-context'
+import { useItemVisualTransform } from '../contexts/item-visual-transform-context'
 
 /**
  * Shape content with live property preview support.
@@ -14,6 +15,7 @@ export const ShapeContent: React.FC<{ item: ShapeItem }> = ({ item }) => {
   const renderScaleX = compositionSpace?.scaleX ?? 1
   const renderScaleY = compositionSpace?.scaleY ?? 1
   const renderScale = compositionSpace?.scale ?? 1
+  const visualTransform = useItemVisualTransform()
 
   const { activeGizmo, previewTransform, itemPreview } = useItemGizmoPreview(item.id)
 
@@ -30,16 +32,16 @@ export const ShapeContent: React.FC<{ item: ShapeItem }> = ({ item }) => {
 
   // Get dimensions with preview support for real-time gizmo scaling
   // Priority: Unified preview (group/properties) > Single gizmo preview > Base transform
-  let width = (item.transform?.width ?? 200) * renderScaleX
-  let height = (item.transform?.height ?? 200) * renderScaleY
+  let width = (visualTransform?.width ?? item.transform?.width ?? 200) * renderScaleX
+  let height = (visualTransform?.height ?? item.transform?.height ?? 200) * renderScaleY
 
   const itemPreviewTransform = itemPreview?.transform
   const isGizmoPreviewActive = activeGizmo?.itemId === item.id && previewTransform !== null
 
-  if (itemPreviewTransform) {
+  if (!visualTransform && itemPreviewTransform) {
     width = (itemPreviewTransform.width ?? width / renderScaleX) * renderScaleX
     height = (itemPreviewTransform.height ?? height / renderScaleY) * renderScaleY
-  } else if (isGizmoPreviewActive && previewTransform) {
+  } else if (!visualTransform && isGizmoPreviewActive && previewTransform) {
     width = previewTransform.width * renderScaleX
     height = previewTransform.height * renderScaleY
   }

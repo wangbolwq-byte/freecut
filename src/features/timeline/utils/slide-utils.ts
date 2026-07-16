@@ -9,7 +9,9 @@ import { computeClampedSlipDelta } from './slip-utils'
  * Returns 0 unless ALL conditions are true:
  * - Left + slid + right form a split-contiguous chain (joinable pairs).
  * - Slid item is media with explicit sourceEnd.
- * - Full source delta is available inside source bounds (no clamping required).
+ * The returned source delta is clamped continuously at source bounds. This
+ * avoids snapping the slid clip's source window back to its original position
+ * when a drag crosses the last available source frame.
  */
 export function computeSlideContinuitySourceDelta(
   slidItem: TimelineItem,
@@ -36,5 +38,5 @@ export function computeSlideContinuitySourceDelta(
     sourceDelta,
   )
 
-  return clamped === sourceDelta ? sourceDelta : 0
+  return clamped
 }

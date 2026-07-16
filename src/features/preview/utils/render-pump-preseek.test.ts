@@ -26,6 +26,7 @@ import {
   getVideoItemSourceTimeSeconds,
   mapTimelineFrameToSubCompositionFrame,
   resolvePausedVariableSpeedPrewarmPlan,
+  resolveActivePreviewLookaheadTimestamps,
   shouldRunJumpPreseek,
 } from './render-pump-preseek'
 
@@ -69,6 +70,37 @@ describe('render pump preseek helpers', () => {
     })
 
     expect(getVideoItemSourceTimeSeconds(item, 16, 30)).toBeCloseTo(2.4)
+  })
+
+  it('computes descending source time for a reversed clip', () => {
+    const item = makeVideoItem({
+      from: 10,
+      durationInFrames: 30,
+      sourceStart: 120,
+      sourceEnd: 180,
+      sourceFps: 60,
+      speed: 1,
+      isReversed: true,
+    })
+
+    expect(getVideoItemSourceTimeSeconds(item, 10, 30)).toBeCloseTo(179 / 60)
+    expect(getVideoItemSourceTimeSeconds(item, 11, 30)).toBeCloseTo(177 / 60)
+    expect(getVideoItemSourceTimeSeconds(item, 39, 30)).toBeCloseTo(121 / 60)
+  })
+
+  it('derives the reverse endpoint when sourceEnd is absent', () => {
+    const item = makeVideoItem({
+      from: 10,
+      durationInFrames: 15,
+      sourceStart: 120,
+      sourceEnd: undefined,
+      sourceFps: 60,
+      speed: 2,
+      isReversed: true,
+    })
+
+    expect(getVideoItemSourceTimeSeconds(item, 10, 30)).toBeCloseTo(179 / 60)
+    expect(getVideoItemSourceTimeSeconds(item, 11, 30)).toBeCloseTo(175 / 60)
   })
 
   it('requires explicit source fps when requested', () => {
@@ -409,6 +441,44 @@ describe('shouldRunJumpPreseek', () => {
   })
 })
 
+describe('active preview lookahead', () => {
+  it('keeps an adjacent frame on both sides for fine scrubbing', () => {
+    expect(
+      resolveActivePreviewLookaheadTimestamps({
+        sourceTime: 10,
+        previousSourceTime: 9.99,
+        elapsedMs: 100,
+        sourceFps: 30,
+        fallbackDirection: 1,
+      }),
+    ).toEqual([10 + 1 / 30, 10 - 1 / 30])
+  })
+
+  it('spreads directional lookahead when scrub velocity is high', () => {
+    expect(
+      resolveActivePreviewLookaheadTimestamps({
+        sourceTime: 20,
+        previousSourceTime: 10,
+        elapsedMs: 50,
+        sourceFps: 30,
+        fallbackDirection: 1,
+      }),
+    ).toEqual([20 + 1 / 30, 20 + 120 / 30, 20 - 1 / 30])
+  })
+
+  it('clamps backward lookahead to the start of the source', () => {
+    expect(
+      resolveActivePreviewLookaheadTimestamps({
+        sourceTime: 0,
+        previousSourceTime: 1,
+        elapsedMs: 16,
+        sourceFps: 30,
+        fallbackDirection: -1,
+      }),
+    ).toEqual([1 / 30])
+  })
+})
+
 describe('compound clip preseek recursion', () => {
   function makeCompositionItem(overrides: Partial<CompositionItem> = {}): CompositionItem {
     return {
@@ -472,6 +542,44 @@ describe('compound clip preseek recursion', () => {
     // relativeFrame 90 -> subCompFrame 90 -> localFrame 30 @30fps = 1.0s
     expect(result.size).toBe(1)
     expect(result.get('blob:fresh')![0]).toBeCloseTo(1.0)
+  })
+
+  it('collects video through two nested compound clips', () => {
+    const outer = makeCompositionItem({ compositionId: 'sub-outer' })
+    const nested = makeCompositionItem({
+      id: 'nested-comp',
+      compositionId: 'sub-inner',
+      from: 0,
+      durationInFrames: 300,
+    })
+    const tracks = [makeMixedTrack([outer])]
+    const result = collectVisibleTrackVideoSourceTimesBySrc(tracks, 190, 30, {
+      requireExplicitSourceFps: false,
+      resolveComposition: (id) => {
+        if (id === 'sub-outer') return { fps: 30, items: [nested] }
+        if (id === 'sub-inner') return { fps: 30, items: [makeSubVideoItem()] }
+        return null
+      },
+      resolveItemSrc: () => 'blob:nested-fresh',
+    })
+
+    expect(result.get('blob:nested-fresh')![0]).toBeCloseTo(1.0)
+  })
+
+  it('breaks cyclic compound references without recursing forever', () => {
+    const outer = makeCompositionItem({ compositionId: 'sub-cycle' })
+    const nestedCycle = makeCompositionItem({
+      id: 'nested-cycle',
+      compositionId: 'sub-cycle',
+      from: 0,
+      durationInFrames: 300,
+    })
+
+    const result = collectVisibleTrackVideoSourceTimesBySrc([makeMixedTrack([outer])], 190, 30, {
+      resolveComposition: () => ({ fps: 30, items: [nestedCycle] }),
+    })
+
+    expect(result.size).toBe(0)
   })
 
   it('skips composition items when no resolver is provided (old behavior)', () => {
@@ -548,6 +656,18 @@ describe('compound clip preseek recursion', () => {
       resolveItemSrc: () => 'blob:fresh',
     })
     expect(result.size).toBe(0)
+  })
+
+  it('uses the compound fps for held scrubs when legacy sub-items omit sourceFps', () => {
+    const subItem = makeSubVideoItem({ sourceFps: undefined })
+    const tracks = [makeMixedTrack([makeCompositionItem()])]
+    const result = collectVisibleTrackVideoSourceTimesBySrc(tracks, 190, 30, {
+      requireExplicitSourceFps: false,
+      resolveComposition: resolveComposition([subItem]),
+      resolveItemSrc: () => 'blob:fresh',
+    })
+
+    expect(result.get('blob:fresh')![0]).toBeCloseTo(1.0)
   })
 
   it('resolves direct video items with empty stored src by mediaId', () => {

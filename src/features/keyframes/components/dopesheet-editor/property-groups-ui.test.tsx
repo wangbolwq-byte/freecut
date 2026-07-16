@@ -51,6 +51,24 @@ describe('DopesheetEditor property groups', () => {
     ).toBeTruthy()
   })
 
+  it('keeps connectors when one endpoint is outside the zoomed viewport', () => {
+    renderEditor({
+      keyframesByProperty: {
+        x: [
+          { id: 'kx-offscreen', frame: 0, value: 100, easing: 'linear' },
+          { id: 'kx-visible', frame: 75, value: 200, easing: 'linear' },
+        ],
+      },
+      propertyValues: { x: 200 },
+      totalFrames: 100,
+      frameViewport: { startFrame: 50, endFrame: 100 },
+    })
+
+    expect(screen.getAllByTestId('keyframe-connector')).toHaveLength(2)
+    expect(screen.queryByTestId('row-keyframe-x-kx-offscreen')).toBeNull()
+    expect(screen.getByTestId('row-keyframe-x-kx-visible')).toBeTruthy()
+  })
+
   it('filters parameter groups from the menu', () => {
     renderEditor()
 
@@ -147,6 +165,31 @@ describe('DopesheetEditor property groups', () => {
     // Turning Y on makes it the active curve
     fireEvent.click(screen.getByRole('button', { name: /show y position curve/i }))
     expect(onPropertyChange).toHaveBeenCalledWith('y')
+  })
+
+  it('can render transform properties directly while preserving other group headers', () => {
+    renderEditor({
+      visualizationMode: 'graph',
+      inlinePropertyGroupIds: ['transform'],
+    })
+
+    expect(screen.queryByRole('button', { name: /collapse transform/i })).toBeNull()
+    expect(screen.getByRole('spinbutton', { name: /x position value at playhead/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /collapse audio/i })).toBeTruthy()
+  })
+
+  it('renders lane-only presentation without duplicating editor chrome', () => {
+    renderEditor({
+      presentation: 'lanes',
+      propertyColumnWidth: 420,
+      inlinePropertyGroupIds: ['transform', 'audio'],
+    })
+
+    expect(screen.queryByText('Parameters')).toBeNull()
+    expect(screen.queryByTestId('dopesheet-ruler')).toBeNull()
+    expect(screen.queryByTestId('keyframe-navigator-property-column')).toBeNull()
+    expect(screen.queryByRole('button', { name: /collapse transform/i })).toBeNull()
+    expect(screen.getByRole('spinbutton', { name: /x position value at playhead/i })).toBeTruthy()
   })
 
   it('keeps visibility toggles when selecting a different active row in graph mode', () => {
@@ -424,8 +467,12 @@ describe('DopesheetEditor property groups', () => {
       onRemoveKeyframes,
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /clear x position keyframes/i }))
-    fireEvent.click(screen.getByRole('button', { name: /clear all transform keyframes/i }))
+    fireEvent.click(
+      screen.getByRole('button', { name: /reset x position animation to its base value/i }),
+    )
+    fireEvent.click(
+      screen.getByRole('button', { name: /reset all transform animations to their base values/i }),
+    )
 
     expect(onRemoveKeyframes).toHaveBeenNthCalledWith(1, [
       { itemId: 'item-1', property: 'x', keyframeId: 'kx-1' },
@@ -434,6 +481,32 @@ describe('DopesheetEditor property groups', () => {
       { itemId: 'item-1', property: 'x', keyframeId: 'kx-1' },
       { itemId: 'item-1', property: 'y', keyframeId: 'ky-1' },
     ])
+  })
+
+  it('resets effect rows or their effect header to definition defaults', () => {
+    const property = 'effect:gpu-color-wheels:wheels-1:exposure' as const
+    const onResetPropertiesToDefault = vi.fn()
+    renderEditor({
+      keyframesByProperty: {
+        [property]: [{ id: 'effect-kf', frame: 8, value: 1, easing: 'linear' }],
+      },
+      propertyValues: { [property]: 1 },
+      onResetPropertiesToDefault,
+    })
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /reset color wheels: exposure \(ev\) to its default value/i,
+      }),
+    )
+    expect(onResetPropertiesToDefault).toHaveBeenLastCalledWith([property])
+
+    const groupReset = screen.getByRole('button', {
+      name: /reset all color wheels properties to their default values/i,
+    })
+    expect(groupReset).not.toHaveClass('opacity-0')
+    fireEvent.click(groupReset)
+    expect(onResetPropertiesToDefault).toHaveBeenLastCalledWith([property])
   })
 
   it('navigates group keyframes with the header arrows', () => {

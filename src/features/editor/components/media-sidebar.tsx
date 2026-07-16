@@ -36,7 +36,10 @@ import {
   MediaLibrary,
   setMediaDragData,
 } from '@/features/editor/deps/media-library'
-import { KeyframeGraphPanel, TranscriptEditorPanel } from '@/features/editor/deps/timeline-contract'
+import {
+  importKeyframeGraphPanel,
+  importTranscriptEditorPanel,
+} from '@/features/editor/deps/timeline-panels'
 import { LottieBrowserPanel } from '@/features/editor/deps/lottie-browser'
 import { TransitionsPanel } from './transitions-panel'
 import {
@@ -55,6 +58,14 @@ import { EffectThumbnail, useGpuEffectPreviewData } from '@/features/editor/deps
 import { createLogger } from '@/shared/logging/logger'
 import { useSettingsStore } from '@/features/editor/deps/settings'
 const LazyAiPanel = lazy(() => import('./ai-tab').then((m) => ({ default: m.AiTab })))
+const LazyKeyframeGraphPanel = lazy(() =>
+  importKeyframeGraphPanel().then(({ KeyframeGraphPanel }) => ({ default: KeyframeGraphPanel })),
+)
+const LazyTranscriptEditorPanel = lazy(() =>
+  importTranscriptEditorPanel().then(({ TranscriptEditorPanel }) => ({
+    default: TranscriptEditorPanel,
+  })),
+)
 import {
   TEXT_STYLE_PRESETS,
   type TextStylePresetLayout,
@@ -716,13 +727,15 @@ export const MediaSidebar = memo(function MediaSidebar() {
             /* Dedicated keyframe editor — takes over the full sidebar column with a
                  stacked dopesheet (top) + value graph (bottom) split, instead of
                  sharing the column with the media library below it. */
-            <KeyframeGraphPanel
-              isOpen
-              splitView
-              onToggle={toggleKeyframeEditorOpen}
-              onClose={() => setKeyframeEditorOpen(false)}
-              placement="side"
-            />
+            <Suspense fallback={null}>
+              <LazyKeyframeGraphPanel
+                isOpen
+                splitView
+                onToggle={toggleKeyframeEditorOpen}
+                onClose={() => setKeyframeEditorOpen(false)}
+                placement="side"
+              />
+            </Suspense>
           ) : (
             <>
               {/* Panel Header — sits with the tab content */}
@@ -1155,7 +1168,11 @@ export const MediaSidebar = memo(function MediaSidebar() {
               <div
                 className={`min-h-0 flex-1 overflow-hidden ${activeTab === 'transcript' ? 'block' : 'hidden'}`}
               >
-                <TranscriptEditorPanel active={activeTab === 'transcript'} />
+                {activeTab === 'transcript' && (
+                  <Suspense fallback={null}>
+                    <LazyTranscriptEditorPanel active />
+                  </Suspense>
+                )}
               </div>
 
               {/* AI Tab */}

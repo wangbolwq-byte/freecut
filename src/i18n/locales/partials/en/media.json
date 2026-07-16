@@ -52,6 +52,7 @@
       }
     },
     "compositions": {
+      "compositionsGroup": "Compositions",
       "compoundClipsGroup": "Compound Clips",
       "deleteBody": "Delete compound clip \"{{name}}\"? This cannot be undone.",
       "deleteInstancesDetail": "{{count}} timeline instances that use this compound clip will also be removed.",

@@ -70,6 +70,15 @@ export function usePreviewMediaResolution({
   const resolvePassInFlightRef = useRef(false)
   const lastSyncedMediaDependencyVersionRef = useRef<number>(-1)
 
+  // The initial resolver may still be waiting on unrelated or missing media
+  // after the playhead's priority source has resolved through the preload
+  // path. Unblock the preview renderer as soon as the first usable source is
+  // published instead of holding playback warm-up behind the whole batch.
+  useEffect(() => {
+    if (resolvedUrls.size === 0) return
+    setIsResolving((resolving) => (resolving ? false : resolving))
+  }, [resolvedUrls.size])
+
   const rebuildUnresolvedMediaIds = useCallback((resolvedMap: Map<string, string>) => {
     const mediaIds = useMediaDependencyStore.getState().mediaIds
     const unresolvedSet = new Set<string>()
@@ -466,7 +475,6 @@ export function usePreviewMediaResolution({
 
         if (effectiveResolvedUrls.size === 0) {
           setIsResolving(true)
-          await new Promise((r) => setTimeout(r, 150))
         }
 
         if (isCancelled) {

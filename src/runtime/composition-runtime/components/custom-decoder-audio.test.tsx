@@ -15,6 +15,14 @@ const playbackStateMocks = vi.hoisted(() => ({
     resolvedVolume: 1,
     resolvedPitchShiftSemitones: 0,
     resolvedAudioEqStages: [],
+  } as {
+    frame: number
+    fps: number
+    playing: boolean
+    isPreviewScrubbing?: boolean
+    resolvedVolume: number
+    resolvedPitchShiftSemitones: number
+    resolvedAudioEqStages: unknown[]
   },
 }))
 
@@ -154,6 +162,46 @@ describe('CustomDecoderAudio', () => {
         'data-has-fallback',
         'true',
       )
+    })
+  })
+
+  it('defers pitch-preserved decoding until an active preview scrub settles', async () => {
+    playbackStateMocks.current.isPreviewScrubbing = true
+    audioDecodeMocks.getOrDecodeAudioSliceForPlayback.mockResolvedValue({
+      buffer: makeAudioBuffer(),
+      startTime: 0,
+      isComplete: false,
+    })
+    audioDecodeMocks.getOrDecodeAudio.mockReturnValue(new Promise<AudioBuffer>(() => {}))
+
+    const { rerender } = render(
+      <CustomDecoderAudio
+        src="blob:audio"
+        mediaId="media-1"
+        itemId="item-1"
+        durationInFrames={240}
+        playbackRate={1.5}
+      />,
+    )
+
+    await Promise.resolve()
+    expect(audioDecodeMocks.getOrDecodeAudioSliceForPlayback).not.toHaveBeenCalled()
+    expect(audioDecodeMocks.getOrDecodeAudio).not.toHaveBeenCalled()
+
+    playbackStateMocks.current.isPreviewScrubbing = false
+    rerender(
+      <CustomDecoderAudio
+        src="blob:audio"
+        mediaId="media-1"
+        itemId="item-1"
+        durationInFrames={240}
+        playbackRate={1.5}
+        volumeMultiplier={1.01}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(audioDecodeMocks.getOrDecodeAudioSliceForPlayback).toHaveBeenCalledTimes(1)
     })
   })
 

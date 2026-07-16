@@ -52,6 +52,7 @@ const page = {
         {
           kind: 'list',
           items: [
+            'A **2D composition** opens in **Motion**, where the shared editor keeps your media, preview, and properties in place while the lower dock becomes a layer timeline.',
             'A **sequence** is a standalone timeline in the same project, opened from a tab in the tab bar. Each sequence has its own tracks, clips, and edit history — the main timeline is itself a sequence.',
             'A **compound clip** takes a section of the timeline and folds it into a single reusable media item. On the timeline it behaves like one clip — move, trim, add effects — while its contents live in their own timeline.',
             'The two are the same thing seen differently: open a compound clip to edit its contents as a sequence, and any sequence can be dropped into another timeline as a compound clip.',

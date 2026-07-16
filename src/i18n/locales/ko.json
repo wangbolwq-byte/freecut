@@ -37,6 +37,7 @@
   "toolbar": {
     "ariaLabel": "편집기 도구 모음",
     "workspaces": {
+      "motion": "Motion",
       "label": "작업 영역",
       "edit": "편집",
       "color": "컬러",

@@ -168,9 +168,16 @@ function restoreTimeline(stash: StashedTimeline) {
 /** Save current timeline data back to the compositions store (for sub-comps only). */
 function saveCurrentToComposition(compositionId: string) {
   const items = useItemsStore.getState().items
-  // Compute updated duration from the furthest item end
-  const durationInFrames =
+  const currentComposition = useCompositionsStore.getState().getComposition(compositionId)
+  const contentEnd =
     items.length > 0 ? Math.max(...items.map((i) => i.from + i.durationInFrames)) : 0
+  // Layer compositions have an explicit canvas duration that must survive an
+  // empty scene and short layers. Editorial compound clips retain their
+  // content-derived duration behavior.
+  const durationInFrames =
+    currentComposition?.editorKind === 'composite-2d'
+      ? Math.max(1, currentComposition.durationInFrames, contentEnd)
+      : contentEnd
   const markersState = useMarkersStore.getState()
 
   useCompositionsStore.getState().updateComposition(compositionId, {

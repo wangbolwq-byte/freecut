@@ -68,7 +68,6 @@ export function usePreviewViewModel({
   const activeGizmoItemId = useGizmoStore((s) => s.activeGizmo?.itemId ?? null)
   const isGizmoInteracting = useGizmoStore((s) => s.activeGizmo !== null)
   const isMaskEditingActive = useMaskEditorStore((s) => s.isEditing)
-  const isPlaying = usePlaybackStore((s) => s.isPlaying)
   const zoom = usePlaybackStore((s) => s.zoom)
   const useProxy = usePlaybackStore((s) => s.useProxy)
   const busAudioEq = usePlaybackStore((s) => s.busAudioEq)
@@ -189,7 +188,6 @@ export function usePreviewViewModel({
     activeGizmoItemType,
     isGizmoInteracting,
     isMaskEditingActive,
-    isPlaying,
     zoom,
     useProxy,
     busAudioEq,

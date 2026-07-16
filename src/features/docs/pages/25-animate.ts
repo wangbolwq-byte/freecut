@@ -7,7 +7,7 @@ const page = {
   title: 'Animate Workspace',
   description: 'Apply motion presets, add live procedural motion, and bake it into keyframes.',
   category: 'Creative Tools',
-  related: ['keyframes', 'properties', 'text-captions-subtitles'],
+  related: ['keyframes', 'properties', 'text-captions-subtitles', 'motion'],
   sections: [
     {
       title: 'Open the Animate workspace',

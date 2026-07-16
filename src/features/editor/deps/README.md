@@ -2,16 +2,20 @@
 
 Editor-local adapters for external feature dependencies.
 
-- `timeline-contract.ts`: internal editor->timeline seam binding. Other
-  timeline adapter files re-export from this contract to keep cross-feature
-  coupling centralized.
+- `timeline-*-contract.ts`: focused editor->timeline seams. Keep store, hook,
+  utility, Motion, and optional-panel edges separate so importing one adapter
+  does not eagerly load the entire timeline feature in development.
+- `timeline-contract.ts`: legacy compatibility seam. Avoid it in startup-path
+  code; prefer the focused adapters below.
 - `timeline-store.ts`: timeline store selectors and timeline state/action types.
-- `timeline-ui.ts`: timeline feature UI components (`Timeline`,
-  `BentoLayoutDialog`).
+- `timeline-ui.ts`: classic timeline and dialog lazy-load helpers plus dialog
+  stores.
 - `timeline-hooks.ts`: timeline feature hooks used by editor shell.
 - `timeline-utils.ts`: timeline utility functions used by editor components.
 - `timeline-cache.ts`: lazy import helpers for timeline cache services.
 - `timeline-subscriptions.ts`: transition-chain subscription bootstrap.
+- `timeline-motion.ts`: Motion workspace stores, actions, and dopesheet UI.
+- `timeline-panels.ts`: lazy import helpers for optional graph/transcript panels.
 - `timeline.ts`: compatibility barrel that re-exports the timeline adapters
   above. Prefer importing the more specific module directly in new code.
 - `media-library.ts`: the preferred entry point for editor modules that need

@@ -7,7 +7,12 @@ import type { TimelineItem } from '@/types/timeline'
 import type { ItemEffect, GpuEffect, VisualEffect } from '@/types/effects'
 import { EFFECT_PRESETS } from '@/types/effects'
 import { useTimelineStore } from '@/features/effects/deps/timeline-contract'
-import { useGizmoStore, useThrottledFrame } from '@/features/effects/deps/preview-contract'
+import {
+  useGizmoStore,
+  usePowerWindowEditorStore,
+  useSpatialEffectEditorStore,
+  useThrottledFrame,
+} from '@/features/effects/deps/preview-contract'
 import { PropertySection } from '@/shared/ui/property-controls'
 import {
   GpuEffectPanel,
@@ -80,6 +85,8 @@ export const EffectsSection = memo(function EffectsSection({
   // Gizmo store for live effect preview
   const setEffectsPreviewNew = useGizmoStore((s) => s.setEffectsPreviewNew)
   const clearPreview = useGizmoStore((s) => s.clearPreview)
+  const startPowerWindowEditing = usePowerWindowEditorStore((s) => s.startEditing)
+  const stopSpatialEffectEditing = useSpatialEffectEditorStore((s) => s.stopEditing)
   const currentFrame = useThrottledFrame({ updateDuringScrub: !isDock })
 
   // Items are already filtered by parent - use directly
@@ -151,8 +158,21 @@ export const EffectsSection = memo(function EffectsSection({
           params: defaults,
         } as GpuEffect)
       })
+
+      if (gpuEffectId === 'gpu-power-window' && itemIds.length === 1) {
+        const itemId = itemIds[0]!
+        const item = useTimelineStore.getState().items.find((candidate) => candidate.id === itemId)
+        const addedEffect = item?.effects?.at(-1)
+        if (
+          addedEffect?.effect.type === 'gpu-effect' &&
+          addedEffect.effect.gpuEffectType === 'gpu-power-window'
+        ) {
+          stopSpatialEffectEditing()
+          startPowerWindowEditing(itemId, addedEffect.id)
+        }
+      }
     },
-    [itemIds, addEffect],
+    [addEffect, itemIds, startPowerWindowEditing, stopSpatialEffectEditing],
   )
 
   const { gpuCategories, triggerPreviews } = useGpuEffectPreviewData()
@@ -637,7 +657,7 @@ export const EffectsSection = memo(function EffectsSection({
             </div>
 
             {/* Scrollable effect list */}
-            <div className="max-h-[280px] overflow-y-auto overflow-x-hidden p-1">
+            <div className="max-h-[420px] overflow-y-auto overflow-x-hidden p-1">
               {/* GPU Shader Effects */}
               {filteredCategories.map(({ category, effects: catEffects }, index) => (
                 <div key={category}>

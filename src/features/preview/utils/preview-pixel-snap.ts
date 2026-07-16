@@ -9,8 +9,6 @@ type PreviewPlayerSizeInput = {
 
 const MIN_PIXEL_SNAP_DELTA = 0.001
 
-export const ZERO_PIXEL_SNAP_OFFSET: PixelSnapOffset = { x: 0, y: 0 }
-
 function greatestCommonDivisor(a: number, b: number): number {
   let x = Math.abs(Math.round(a))
   let y = Math.abs(Math.round(b))

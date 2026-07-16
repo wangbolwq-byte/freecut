@@ -4,8 +4,6 @@ import type { Project } from '@/types/project'
 import type { MediaMetadata } from '@/types/storage'
 import {
   hydrateTimelineStoresFromProject,
-  importFilmstripCache,
-  importWaveformCache,
   useCompositionNavigationStore,
   useItemsStore,
   useMarkersStore,
@@ -13,6 +11,7 @@ import {
   useTransitionsStore,
   useZoomStore,
 } from '@/features/editor/deps/timeline-store'
+import { importFilmstripCache, importWaveformCache } from '@/features/editor/deps/timeline-cache'
 import { useMediaLibraryStore } from '@/features/editor/deps/media-library'
 import { useProjectStore } from '@/features/editor/deps/projects'
 import { clearPreviewAudioCache } from '@/features/editor/deps/composition-runtime'

@@ -19,7 +19,13 @@ import {
   estimateFileSize,
   getVideoBitrateForQuality,
 } from '../utils/client-renderer'
-import { isExtendedSettings, resolveClientSettings, runRender } from '../utils/render-pipeline'
+import {
+  isExtendedSettings,
+  mapRequestedClientSettings,
+  resolveClientSettings,
+  runRender,
+} from '../utils/render-pipeline'
+import { trySmartCopyExport } from '../utils/smart-copy'
 import { convertTimelineToComposition } from '../utils/timeline-to-composition'
 import { buildTranscriptSubtitleCues } from '../utils/embedded-subtitle-export'
 import { serializeSrt } from '@/shared/utils/subtitles'
@@ -47,6 +53,7 @@ interface UseClientRenderReturn {
   // State
   isExporting: boolean
   progress: number
+  progressMessage?: string
   renderedFrames?: number
   totalFrames?: number
   status: ClientRenderStatus
@@ -71,6 +78,7 @@ interface UseClientRenderReturn {
 export function useClientRender(): UseClientRenderReturn {
   const [isExporting, setIsExporting] = useState(false)
   const [progress, setProgress] = useState(0)
+  const [progressMessage, setProgressMessage] = useState<string>()
   const [renderedFrames, setRenderedFrames] = useState<number>()
   const [totalFrames, setTotalFrames] = useState<number>()
   const [status, setStatus] = useState<ClientRenderStatus>('idle')
@@ -86,6 +94,7 @@ export function useClientRender(): UseClientRenderReturn {
    */
   const handleProgress = useCallback((progressData: RenderProgress) => {
     setProgress(progressData.progress)
+    setProgressMessage(progressData.message)
     setRenderedFrames(progressData.currentFrame)
     setTotalFrames(progressData.totalFrames)
 
@@ -120,6 +129,7 @@ export function useClientRender(): UseClientRenderReturn {
         void releaseTemporaryExportOutput(previousResult)
         setIsExporting(true)
         setProgress(0)
+        setProgressMessage(undefined)
         setError(null)
         setResult(null)
         setStatus('preparing')
@@ -140,14 +150,49 @@ export function useClientRender(): UseClientRenderReturn {
         const projectWidth = currentProject?.metadata?.width ?? DEFAULT_PROJECT_WIDTH
         const projectHeight = currentProject?.metadata?.height ?? DEFAULT_PROJECT_HEIGHT
 
-        // Resolve settings + codec fallback (one source of truth with the queue).
-        const { clientSettings, exportMode, renderWholeProject, codecFallback } =
-          await resolveClientSettings(settings, fps)
-        if (codecFallback) event.set('codecFallback', codecFallback)
-
-        // When renderWholeProject is true, ignore in/out points
+        const requested = mapRequestedClientSettings(settings, fps)
+        // When renderWholeProject is true, ignore in/out points.
+        const { exportMode, renderWholeProject } = requested
         const effectiveInPoint = renderWholeProject ? null : inPoint
         const effectiveOutPoint = renderWholeProject ? null : outPoint
+        const signal = abortControllerRef.current.signal
+
+        const smartCopy = await trySmartCopyExport(
+          {
+            settings: requested.clientSettings,
+            tracks,
+            items,
+            transitions,
+            keyframes,
+            fps,
+            width: projectWidth,
+            height: projectHeight,
+            inPoint: effectiveInPoint,
+            outPoint: effectiveOutPoint,
+            busAudioEq,
+            masterBusDb,
+          },
+          signal,
+          handleProgress,
+        )
+
+        if (smartCopy.result) {
+          resultRef.current = smartCopy.result
+          setResult(smartCopy.result)
+          setStatus('completed')
+          setProgress(100)
+          event.set('renderPath', 'smart-copy')
+          event.success({
+            fileSize: smartCopy.result.fileSize,
+            fileSizeFormatted: formatBytes(smartCopy.result.fileSize),
+            duration: smartCopy.result.duration,
+          })
+          return
+        }
+
+        // Resolve settings + codec fallback only when an encoder is required.
+        const { clientSettings, codecFallback } = await resolveClientSettings(settings, fps)
+        if (codecFallback) event.set('codecFallback', codecFallback)
 
         const extended = isExtendedSettings(settings)
         event.merge({
@@ -237,7 +282,6 @@ export function useClientRender(): UseClientRenderReturn {
         })
 
         // Run the render (worker, with automatic main-thread fallback).
-        const signal = abortControllerRef.current.signal
         const {
           result: renderResult,
           renderPath,
@@ -362,6 +406,7 @@ export function useClientRender(): UseClientRenderReturn {
     abortControllerRef.current = null
     setIsExporting(false)
     setProgress(0)
+    setProgressMessage(undefined)
     setRenderedFrames(undefined)
     setTotalFrames(undefined)
     setStatus('idle')
@@ -420,6 +465,7 @@ export function useClientRender(): UseClientRenderReturn {
   return {
     isExporting,
     progress,
+    progressMessage,
     renderedFrames,
     totalFrames,
     status,

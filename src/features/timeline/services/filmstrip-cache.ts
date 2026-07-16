@@ -26,6 +26,7 @@ import {
   THUMBNAIL_WIDTH,
 } from '@/features/timeline/constants'
 import { filmstripStorage, type FilmstripFrame } from './filmstrip-storage'
+import { fitFilmstripFrameSize } from '../utils/fit-filmstrip-frame-size'
 import { FilmstripMemoryState } from './filmstrip-memory-state'
 import type {
   ExtractRequest,
@@ -2032,8 +2033,14 @@ class FilmstripCacheService {
       })
 
       const canvas = document.createElement('canvas')
-      canvas.width = FILMSTRIP_EXTRACT_WIDTH
-      canvas.height = FILMSTRIP_EXTRACT_HEIGHT
+      const frameSize = fitFilmstripFrameSize(
+        video.videoWidth,
+        video.videoHeight,
+        FILMSTRIP_EXTRACT_WIDTH,
+        FILMSTRIP_EXTRACT_HEIGHT,
+      )
+      canvas.width = frameSize.width
+      canvas.height = frameSize.height
       const ctx = canvas.getContext('2d')
       if (!ctx) {
         throw new Error('Failed to create canvas context for filmstrip fallback')
@@ -2081,7 +2088,8 @@ class FilmstripCacheService {
         const targetTime = Math.min(i / FRAME_RATE, maxSeekTime)
 
         await this.seekVideo(video, targetTime)
-        this.drawCoverFrame(video, ctx, canvas.width, canvas.height)
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
 
         const blob = await this.canvasToBlob(canvas)
         await filmstripStorage.saveFrameBlob(mediaId, i, blob)
@@ -2183,37 +2191,6 @@ class FilmstripCacheService {
       video.addEventListener('error', onError, { once: true })
       video.currentTime = clamped
     })
-  }
-
-  private drawCoverFrame(
-    video: HTMLVideoElement,
-    ctx: CanvasRenderingContext2D,
-    targetWidth: number,
-    targetHeight: number,
-  ): void {
-    const sourceWidth = video.videoWidth || targetWidth
-    const sourceHeight = video.videoHeight || targetHeight
-
-    const sourceAspect = sourceWidth / sourceHeight
-    const targetAspect = targetWidth / targetHeight
-
-    let drawWidth = targetWidth
-    let drawHeight = targetHeight
-    let offsetX = 0
-    let offsetY = 0
-
-    if (sourceAspect > targetAspect) {
-      drawHeight = targetHeight
-      drawWidth = drawHeight * sourceAspect
-      offsetX = (targetWidth - drawWidth) / 2
-    } else {
-      drawWidth = targetWidth
-      drawHeight = drawWidth / sourceAspect
-      offsetY = (targetHeight - drawHeight) / 2
-    }
-
-    ctx.clearRect(0, 0, targetWidth, targetHeight)
-    ctx.drawImage(video, offsetX, offsetY, drawWidth, drawHeight)
   }
 
   private canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {

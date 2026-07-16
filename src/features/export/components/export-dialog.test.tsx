@@ -85,7 +85,7 @@ describe('ExportDialog', () => {
     await waitFor(() => {
       expect(mockGetSupportedCodecs).toHaveBeenCalledWith({
         resolution: { width: 1920, height: 1080 },
-        quality: 'high',
+        bitrate: 3_000_000,
       })
     })
 

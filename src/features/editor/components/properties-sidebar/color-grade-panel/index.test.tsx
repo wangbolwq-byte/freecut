@@ -45,52 +45,50 @@ vi.mock('@/features/editor/deps/effects-contract', () => ({
   ),
 }))
 
-vi.mock('@/features/editor/deps/timeline-contract', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/features/editor/deps/timeline-contract')>()
-  return {
-    ...actual,
-    KeyframeGraphPanel: ({
-      isOpen,
-      placement,
-      showCloseButton,
-    }: {
-      isOpen: boolean
-      placement?: string
-      showCloseButton?: boolean
-    }) => (
-      <div
-        data-testid="keyframe-graph-panel"
-        data-open={String(isOpen)}
-        data-placement={placement}
-        data-show-close={String(showCloseButton)}
-      />
-    ),
-  }
-})
+vi.mock('@/features/editor/deps/timeline-keyframe-ui', () => ({
+  KeyframeGraphPanel: ({
+    isOpen,
+    placement,
+    showCloseButton,
+    initialVisibleGroupIds,
+    propertyColumnWidth,
+  }: {
+    isOpen: boolean
+    placement?: string
+    showCloseButton?: boolean
+    initialVisibleGroupIds?: readonly string[]
+    propertyColumnWidth?: number
+  }) => (
+    <div
+      data-testid="keyframe-graph-panel"
+      data-open={String(isOpen)}
+      data-placement={placement}
+      data-show-close={String(showCloseButton)}
+      data-initial-groups={initialVisibleGroupIds?.join(',')}
+      data-property-column-width={propertyColumnWidth}
+    />
+  ),
+}))
 
 describe('ColorGradePanel', () => {
-  it('renders the fitted color dock with effects and a persistent keyframes lane', async () => {
+  it('keeps the original graph lane with Effects as its default parameter filter', async () => {
     render(<ColorGradePanel layout="dock" />)
 
-    // ColorGradeSection is lazy()-loaded behind Suspense; allow extra time for the
-    // dynamic import to resolve under parallel-suite CPU contention.
     const gradeSection = await screen.findByTestId('color-grade-section', {}, { timeout: 5000 })
     expect(gradeSection).toHaveAttribute('data-layout', 'dock')
     expect(gradeSection).toHaveTextContent('has adjustment action')
-
-    expect(screen.getByTestId('effects-section-dock')).toBeInTheDocument()
     expect(screen.getByText('Add Effect')).toBeInTheDocument()
 
-    const keyframesLane = screen.getByTestId('color-keyframes-lane')
-    expect(keyframesLane).toBeInTheDocument()
-
+    expect(screen.getByTestId('color-keyframes-lane')).toBeInTheDocument()
     const keyframePanel = screen.getByTestId('keyframe-graph-panel')
     expect(keyframePanel).toHaveAttribute('data-open', 'true')
     expect(keyframePanel).toHaveAttribute('data-placement', 'side')
     expect(keyframePanel).toHaveAttribute('data-show-close', 'false')
+    expect(keyframePanel).toHaveAttribute('data-initial-groups', 'effects')
+    expect(keyframePanel).toHaveAttribute('data-property-column-width', '336')
   })
 
-  it('keeps the sidebar variant stacked without the dock keyframes lane', async () => {
+  it('keeps the sidebar variant stacked without the dock graph lane', async () => {
     render(<ColorGradePanel />)
 
     await waitFor(() => expect(screen.getByTestId('color-grade-section')).toBeInTheDocument(), {

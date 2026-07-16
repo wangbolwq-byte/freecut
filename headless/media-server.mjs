@@ -4,9 +4,15 @@
 // the harness page (which runs under COEP: require-corp) can fetch them
 // cross-origin, plus HTTP Range support for partial reads.
 import http from 'node:http'
-import fs from 'node:fs'
-import { stat } from 'node:fs/promises'
 import path from 'node:path'
+import {
+  assertSinglePathComponent,
+  decodeRequestPath,
+  requireGetOrHead,
+  sendHttpError,
+  serveFile,
+  setHttpTimeouts,
+} from './lib/http-security.mjs'
 
 const MIME = {
   '.mp4': 'video/mp4',
@@ -45,59 +51,31 @@ export async function createMediaServer(mediaFilesOrResolver, port = 0) {
     res.setHeader('Access-Control-Allow-Headers', 'range')
     res.setHeader('Access-Control-Expose-Headers', 'content-range, accept-ranges, content-length')
 
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204)
-      res.end()
-      return
-    }
-
-    const requestUrl = new URL(req.url ?? '/', 'http://localhost')
-    const match = requestUrl.pathname.match(/^\/media\/(.+)$/)
-    if (!match) {
-      res.writeHead(404)
-      res.end('not found')
-      return
-    }
-
-    const mediaId = decodeURIComponent(match[1])
-    const filePath = resolveMedia(mediaId)
-    if (!filePath || !fs.existsSync(filePath)) {
-      res.writeHead(404)
-      res.end(`media not found: ${mediaId}`)
-      return
-    }
-
-    const { size } = await stat(filePath)
-    res.setHeader('Content-Type', MIME[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream')
-    res.setHeader('Accept-Ranges', 'bytes')
-
-    const range = req.headers.range
-    if (range) {
-      const parts = /bytes=(\d*)-(\d*)/.exec(range)
-      let start = parts?.[1] ? Number.parseInt(parts[1], 10) : 0
-      let end = parts?.[2] ? Number.parseInt(parts[2], 10) : size - 1
-      if (!Number.isFinite(start) || start < 0) start = 0
-      if (!Number.isFinite(end) || end >= size) end = size - 1
-      res.writeHead(206, {
-        'Content-Range': `bytes ${start}-${end}/${size}`,
-        'Content-Length': end - start + 1,
-      })
-      if (req.method === 'HEAD') {
-        res.end()
+    try {
+      if (!requireGetOrHead(req, res)) return
+      const pathname = decodeRequestPath(req)
+      const match = pathname.match(/^\/media\/(.+)$/)
+      if (!match) {
+        res.writeHead(404)
+        res.end('not found')
         return
       }
-      fs.createReadStream(filePath, { start, end }).pipe(res)
-      return
+      const mediaId = assertSinglePathComponent(match[1], 'media id')
+      const filePath = resolveMedia(mediaId)
+      if (!filePath) {
+        res.writeHead(404)
+        res.end('media not found')
+        return
+      }
+      await serveFile(req, res, filePath, {
+        contentType: MIME[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream',
+        allowRange: true,
+      })
+    } catch (error) {
+      sendHttpError(res, error)
     }
-
-    res.setHeader('Content-Length', size)
-    if (req.method === 'HEAD') {
-      res.writeHead(200)
-      res.end()
-      return
-    }
-    fs.createReadStream(filePath).pipe(res)
   })
+  setHttpTimeouts(server)
 
   await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve))
   const actualPort = server.address().port

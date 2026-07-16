@@ -53,6 +53,15 @@
     "midtones": "Medios tonos",
     "highlights": "Altas luces"
   },
+  "powerWindow": {
+    "window": "Ventana",
+    "matte": "Mate",
+    "correction": "Corrección",
+    "ellipse": "Elipse",
+    "rectangle": "Rectángulo",
+    "editOnCanvas": "Editar en el lienzo",
+    "editingOnCanvas": "Editando en el lienzo"
+  },
   "params": {
     "flow": "Flujo",
     "span": "Rango",

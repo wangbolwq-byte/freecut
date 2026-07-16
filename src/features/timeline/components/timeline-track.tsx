@@ -9,7 +9,6 @@ import type {
   TimelineItem as TimelineItemType,
 } from '@/types/timeline'
 import type { MediaMetadata } from '@/types/storage'
-import { TimelineItem } from './timeline-item'
 import { TransitionItem } from './transition-item'
 import { useTimelineStore } from '../stores/timeline-store'
 import {
@@ -96,6 +95,7 @@ import {
   TimelineDropGhostPreviews,
   type TimelineDropGhostPreviewsHandle,
 } from './timeline-drop-ghost-previews'
+import { TimelineTrackItems } from './timeline-track-items'
 
 /**
  * Lightweight on-demand context menu for track gaps.
@@ -208,37 +208,6 @@ const MULTI_DROP_METADATA_CONCURRENCY = 3
 function areTrackPropsEqual(prev: TimelineTrackProps, next: TimelineTrackProps): boolean {
   return prev.track === next.track
 }
-
-/**
- * Memoized item list — prevents the items `.map()` from running when the parent
- * TimelineTrack re-renders for drag-preview or state changes that don't affect items.
- * Without this, every track re-render recreates JSX for all items, and even though
- * individual TimelineItem components are memo'd, the parent reconciliation cost
- * (prop diffing × items) adds up across frequent drag-over events.
- */
-const TimelineTrackItems = memo(function TimelineTrackItems({
-  trackItems,
-  trackLocked,
-  trackHidden,
-}: {
-  trackItems: ReadonlyArray<TimelineItemType>
-  trackLocked: boolean
-  trackHidden: boolean
-}) {
-  return (
-    <>
-      {trackItems.map((item) => (
-        <TimelineItem
-          key={item.id}
-          item={item}
-          timelineDuration={30}
-          trackLocked={trackLocked}
-          trackHidden={trackHidden}
-        />
-      ))}
-    </>
-  )
-})
 
 /**
  * Timeline Track Component

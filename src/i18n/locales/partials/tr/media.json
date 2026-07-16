@@ -52,6 +52,7 @@
       }
     },
     "compositions": {
+      "compositionsGroup": "Kompozisyonlar",
       "compoundClipsGroup": "Bileşik Klipler",
       "deleteBody": "Bu bileşik klip silinsin mi?",
       "deleteInstancesDetail": "Bu bileşik klibi kullanan {{count}} zaman çizelgesi örneği de kaldırılacak.",

@@ -12,6 +12,7 @@ import { useSnapCalculator } from './use-snap-calculator'
 import { setActiveSnapTargetIfChanged } from '../utils/snap-target-state'
 import { clampTrimAmount, clampToAdjacentItems, type TrimHandle } from '../utils/trim-utils'
 import { useTransitionsStore } from '../stores/transitions-store'
+import { useKeyframesStore } from '../stores/keyframes-store'
 import { useRollingEditPreviewStore } from '../stores/rolling-edit-preview-store'
 import { useRippleEditPreviewStore } from '../stores/ripple-edit-preview-store'
 import { useTransitionBreakPreviewStore } from '../stores/transition-break-preview-store'
@@ -39,9 +40,9 @@ import {
   type PreviewItemUpdate,
 } from '../utils/item-edit-preview'
 import {
-  clampRippleTrimDeltaToPreserveTransition,
-  clampRollingTrimDeltaToPreserveTransition,
-} from '../utils/transition-utils'
+  clampRippleTrimDeltaToPreserveEditState,
+  clampRollingTrimDeltaToPreserveEditState,
+} from '../utils/trim-edit-constraints'
 import { getTransitionBridgeAtHandle } from '../utils/transition-edit-guards'
 
 interface TrimState {
@@ -332,13 +333,14 @@ export function useTimelineTrim(
           }
         }
 
-        const transitionAtHandle = getTransitionBridgeAtHandle(transitions, currentItem.id, handle!)
-        const transitionClamped = clampRollingTrimDeltaToPreserveTransition(
+        const transitionClamped = clampRollingTrimDeltaToPreserveEditState(
           currentItem,
           handle!,
           deltaFrames,
           neighbor,
-          transitionAtHandle,
+          allItems,
+          transitions,
+          useKeyframesStore.getState().keyframesByItemId,
           fps,
         )
         if (transitionClamped !== deltaFrames) {
@@ -348,21 +350,20 @@ export function useTimelineTrim(
         }
       }
 
-      if (isRippleEdit && !trimStateRef.current.destroyTransitionAtHandle) {
-        const transitionAtHandle = getTransitionBridgeAtHandle(transitions, currentItem.id, handle!)
-        const neighborAtHandle = transitionAtHandle
-          ? (allItems.find((candidate) =>
-              handle === 'end'
-                ? candidate.id === transitionAtHandle.rightClipId
-                : candidate.id === transitionAtHandle.leftClipId,
-            ) ?? null)
+      if (isRippleEdit) {
+        const transitionAtHandle = trimStateRef.current.destroyTransitionAtHandle
+          ? getTransitionBridgeAtHandle(transitions, currentItem.id, handle!)
           : null
-        const transitionClamped = clampRippleTrimDeltaToPreserveTransition(
+        const preservedTransitions = transitionAtHandle
+          ? transitions.filter((transition) => transition.id !== transitionAtHandle.id)
+          : transitions
+        const transitionClamped = clampRippleTrimDeltaToPreserveEditState(
           currentItem,
           handle!,
           deltaFrames,
-          neighborAtHandle,
-          transitionAtHandle,
+          allItems,
+          preservedTransitions,
+          useKeyframesStore.getState().keyframesByItemId,
           fps,
         )
         if (transitionClamped !== deltaFrames) {

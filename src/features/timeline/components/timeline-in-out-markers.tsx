@@ -1,11 +1,12 @@
 import { useCallback, useMemo, useRef, useEffect, memo } from 'react'
 
 import { useTimelineStore } from '../stores/timeline-store'
-import { useTimelineZoomContext } from '../contexts/timeline-zoom-context'
+import { useTimelineCommittedZoomContext } from '../contexts/timeline-zoom-context'
 import { usePlaybackStore } from '@/shared/state/playback'
 import { previewScrubberSuppressRef } from './preview-scrubber-suppress'
 import { beginIoPointerDrag, IoRangeHandles } from '@/shared/timeline/io-range'
 import { formatTimecodeCompact } from '@/shared/utils/time-utils'
+import { pixelsToFrameNow } from '../utils/zoom-conversions'
 
 // Matches the ruler's top IO lane height in timeline-markers.tsx.
 const IO_LANE_HEIGHT = 12
@@ -23,13 +24,12 @@ export const TimelineInOutMarkers = memo(function TimelineInOutMarkers() {
   const setInPoint = useTimelineStore((s) => s.setInPoint)
   const setOutPoint = useTimelineStore((s) => s.setOutPoint)
   const fps = useTimelineStore((s) => s.fps)
-  const { frameToPixels, pixelsToFrame } = useTimelineZoomContext()
+  const { frameToPixels } = useTimelineCommittedZoomContext()
 
-  const pixelsToFrameRef = useRef(pixelsToFrame)
+  const pixelsToFrameRef = useRef(pixelsToFrameNow)
   const setInPointRef = useRef(setInPoint)
   const setOutPointRef = useRef(setOutPoint)
   const fpsRef = useRef(fps)
-  pixelsToFrameRef.current = pixelsToFrame
   setInPointRef.current = setInPoint
   setOutPointRef.current = setOutPoint
   fpsRef.current = fps

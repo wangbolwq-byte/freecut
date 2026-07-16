@@ -16,8 +16,8 @@ import {
   useCompositionsStore,
   useTimelineCommandStore,
   captureSnapshot,
-  importWaveformCache,
 } from '@/features/editor/deps/timeline-store'
+import { importWaveformCache } from '@/features/editor/deps/timeline-cache'
 import { useGizmoStore, useThrottledFrame } from '@/features/editor/deps/preview'
 import { importMediaLibraryService } from '@/features/editor/deps/media-library'
 import { getResolvedPlaybackFrame, usePlaybackStore } from '@/shared/state/playback'

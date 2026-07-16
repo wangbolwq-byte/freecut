@@ -76,6 +76,10 @@
       "qualityMedium": "Medium",
       "qualityUltra": "Ultra",
       "quicktimeMov": "QuickTime MOV",
+      "rateControl": "Rate control",
+      "rateControlAuto": "Auto (source-aware)",
+      "rateControlCbr": "CBR (constant bitrate)",
+      "rateControlVbr": "VBR (variable bitrate)",
       "renderWholeProject": "Render whole project",
       "resolution": "Resolution",
       "resolutionSameAsProject": "Same as project ({{width}}×{{height}})",
@@ -85,6 +89,25 @@
       "selectQuality": "Select quality",
       "selectResolution": "Select resolution",
       "sequence": "Sequence",
+      "targetBitrate": "Target bitrate",
+      "useSourceBitrate": "Use source",
+      "smartCopy": "Smart copy when possible",
+      "smartCopyPath": "Smart copy · no re-encoding",
+      "estimatedSize": "Estimated {{size}}",
+      "sourceBitrate": "Source {{bitrate}} Mbps",
+      "smartCopyStatus": {
+        "eligible": "Available: the original media will be copied byte-for-byte.",
+        "disabled": "Disabled. The timeline will be rendered and encoded.",
+        "not-video": "Available only for video exports.",
+        "range": "Unavailable when exporting an in/out range.",
+        "timeline-layout": "Requires one full source clip with no additional layers.",
+        "source-unavailable": "The original source file or metadata is unavailable.",
+        "trimmed-or-retimed": "Unavailable because the source is trimmed, split, reversed, or retimed.",
+        "visual-processing": "Unavailable because visual edits, captions, transitions, or keyframes must be rendered.",
+        "audio-processing": "Unavailable because the audio or track mix has been changed.",
+        "project-mismatch": "Project resolution or frame rate does not match the source.",
+        "format-mismatch": "Selected format or codec does not match the source."
+      },
       "subtitleMode": {
         "off": "Off",
         "burn": "Burn in",
@@ -108,6 +131,7 @@
       "checking": "Checking export preflight…",
       "title": "Export preflight",
       "workerPath": "Worker path",
+      "smartCopyPath": "Smart copy path",
       "fallback": "Main-thread fallback",
       "checks": {
         "empty-range": {
@@ -138,6 +162,10 @@
         "video-codec-supported": {
           "title": "Video codec supported",
           "detail": "{{codec}} can be encoded as {{container}} in this browser."
+        },
+        "smart-copy-ready": {
+          "title": "Smart copy ready",
+          "detail": "The original media will be copied without rendering or re-encoding."
         },
         "audio-codec-supported": {
           "title": "Audio codec supported",

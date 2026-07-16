@@ -4,7 +4,7 @@ import { Palette } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { useSelectionStore } from '@/shared/state/selection'
 import { useItemsStore } from '@/features/editor/deps/timeline-store'
-import { KeyframeGraphPanel } from '@/features/editor/deps/timeline-contract'
+import { KeyframeGraphPanel } from '@/features/editor/deps/timeline-keyframe-ui'
 import { addAdjustmentLayer } from '@/features/editor/utils/add-adjustment-layer'
 import type { TimelineItem } from '@/types/timeline'
 
@@ -25,6 +25,8 @@ const LazyEffectsSection = lazy(() =>
  * regular clip panel while the Color workspace is active.
  */
 const COLOR_PANEL_EFFECT_TYPES = ['gpu-color-wheels', 'gpu-curves'] as const
+const COLOR_KEYFRAME_VISIBLE_GROUPS = ['effects'] as const
+const COLOR_KEYFRAME_PROPERTY_COLUMN_WIDTH = 336
 
 interface ColorGradePanelProps {
   layout?: 'sidebar' | 'dock'
@@ -101,6 +103,8 @@ export const ColorGradePanel = memo(function ColorGradePanel({
               placement="side"
               showCloseButton={false}
               onClose={handleKeepKeyframesOpen}
+              initialVisibleGroupIds={COLOR_KEYFRAME_VISIBLE_GROUPS}
+              propertyColumnWidth={COLOR_KEYFRAME_PROPERTY_COLUMN_WIDTH}
             />
           </div>
         </Suspense>

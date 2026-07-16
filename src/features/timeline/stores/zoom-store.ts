@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 
 import { getZoomToFitLevel } from '../utils/timeline-layout'
+import { usePlaybackStore } from '@/shared/state/playback'
 
 interface ZoomState {
   // Visual zoom drives cursor anchoring and shell layout during interaction.
@@ -24,12 +25,17 @@ interface ZoomActions {
 // Throttle visual zoom updates a bit for non-immediate callers like the header
 // slider, then let committed content zoom catch up only after interaction settles.
 const VISUAL_ZOOM_THROTTLE_MS = 120
+// Keep rich clip content/culling frozen across a wheel burst, then catch it up
+// promptly after the last event. Track shells and the ruler still update every
+// frame during the gesture.
 const CONTENT_ZOOM_SETTLE_MS = 100
 let lastVisualZoomUpdate = 0
 let pendingVisualZoomLevel: number | null = null
 let pendingContentZoomLevel: number | null = null
 let visualZoomThrottleTimeout: ReturnType<typeof setTimeout> | null = null
 let contentZoomSettleTimeout: ReturnType<typeof setTimeout> | null = null
+let contentZoomCommitRaf: number | null = null
+let contentZoomCommitIdleCallback: number | null = null
 
 function zoomLevelToPixelsPerSecond(level: number): number {
   return level * 100
@@ -46,6 +52,18 @@ function clearContentZoomSettleTimeout() {
   if (contentZoomSettleTimeout) {
     clearTimeout(contentZoomSettleTimeout)
     contentZoomSettleTimeout = null
+  }
+  if (contentZoomCommitRaf !== null) {
+    if (typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(contentZoomCommitRaf)
+    }
+    contentZoomCommitRaf = null
+  }
+  if (contentZoomCommitIdleCallback !== null) {
+    if (typeof cancelIdleCallback === 'function') {
+      cancelIdleCallback(contentZoomCommitIdleCallback)
+    }
+    contentZoomCommitIdleCallback = null
   }
 }
 
@@ -71,25 +89,52 @@ function flushPendingVisualZoom(set: (partial: Partial<ZoomState>) => void) {
   setVisualZoom(set, nextLevel, true)
 }
 
+function commitPendingContentZoom(set: (partial: Partial<ZoomState>) => void) {
+  contentZoomCommitRaf = null
+  contentZoomCommitIdleCallback = null
+  if (pendingContentZoomLevel === null) {
+    set({ isZoomInteracting: false })
+    return
+  }
+
+  const settledLevel = pendingContentZoomLevel
+  pendingContentZoomLevel = null
+  flushPendingVisualZoom(set)
+  set({
+    level: settledLevel,
+    pixelsPerSecond: zoomLevelToPixelsPerSecond(settledLevel),
+    contentLevel: settledLevel,
+    contentPixelsPerSecond: zoomLevelToPixelsPerSecond(settledLevel),
+    isZoomInteracting: false,
+  })
+}
+
+function schedulePlaybackAwareContentCommit(set: (partial: Partial<ZoomState>) => void) {
+  if (
+    !usePlaybackStore.getState().isPlaying ||
+    typeof requestAnimationFrame !== 'function' ||
+    typeof requestIdleCallback !== 'function'
+  ) {
+    commitPendingContentZoom(set)
+    return
+  }
+
+  // Let the current preview frame paint first, then use the browser's idle
+  // slice for the one expensive committed-geometry update. A new wheel event
+  // cancels both callbacks while the lightweight live geometry remains current.
+  contentZoomCommitRaf = requestAnimationFrame(() => {
+    contentZoomCommitRaf = null
+    contentZoomCommitIdleCallback = requestIdleCallback(() => commitPendingContentZoom(set), {
+      timeout: 200,
+    })
+  })
+}
+
 function scheduleContentZoomCommit(set: (partial: Partial<ZoomState>) => void) {
   clearContentZoomSettleTimeout()
   contentZoomSettleTimeout = setTimeout(() => {
     contentZoomSettleTimeout = null
-    if (pendingContentZoomLevel === null) {
-      set({ isZoomInteracting: false })
-      return
-    }
-
-    const settledLevel = pendingContentZoomLevel
-    pendingContentZoomLevel = null
-    flushPendingVisualZoom(set)
-    set({
-      level: settledLevel,
-      pixelsPerSecond: zoomLevelToPixelsPerSecond(settledLevel),
-      contentLevel: settledLevel,
-      contentPixelsPerSecond: zoomLevelToPixelsPerSecond(settledLevel),
-      isZoomInteracting: false,
-    })
+    schedulePlaybackAwareContentCommit(set)
   }, CONTENT_ZOOM_SETTLE_MS)
 }
 

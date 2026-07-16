@@ -141,7 +141,8 @@ describe('createMediabunnyInputSource', () => {
 
   it('rejects unregistered blob URLs in workers instead of routing them through UrlSource', () => {
     vi.stubGlobal('self', {})
-    vi.stubGlobal('window', undefined)
+    vi.stubGlobal('window', globalThis)
+    vi.stubGlobal('document', undefined)
 
     expect(() =>
       createMediabunnyInputSource(mockMediabunny, 'blob:http://localhost/media'),

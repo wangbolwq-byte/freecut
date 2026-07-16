@@ -37,6 +37,7 @@
   "toolbar": {
     "ariaLabel": "编辑器工具栏",
     "workspaces": {
+      "motion": "Motion",
       "label": "工作区",
       "edit": "剪辑",
       "color": "调色",

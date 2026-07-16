@@ -31,6 +31,35 @@ type BoundarySourcePrewarmCachePlan = {
   prewarmedSourceOrder: string[]
 }
 
+type ScrubPrewarmIdleDelayInput = {
+  frameDelta: number
+  elapsedMs: number
+  fps: number
+}
+
+/**
+ * Wait for a short input-idle window before spending the shared renderer lane
+ * on speculative decode work. Large overview jumps get the longest runway;
+ * fine, low-velocity trims keep a small lookahead delay for cache locality.
+ */
+export function resolveScrubPrewarmIdleDelayMs({
+  frameDelta,
+  elapsedMs,
+  fps,
+}: ScrubPrewarmIdleDelayInput): number {
+  const safeFps = Math.max(1, fps)
+  const absoluteDelta = Math.abs(frameDelta)
+  const velocityFramesPerMs = absoluteDelta / Math.max(1, elapsedMs)
+
+  if (absoluteDelta >= safeFps * 2 || velocityFramesPerMs >= 0.5) return 120
+  if (absoluteDelta >= safeFps / 2 || velocityFramesPerMs >= 0.15) return 72
+  return 40
+}
+
+export function shouldUseCompositionScrubPrewarm(idleDelayMs: number): boolean {
+  return idleDelayMs < 120
+}
+
 export function resolvePrewarmFrameQueueAfterEnqueue({
   frame,
   queue,

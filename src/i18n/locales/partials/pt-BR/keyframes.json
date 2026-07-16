@@ -5,6 +5,8 @@
       "graph": "Gráfico",
       "sheet": "Planilha",
       "split": "Dividir",
+      "enterFocusMode": "Focar no editor de quadros-chave",
+      "exitFocusMode": "Sair do modo de foco de quadros-chave",
       "selectItem": "Selecione um item para editar keyframes",
       "parameters": "Parâmetros",
       "parameterDisplayOptions": "Opções de exibição de parâmetros",

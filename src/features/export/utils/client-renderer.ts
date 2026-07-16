@@ -14,6 +14,7 @@
 
 import type { ExportSettings, ExtendedExportSettings, SubtitleExportMode } from '@/types/export'
 import { DEFAULT_PROJECT_HEIGHT } from '@/shared/projects/defaults'
+import { resolveVideoBitrate } from './video-bitrate'
 
 // Codec mapping for mediabunny
 type ClientVideoCodec = 'avc' | 'hevc' | 'vp8' | 'vp9' | 'av1'
@@ -41,6 +42,8 @@ export interface ClientExportSettings {
   fps: number
   audioBitrate?: number
   videoBitrate?: number
+  bitrateMode?: 'constant' | 'variable'
+  smartCopy?: boolean
   sampleRate?: number // For audio exports (default: 48000)
   subtitleMode?: SubtitleExportMode
 }
@@ -179,7 +182,18 @@ export function mapToClientSettings(
     quality: settings.quality,
     resolution: settings.resolution,
     fps,
-    videoBitrate: getVideoBitrateForQuality(settings.quality),
+    videoBitrate: resolveVideoBitrate({
+      codec: settings.codec,
+      quality: settings.quality,
+      width: settings.resolution.width,
+      height: settings.resolution.height,
+      fps,
+      rateControl: settings.rateControl,
+      customBitrate: settings.videoBitrate,
+      sourceVideo: settings.sourceVideo,
+    }),
+    bitrateMode: settings.rateControl === 'constant' ? 'constant' : 'variable',
+    smartCopy: settings.smartCopy ?? true,
     audioBitrate: 192_000, // 192 kbps
     subtitleMode,
   }
@@ -401,14 +415,13 @@ export function getAudioBitrateForQuality(quality: ClientExportSettings['quality
 }
 
 export function getVideoBitrateForQuality(quality: ExportSettings['quality']): number {
-  const bitrateMap: Record<ExportSettings['quality'], number> = {
-    low: 2_000_000, // 2 Mbps
-    medium: 5_000_000, // 5 Mbps
-    high: 10_000_000, // 10 Mbps
-    ultra: 20_000_000, // 20 Mbps
-  }
-
-  return bitrateMap[quality]
+  return resolveVideoBitrate({
+    codec: 'h264',
+    quality,
+    width: 1920,
+    height: 1080,
+    fps: 30,
+  })
 }
 
 // Re-export formatBytes from central location

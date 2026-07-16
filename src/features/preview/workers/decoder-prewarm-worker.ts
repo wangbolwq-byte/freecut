@@ -14,6 +14,9 @@ const LOOKAHEAD_TOLERANCE_SECONDS = 0.05
 const STREAM_BACKTRACK_SECONDS = 1.0
 const FORWARD_JUMP_RESTART_SECONDS = 3.0
 const MAX_EXTRACTORS_PER_WORKER = 8
+const MAX_ACTIVE_PREVIEW_EXTRACTORS = 2
+const ACTIVE_PREVIEW_CANCELLED = Symbol('active-preview-cancelled')
+let activePreviewGeneration = 0
 
 /** Per-source keyframe index received from main thread */
 const keyframeIndexBySrc = new Map<string, number[]>()
@@ -79,6 +82,7 @@ const initPromises = new Map<string, Promise<ExtractorState | null>>()
 interface WorkerSourceOptions {
   blob?: Blob
   sourceMetadata?: ObjectUrlSourceMetadata
+  activePreview?: boolean
 }
 
 async function getExtractor(
@@ -88,6 +92,9 @@ async function getExtractor(
   const existing = extractors.get(src)
   if (existing) {
     touchExtractor(src, existing)
+    if (options?.activePreview) {
+      pruneOldExtractors(src, MAX_ACTIVE_PREVIEW_EXTRACTORS)
+    }
     return existing
   }
 
@@ -95,6 +102,7 @@ async function getExtractor(
   if (inflight) return inflight
 
   const promise = (async () => {
+    const initStartedAt = performance.now()
     const mediabunny = await getMediabunny()
     const source = createMediabunnyInputSource(mediabunny, src, {
       metadata: options?.sourceMetadata,
@@ -146,7 +154,15 @@ async function getExtractor(
         }
       }
 
-      const sink = new mediabunny.VideoSampleSink(videoTrack)
+      const sink = new mediabunny.VideoSampleSink(
+        videoTrack,
+        options?.activePreview
+          ? {
+              hardwareAcceleration: 'prefer-hardware',
+              optimizeForLatency: true,
+            }
+          : undefined,
+      )
       const canvas = new OffscreenCanvas(1, 1)
       const ctx = canvas.getContext('2d')
       if (!ctx) {
@@ -155,6 +171,13 @@ async function getExtractor(
       }
 
       self.postMessage({ type: 'debug', step: 'init_complete' })
+      if (options?.activePreview) {
+        self.postMessage({
+          type: 'debug',
+          step: 'active_init_complete',
+          ms: performance.now() - initStartedAt,
+        })
+      }
 
       const state: ExtractorState = {
         input,
@@ -171,7 +194,17 @@ async function getExtractor(
         drawLock: null,
       }
       extractors.set(src, state)
-      pruneOldExtractors(src)
+      pruneOldExtractors(
+        src,
+        options?.activePreview ? MAX_ACTIVE_PREVIEW_EXTRACTORS : MAX_EXTRACTORS_PER_WORKER,
+      )
+      if (options?.activePreview) {
+        self.postMessage({
+          type: 'debug',
+          step: 'active_extractors',
+          count: extractors.size,
+        })
+      }
       return state
     } catch (error) {
       input.dispose?.()
@@ -201,8 +234,8 @@ function disposeExtractorState(state: ExtractorState): void {
   }
 }
 
-function pruneOldExtractors(activeSrc: string): void {
-  while (extractors.size > MAX_EXTRACTORS_PER_WORKER) {
+function pruneOldExtractors(activeSrc: string, maxExtractors = MAX_EXTRACTORS_PER_WORKER): void {
+  while (extractors.size > maxExtractors) {
     const oldestSrc = extractors.keys().next().value as string | undefined
     if (!oldestSrc) return
     if (oldestSrc === activeSrc) {
@@ -277,7 +310,12 @@ async function peekNextSample(state: ExtractorState): Promise<WorkerSample | nul
     return null
   }
 
-  const nextResult = await state.sampleIterator.next()
+  const iterator = state.sampleIterator
+  const nextResult = await iterator.next()
+  if (iterator !== state.sampleIterator) {
+    if (!nextResult.done) closeSample(nextResult.value)
+    return null
+  }
   if (nextResult.done) {
     state.iteratorDone = true
     return null
@@ -291,7 +329,9 @@ async function ensureSampleForTimestamp(
   state: ExtractorState,
   timestamp: number,
   src?: string,
+  shouldContinue?: () => boolean,
 ): Promise<void> {
+  if (shouldContinue && !shouldContinue()) throw ACTIVE_PREVIEW_CANCELLED
   if (!state.sampleIterator) {
     resetSampleIterator(state, timestamp, src)
   } else if (
@@ -310,7 +350,9 @@ async function ensureSampleForTimestamp(
   state.lastRequestedTimestamp = timestamp
 
   while (true) {
+    if (shouldContinue && !shouldContinue()) throw ACTIVE_PREVIEW_CANCELLED
     const candidate = await peekNextSample(state)
+    if (shouldContinue && !shouldContinue()) throw ACTIVE_PREVIEW_CANCELLED
     if (!candidate) break
 
     if (candidate.timestamp <= timestamp + TIMESTAMP_EPSILON) {
@@ -432,11 +474,14 @@ async function preseekWithState(
   state: ExtractorState,
   timestamp: number,
   src?: string,
+  shouldContinue?: () => boolean,
 ): Promise<ImageBitmap | null> {
   try {
-    await ensureSampleForTimestamp(state, timestamp, src)
+    await ensureSampleForTimestamp(state, timestamp, src, shouldContinue)
+    if (shouldContinue && !shouldContinue()) return null
     return renderCurrentSampleToBitmap(state)
   } catch (error) {
+    if (error === ACTIVE_PREVIEW_CANCELLED) return null
     const recovered = await recoverAndPrime(state, timestamp, error, src)
     if (!recovered) {
       return null
@@ -445,17 +490,47 @@ async function preseekWithState(
   }
 }
 
+async function sparsePreseekWithState(
+  state: ExtractorState,
+  timestamp: number,
+  shouldContinue: () => boolean,
+): Promise<ImageBitmap | null> {
+  if (!shouldContinue()) return null
+  let sample: WorkerSample | null = null
+  try {
+    // Active held scrubs are sparse random access. Mediabunny's dedicated
+    // sparse path seeks/decodes directly to the requested presentation sample;
+    // the range iterator below is retained for sequential background runway.
+    sample = await state.sink.getSample(timestamp)
+    if (!sample || !shouldContinue()) return null
+    return renderSampleToBitmap(state, sample)
+  } catch {
+    return null
+  } finally {
+    closeSample(sample)
+  }
+}
+
 async function preseek(
   src: string,
   timestamp: number,
   blob?: Blob,
   sourceMetadata?: ObjectUrlSourceMetadata,
+  shouldContinue?: () => boolean,
 ): Promise<ImageBitmap | null> {
-  const state = await getExtractor(src, { blob, sourceMetadata })
+  const state = await getExtractor(src, {
+    blob,
+    sourceMetadata,
+    activePreview: shouldContinue !== undefined,
+  })
   if (!state) return null
 
   const previous = state.drawLock ?? Promise.resolve()
-  const result = previous.then(() => preseekWithState(state, timestamp, src))
+  const result = previous.then(() =>
+    shouldContinue
+      ? sparsePreseekWithState(state, timestamp, shouldContinue)
+      : preseekWithState(state, timestamp, src),
+  )
   state.drawLock = result.then(
     () => undefined,
     () => undefined,
@@ -491,17 +566,20 @@ async function batchPreseek(
       let i = 0
       try {
         for await (const sample of iterator) {
-          if (!sample || i >= timestamps.length) {
-            i++
+          const timestamp = timestamps[i]
+          i++
+
+          if (!sample) {
             continue
           }
 
-          const ts = timestamps[i]!
-          i++
-
           try {
+            // Defensive: mediabunny should yield at most one sample per requested
+            // timestamp, but an over-producing iterator must not leak the extra
+            // VideoSample while the stream is being torn down.
+            if (timestamp === undefined) continue
             const bitmap = renderSampleToBitmap(state, sample)
-            if (bitmap) results.set(ts, bitmap)
+            if (bitmap) results.set(timestamp, bitmap)
           } finally {
             sample.close?.()
           }
@@ -541,6 +619,11 @@ self.onmessage = async (event: MessageEvent) => {
     return
   }
 
+  if (msg.type === 'active_cancel') {
+    activePreviewGeneration = Math.max(activePreviewGeneration, Number(msg.generation) || 0)
+    return
+  }
+
   // Batch preseek: decode multiple timestamps via optimized pipeline
   if (msg.type === 'batch_preseek') {
     if (msg.keyframeTimestamps && !keyframeIndexBySrc.has(msg.src)) {
@@ -570,7 +653,12 @@ self.onmessage = async (event: MessageEvent) => {
     return
   }
 
-  if (msg.type !== 'preseek') return
+  if (msg.type !== 'preseek' && msg.type !== 'active_preseek') return
+
+  const isActivePreviewRequest = msg.type === 'active_preseek'
+  if (isActivePreviewRequest) {
+    activePreviewGeneration = Math.max(activePreviewGeneration, Number(msg.generation) || 0)
+  }
 
   // Accept inline keyframe data on first preseek for a source
   if (msg.keyframeTimestamps && !keyframeIndexBySrc.has(msg.src)) {
@@ -578,7 +666,21 @@ self.onmessage = async (event: MessageEvent) => {
   }
 
   try {
-    const bitmap = await preseek(msg.src, msg.timestamp, msg.blob, msg.sourceMetadata)
+    const decodeStartedAt = performance.now()
+    const bitmap = await preseek(
+      msg.src,
+      msg.timestamp,
+      msg.blob,
+      msg.sourceMetadata,
+      isActivePreviewRequest ? () => activePreviewGeneration === Number(msg.generation) : undefined,
+    )
+    if (isActivePreviewRequest) {
+      self.postMessage({
+        type: 'debug',
+        step: 'active_decode_complete',
+        ms: performance.now() - decodeStartedAt,
+      })
+    }
     if (bitmap) {
       self.postMessage(
         { type: 'preseek_done', id: msg.id, success: true, timestamp: msg.timestamp, bitmap },

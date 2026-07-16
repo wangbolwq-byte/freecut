@@ -52,6 +52,7 @@
       }
     },
     "compositions": {
+      "compositionsGroup": "Composições",
       "compoundClipsGroup": "Clipes compostos",
       "deleteBody": "Excluir o clipe composto “{{name}}”? Esta ação não pode ser desfeita.",
       "deleteInstancesDetail": "{{count}} instâncias da linha do tempo que usam este clipe composto também serão removidas.",

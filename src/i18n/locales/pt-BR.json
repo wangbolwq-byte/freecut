@@ -37,6 +37,7 @@
   "toolbar": {
     "ariaLabel": "Barra de ferramentas do editor",
     "workspaces": {
+      "motion": "Motion",
       "label": "Espaços de trabalho",
       "edit": "Edição",
       "color": "Cor",

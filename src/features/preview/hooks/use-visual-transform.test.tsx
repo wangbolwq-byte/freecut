@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vite-plus/test'
 import { createJSONStorage } from 'zustand/middleware'
 import { usePlaybackStore } from '@/shared/state/playback'
+import { usePreviewBridgeStore } from '@/shared/state/preview-bridge'
 import { resetPlaybackPreviewState } from '@/shared/state/playback-preview-test-helpers'
 import { useTimelineStore } from '@/features/preview/deps/timeline-store'
 import { useGizmoStore } from '@/features/preview/stores/gizmo-store'
@@ -87,7 +88,10 @@ const CORNER_PINNED_WRAPPED_TEXT_ITEM = {
   },
 } as unknown as TimelineItem
 
+let probeRenderCount = 0
+
 function VisualTransformsProbe({ item = ITEM }: { item?: TimelineItem }) {
+  probeRenderCount += 1
   const transforms = useVisualTransforms([item], PROJECT_SIZE)
   const resolved = transforms.get(item.id)
   return (
@@ -140,7 +144,31 @@ function resetStores() {
 
 describe('useVisualTransforms skimming frame resolution', () => {
   beforeEach(() => {
+    probeRenderCount = 0
     resetStores()
+  })
+
+  it('does not re-render for requested frames until the visible frame advances', async () => {
+    usePreviewBridgeStore.getState().setDisplayedFrame(10)
+    render(<VisualTransformsProbe />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('visual-probe')).toHaveAttribute('data-x', '110')
+    })
+    const rendersBeforeRequest = probeRenderCount
+
+    act(() => {
+      usePlaybackStore.getState().setPreviewFrame(20)
+    })
+    expect(probeRenderCount).toBe(rendersBeforeRequest)
+
+    act(() => {
+      usePreviewBridgeStore.getState().setDisplayedFrame(20)
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('visual-probe')).toHaveAttribute('data-x', '220')
+    })
+    expect(probeRenderCount).toBeGreaterThan(rendersBeforeRequest)
   })
 
   it('uses previewFrame while paused', async () => {

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vite-plus/test'
 import { useItemsStore, useTimelineStore } from '@/features/editor/deps/timeline-store'
 import { useGizmoStore } from '@/features/editor/deps/preview'
 import { usePlaybackStore } from '@/shared/state/playback'
+import { usePreviewBridgeStore } from '@/shared/state/preview-bridge'
 import { useSelectionStore } from '@/shared/state/selection'
 import type { TimelineTrack, VideoItem } from '@/types/timeline'
 import { ColorTimelineNavigator } from './color-timeline-navigator'
@@ -272,5 +273,24 @@ describe('ColorTimelineNavigator', () => {
     fireEvent.pointerUp(scrubSurface, { clientX: 316, pointerId: 1 })
     expect(usePlaybackStore.getState().currentFrame).toBe(150)
     expect(usePlaybackStore.getState().previewFrame).toBeNull()
+  })
+
+  it('keeps accepting the latest pointer target while an older preview frame is rendering', async () => {
+    render(<ColorTimelineNavigator />)
+
+    const scrubSurface = screen.getByTestId('color-timeline-scrub-surface')
+    scrubSurface.getBoundingClientRect = () =>
+      ({ left: 0, width: 600, top: 0, right: 600, bottom: 96, height: 96 }) as DOMRect
+
+    fireEvent.pointerDown(scrubSurface, { button: 0, clientX: 146, pointerId: 4 })
+    const firstTarget = usePlaybackStore.getState().previewFrame
+    usePreviewBridgeStore.setState({ displayedFrame: Math.max(0, (firstTarget ?? 1) - 1) })
+
+    fireEvent.pointerMove(scrubSurface, { clientX: 486, pointerId: 4 })
+    await waitFor(() => {
+      expect(usePlaybackStore.getState().previewFrame).toBe(240)
+    })
+
+    fireEvent.pointerUp(scrubSurface, { clientX: 486, pointerId: 4 })
   })
 })

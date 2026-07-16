@@ -24,6 +24,7 @@ import {
 interface GpuCacheEntry {
   texture: GPUTexture
   view: GPUTextureView
+  blitBindGroup?: GPUBindGroup
 }
 
 /** Eviction hint: prefer evicting frames in the opposite scrub direction */
@@ -34,6 +35,7 @@ interface EvictionHint {
 
 class GpuTextureCache {
   private cache = new Map<number, GpuCacheEntry>()
+  private readonly configuredMaxFrames: number
   private maxFrames: number
   private device: GPUDevice | null = null
   private texW = 0
@@ -41,7 +43,8 @@ class GpuTextureCache {
   private hint: EvictionHint | null = null
 
   constructor(maxFrames: number) {
-    this.maxFrames = maxFrames
+    this.configuredMaxFrames = Math.max(1, maxFrames)
+    this.maxFrames = this.configuredMaxFrames
   }
 
   setEvictionHint(hint: EvictionHint): void {
@@ -64,7 +67,10 @@ class GpuTextureCache {
         ? Math.min(deviceMemoryGb * 0.125, 1) * 1_000_000_000 // 12.5% of system RAM, max 1GB
         : 500_000_000 // conservative default (~500MB)
     const bytesPerFrame = width * height * 4
-    this.maxFrames = Math.min(this.maxFrames, Math.floor(vramBudgetBytes / bytesPerFrame))
+    this.maxFrames = Math.max(
+      1,
+      Math.min(this.configuredMaxFrames, Math.floor(vramBudgetBytes / bytesPerFrame)),
+    )
   }
 
   get(frame: number): GpuCacheEntry | undefined {
@@ -277,8 +283,12 @@ class RamPreviewCache {
     this.hint = hint
   }
 
-  setDimensions(width: number, height: number): void {
-    this.bytesPerFrame = width * height * 4
+  setDimensions(width: number, height: number): boolean {
+    const nextBytesPerFrame = width * height * 4
+    if (this.bytesPerFrame === nextBytesPerFrame) return false
+    if (this.bytesPerFrame !== 0) this.clear()
+    this.bytesPerFrame = nextBytesPerFrame
+    return true
   }
 
   get(frame: number): ImageBitmap | undefined {
@@ -335,6 +345,14 @@ class RamPreviewCache {
     return this.cache.size
   }
 
+  get bytes(): number {
+    return this.currentBytes
+  }
+
+  get budgetBytes(): number {
+    return this.maxBytes
+  }
+
   deleteMatching(predicate: (frame: number) => boolean): void {
     for (const [frame, bitmap] of this.cache.entries()) {
       if (!predicate(frame)) continue
@@ -366,6 +384,37 @@ export interface ScrubbingCacheStats {
   tier2Hits: number
   tier3Hits: number
   misses: number
+  tier3Bytes: number
+  tier3BudgetBytes: number
+  pendingRamFrames: number
+}
+
+const DEFAULT_MAX_RAM_FRAMES = 900
+const FALLBACK_RAM_CACHE_BUDGET_BYTES = 384_000_000
+const MIN_RAM_CACHE_BUDGET_BYTES = 256_000_000
+const MAX_RAM_CACHE_BUDGET_BYTES = 1_000_000_000
+const RAM_CACHE_SYSTEM_MEMORY_FRACTION = 0.0625
+const MAX_PENDING_RAM_FRAME_COPIES = 2
+
+export function resolveScrubbingRamBudgetBytes(deviceMemoryGb?: number): number {
+  if (!deviceMemoryGb || !Number.isFinite(deviceMemoryGb)) {
+    return FALLBACK_RAM_CACHE_BUDGET_BYTES
+  }
+  return Math.max(
+    MIN_RAM_CACHE_BUDGET_BYTES,
+    Math.min(
+      MAX_RAM_CACHE_BUDGET_BYTES,
+      Math.round(deviceMemoryGb * RAM_CACHE_SYSTEM_MEMORY_FRACTION * 1_000_000_000),
+    ),
+  )
+}
+
+function getDefaultRamCacheBudgetBytes(): number {
+  const deviceMemoryGb =
+    typeof navigator === 'undefined'
+      ? undefined
+      : (navigator as { deviceMemory?: number }).deviceMemory
+  return resolveScrubbingRamBudgetBytes(deviceMemoryGb)
 }
 
 export class ScrubbingCache {
@@ -378,6 +427,10 @@ export class ScrubbingCache {
   private _tier2Hits = 0
   private _tier3Hits = 0
   private _misses = 0
+  private ramGeneration = 0
+  private disposed = false
+  private pendingRamFrames = new Map<number, number>()
+  private invalidatedPendingRamFrames = new Set<number>()
 
   // GPU blit resources (for Tier 1 cache hit rendering)
   private blitPipeline: GPURenderPipeline | null = null
@@ -392,8 +445,8 @@ export class ScrubbingCache {
 
   constructor(
     maxGpuFrames = 300,
-    maxRamFrames = 900,
-    maxRamBytes = 8_000_000_000, // ~8GB — allows 900 frames at 1080p (~8MB each)
+    maxRamFrames = DEFAULT_MAX_RAM_FRAMES,
+    maxRamBytes = getDefaultRamCacheBudgetBytes(),
   ) {
     this.tier1 = new GpuTextureCache(maxGpuFrames)
     this.tier2 = new VideoFrameCache()
@@ -405,14 +458,19 @@ export class ScrubbingCache {
    * Enables Tier 1 caching and GPU blit for cache hits.
    */
   setGpuDevice(device: GPUDevice, width: number, height: number): void {
+    const deviceChanged = this.blitDevice !== device
     this.tier1.setDevice(device, width, height)
-    this.tier3.setDimensions(width, height)
+    if (this.tier3.setDimensions(width, height)) {
+      this.invalidateAllPendingRamFrames()
+    }
 
-    if (this.blitDevice !== device) {
+    if (deviceChanged) {
       this.blitDevice = device
       this.blitFormat = navigator.gpu.getPreferredCanvasFormat()
       this.blitSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' })
       this.initBlitPipeline(device)
+      this.blitCanvas = null
+      this.blitCtx = null
     }
 
     if (this.blitW !== width || this.blitH !== height) {
@@ -448,7 +506,7 @@ export class ScrubbingCache {
     const entry = this.tier1.get(frame)
     if (!entry) return null
 
-    const canvas = this.blitToCanvas(entry.view)
+    const canvas = this.blitToCanvas(entry)
     if (canvas) {
       this._tier1Hits++
       return canvas
@@ -540,6 +598,7 @@ export class ScrubbingCache {
    *   while still building GPU cache for backward scrub coverage.
    */
   cacheFrame(frame: number, canvas: OffscreenCanvas, gpuOnly = false): void {
+    if (this.disposed) return
     // Tier 1: GPU upload directly from canvas (near-free)
     if (!this.tier1.has(frame)) {
       this.tier1.put(frame, canvas)
@@ -548,17 +607,33 @@ export class ScrubbingCache {
     if (gpuOnly) return
 
     // Tier 3: RAM buffer (async bitmap creation in background)
-    if (!this.tier3.has(frame)) {
-      createImageBitmap(canvas).then(
+    if (
+      !this.tier3.has(frame) &&
+      !this.pendingRamFrames.has(frame) &&
+      this.pendingRamFrames.size < MAX_PENDING_RAM_FRAME_COPIES
+    ) {
+      const generation = this.ramGeneration
+      this.pendingRamFrames.set(frame, generation)
+      void createImageBitmap(canvas).then(
         (bitmap) => {
-          if (!this.tier3.has(frame)) {
+          const pendingGeneration = this.pendingRamFrames.get(frame)
+          this.pendingRamFrames.delete(frame)
+          const invalidated = this.invalidatedPendingRamFrames.delete(frame)
+          if (
+            !this.disposed &&
+            !invalidated &&
+            pendingGeneration === generation &&
+            generation === this.ramGeneration &&
+            !this.tier3.has(frame)
+          ) {
             this.tier3.put(frame, bitmap)
           } else {
             bitmap.close()
           }
         },
         () => {
-          /* canvas may be zero-size or detached */
+          this.pendingRamFrames.delete(frame)
+          this.invalidatedPendingRamFrames.delete(frame)
         },
       )
     }
@@ -571,6 +646,7 @@ export class ScrubbingCache {
   /** Evict specific cached frames, cached frame ranges, or flush all tiers. */
   invalidate(request?: FrameInvalidationRequest): void {
     if (!request || !hasFrameInvalidation(request)) {
+      this.invalidateAllPendingRamFrames()
       this.tier1.clear()
       this.tier3.clear()
       return
@@ -581,6 +657,9 @@ export class ScrubbingCache {
     const shouldDeleteFrame = (frame: number) =>
       (explicitFrames?.has(frame) ?? false) || isFrameInRanges(frame, ranges)
 
+    for (const frame of this.pendingRamFrames.keys()) {
+      if (shouldDeleteFrame(frame)) this.invalidatedPendingRamFrames.add(frame)
+    }
     this.tier1.deleteMatching(shouldDeleteFrame)
     this.tier3.deleteMatching(shouldDeleteFrame)
   }
@@ -603,6 +682,9 @@ export class ScrubbingCache {
       tier2Hits: this._tier2Hits,
       tier3Hits: this._tier3Hits,
       misses: this._misses,
+      tier3Bytes: this.tier3.bytes,
+      tier3BudgetBytes: this.tier3.budgetBytes,
+      pendingRamFrames: this.pendingRamFrames.size,
     }
   }
 
@@ -611,6 +693,8 @@ export class ScrubbingCache {
   // -----------------------------------------------------------------------
 
   dispose(): void {
+    this.disposed = true
+    this.invalidateAllPendingRamFrames()
     this.tier1.clear()
     this.tier2.clear()
     this.tier3.clear()
@@ -620,6 +704,11 @@ export class ScrubbingCache {
     this.blitBindGroupLayout = null
     this.blitSampler = null
     this.blitDevice = null
+  }
+
+  private invalidateAllPendingRamFrames(): void {
+    this.ramGeneration++
+    this.invalidatedPendingRamFrames.clear()
   }
 
   // -----------------------------------------------------------------------
@@ -669,7 +758,7 @@ struct VertexOutput {
     })
   }
 
-  private blitToCanvas(textureView: GPUTextureView): OffscreenCanvas | null {
+  private blitToCanvas(entry: GpuCacheEntry): OffscreenCanvas | null {
     if (!this.blitDevice || !this.blitPipeline || !this.blitBindGroupLayout || !this.blitSampler) {
       return null
     }
@@ -691,13 +780,15 @@ struct VertexOutput {
     }
     if (!this.blitCtx) return null
 
-    const bindGroup = this.blitDevice.createBindGroup({
-      layout: this.blitBindGroupLayout,
-      entries: [
-        { binding: 0, resource: this.blitSampler },
-        { binding: 1, resource: textureView },
-      ],
-    })
+    const bindGroup =
+      entry.blitBindGroup ??
+      (entry.blitBindGroup = this.blitDevice.createBindGroup({
+        layout: this.blitBindGroupLayout,
+        entries: [
+          { binding: 0, resource: this.blitSampler },
+          { binding: 1, resource: entry.view },
+        ],
+      }))
 
     const encoder = this.blitDevice.createCommandEncoder()
     const pass = encoder.beginRenderPass({

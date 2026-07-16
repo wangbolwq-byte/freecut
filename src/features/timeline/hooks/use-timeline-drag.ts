@@ -37,6 +37,115 @@ export const dragPreviewOffsetByItemRef = {
   current: {} as Record<string, { x: number; y: number }>,
 }
 
+const LARGE_ALT_DRAG_CANVAS_THRESHOLD = 24
+
+interface LargeAltDragCanvasEntry {
+  id: string
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+interface LargeAltDragCanvasState {
+  canvas: HTMLCanvasElement
+  context: CanvasRenderingContext2D
+  entries: LargeAltDragCanvasEntry[]
+  itemIds: Set<string>
+  dpr: number
+}
+
+let largeAltDragCanvasState: LargeAltDragCanvasState | null = null
+
+export function isLargeAltDragCanvasItem(itemId: string): boolean {
+  return largeAltDragCanvasState?.itemIds.has(itemId) ?? false
+}
+
+function clearLargeAltDragCanvas() {
+  largeAltDragCanvasState?.canvas.remove()
+  largeAltDragCanvasState = null
+}
+
+function startLargeAltDragCanvas(itemIds: string[]) {
+  clearLargeAltDragCanvas()
+  if (itemIds.length < LARGE_ALT_DRAG_CANVAS_THRESHOLD) return
+
+  const timeline = document.querySelector('.timeline-container')
+  if (!timeline) return
+
+  const entries = itemIds
+    .map((id): LargeAltDragCanvasEntry | null => {
+      const element = timeline.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(id)}"]`)
+      if (!element) return null
+      const rect = element.getBoundingClientRect()
+      return {
+        id,
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+      }
+    })
+    .filter((entry): entry is LargeAltDragCanvasEntry => entry !== null)
+  if (entries.length < LARGE_ALT_DRAG_CANVAS_THRESHOLD) return
+
+  const dpr = Math.max(1, window.devicePixelRatio || 1)
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.ceil(window.innerWidth * dpr)
+  canvas.height = Math.ceil(window.innerHeight * dpr)
+  canvas.style.position = 'fixed'
+  canvas.style.inset = '0'
+  canvas.style.width = `${window.innerWidth}px`
+  canvas.style.height = `${window.innerHeight}px`
+  canvas.style.pointerEvents = 'none'
+  canvas.style.zIndex = '10000'
+  canvas.style.contain = 'strict'
+  canvas.setAttribute('data-large-alt-drag-canvas', 'true')
+
+  const context = canvas.getContext('2d')
+  if (!context) return
+  context.setTransform(dpr, 0, 0, dpr, 0, 0)
+  document.body.appendChild(canvas)
+
+  largeAltDragCanvasState = {
+    canvas,
+    context,
+    entries,
+    itemIds: new Set(entries.map((entry) => entry.id)),
+    dpr,
+  }
+  updateLargeAltDragCanvas({}, { x: 0, y: 0 })
+}
+
+function updateLargeAltDragCanvas(
+  offsets: Record<string, { x: number; y: number }>,
+  fallbackOffset: { x: number; y: number },
+) {
+  const state = largeAltDragCanvasState
+  if (!state) return
+
+  const { canvas, context, entries, dpr } = state
+  context.setTransform(dpr, 0, 0, dpr, 0, 0)
+  context.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr)
+  context.fillStyle = 'rgba(59, 130, 246, 0.2)'
+  context.strokeStyle = 'rgba(96, 165, 250, 0.95)'
+  context.lineWidth = 2
+  context.setLineDash([6, 4])
+
+  for (const entry of entries) {
+    const offset = offsets[entry.id] ?? fallbackOffset
+    const left = entry.left + offset.x
+    const top = entry.top + offset.y
+    context.fillRect(left, top, entry.width, entry.height)
+    context.strokeRect(
+      left + 1,
+      top + 1,
+      Math.max(0, entry.width - 2),
+      Math.max(0, entry.height - 2),
+    )
+  }
+}
+
 /**
  * Clamp a proposed frame so the item doesn't visually overlap other items
  * on the target track during drag preview. Returns the clamped frame.
@@ -48,12 +157,14 @@ function clampToTrackWalls(
   trackId: string,
   excludeIds: ReadonlySet<string>,
   allItems: ReadonlyArray<TimelineItem>,
+  itemsByTrackId?: ReadonlyMap<string, ReadonlyArray<TimelineItem>>,
 ): number {
   const proposedEnd = proposedFrom + durationInFrames
   let leftWall = 0 // rightmost end of items to the left
   let rightWall = Infinity // leftmost start of items to the right
 
-  for (const other of allItems) {
+  const trackItems = itemsByTrackId?.get(trackId) ?? allItems
+  for (const other of trackItems) {
     if (excludeIds.has(other.id) || other.trackId !== trackId) continue
     const otherEnd = other.from + other.durationInFrames
 
@@ -199,9 +310,7 @@ function resolveDraggedTrackTargets(params: {
   }
 }
 
-function buildTrackVisualTopMap(
-  tracks: Array<{ id: string; order: number; height: number; kind: 'video' | 'audio' | null }>,
-): Map<string, number> {
+function captureTrackVisualTops(): Map<string, number> {
   const laneRows = Array.from(document.querySelectorAll('.timeline-tracks [data-track-id]')).filter(
     (element): element is HTMLElement => element instanceof HTMLElement,
   )
@@ -213,6 +322,18 @@ function buildTrackVisualTopMap(
     domTopByTrackId.set(trackId, row.getBoundingClientRect().top)
   }
 
+  return domTopByTrackId
+}
+
+function buildTrackVisualTopMap(
+  tracks: Array<{
+    id: string
+    order: number
+    height: number
+    kind: 'video' | 'audio' | null
+  }>,
+  domTopByTrackId: ReadonlyMap<string, number>,
+): Map<string, number> {
   const orderedTracks = [...tracks].sort((left, right) => left.order - right.order)
   const firstExistingIndex = orderedTracks.findIndex((track) => domTopByTrackId.has(track.id))
   if (firstExistingIndex === -1) {
@@ -249,8 +370,12 @@ function buildTrackVisualTopMap(
 }
 
 function setGlobalDragCursor(mode: DragCursorMode): void {
+  const nextClass = DRAG_CURSOR_CLASS_BY_MODE[mode]
+  if (document.body.classList.contains(nextClass)) {
+    return
+  }
   document.body.classList.remove(...DRAG_CURSOR_CLASSES)
-  document.body.classList.add(DRAG_CURSOR_CLASS_BY_MODE[mode])
+  document.body.classList.add(nextClass)
 }
 
 function clearGlobalDragCursor(): void {
@@ -321,6 +446,7 @@ export function useTimelineDrag(
   const [isDragging, setIsDragging] = useState(false)
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 })
   const dragStateRef = useRef<DragState | null>(null)
+  const dragVisualTopByTrackIdRef = useRef<Map<string, number>>(new Map())
   const linkedMovePreviewSignatureRef = useRef('')
 
   // Track Alt key state for duplication mode (dynamic toggle during drag)
@@ -697,6 +823,10 @@ export function useTimelineDrag(
         currentMouseY: e.clientY,
         draggedItems,
       }
+      // Capture geometry before any selected clip receives a preview transform.
+      // Relative track deltas stay stable during vertical scrolling, so pointer
+      // moves can derive every preview offset without forcing layout again.
+      dragVisualTopByTrackIdRef.current = captureTrackVisualTops()
 
       // Don't set cursor immediately - wait for drag threshold
 
@@ -717,6 +847,9 @@ export function useTimelineDrag(
 
           // Broadcast drag state to all selected items
           const draggedIds = dragStateRef.current?.draggedItems.map((item) => item.id) || []
+          if (e.altKey) {
+            startLargeAltDragCanvas(draggedIds)
+          }
           setDragState({
             isDragging: true,
             draggedItemIds: draggedIds,
@@ -736,7 +869,9 @@ export function useTimelineDrag(
       const cancelDrag = () => {
         // Clean up if mouse released before threshold
         dragStateRef.current = null
+        dragVisualTopByTrackIdRef.current.clear()
         dragPreviewOffsetByItemRef.current = {}
+        clearLargeAltDragCanvas()
         clearLinkedMovePreview()
         window.removeEventListener('mousemove', checkDragThreshold)
         window.removeEventListener('mouseup', cancelDrag)
@@ -774,6 +909,13 @@ export function useTimelineDrag(
       // Dynamic Alt key toggle - update state and cursor
       const altKeyChanged = isAltDragRef.current !== e.altKey
       isAltDragRef.current = e.altKey
+      if (altKeyChanged) {
+        if (e.altKey) {
+          startLargeAltDragCanvas(dragStateRef.current.draggedItems.map((dragged) => dragged.id))
+        } else {
+          clearLargeAltDragCanvas()
+        }
+      }
 
       // Calculate clamped delta to prevent visual preview from going below frame 0
       const deltaFrames = pixelsToFramePreciseRef.current(deltaX)
@@ -797,6 +939,21 @@ export function useTimelineDrag(
       const clampedDeltaX = deltaFrames !== 0 ? deltaX * (clampedDeltaFrames / deltaFrames) : deltaX
 
       const currentItems = getItems()
+      const currentItemById = new Map(
+        currentItems.map((currentItem) => [currentItem.id, currentItem]),
+      )
+      const currentItemsByTrackId = new Map<string, TimelineItem[]>()
+      for (const currentItem of currentItems) {
+        const trackItems = currentItemsByTrackId.get(currentItem.trackId)
+        if (trackItems) {
+          trackItems.push(currentItem)
+        } else {
+          currentItemsByTrackId.set(currentItem.trackId, [currentItem])
+        }
+      }
+      const trackIndexById = new Map(
+        tracksRef.current.map((currentTrack, index) => [currentTrack.id, index]),
+      )
       const dropTarget = getTrackDropTarget(e.clientY, dragStateRef.current.startTrackId)
       const previewTrackTargets = resolveDraggedTrackTargets({
         items: currentItems,
@@ -844,7 +1001,7 @@ export function useTimelineDrag(
         let groupEndFrame = -Infinity
 
         for (const draggedItem of draggedItems) {
-          const sourceItem = currentItems.find((i) => i.id === draggedItem.id)
+          const sourceItem = currentItemById.get(draggedItem.id)
           if (!sourceItem) continue
 
           const proposedStart = draggedItem.initialFrame + deltaFrames
@@ -860,7 +1017,7 @@ export function useTimelineDrag(
       } else {
         // Single item drag - use anchor item
         snapStartFrame = Math.max(0, dragStateRef.current.startFrame + deltaFrames)
-        const draggedItem = currentItems.find((i) => i.id === dragStateRef.current?.itemId)
+        const draggedItem = currentItemById.get(dragStateRef.current.itemId)
         snapDuration = draggedItem?.durationInFrames || 0
       }
 
@@ -872,6 +1029,7 @@ export function useTimelineDrag(
           height: track.height,
           kind: getTrackKind(track),
         })),
+        dragVisualTopByTrackIdRef.current,
       )
       let previewOffsets: Record<string, { x: number; y: number }> | null = null
       let anchorPreviewOffset = { x: clampedDeltaX, y: deltaY }
@@ -891,22 +1049,14 @@ export function useTimelineDrag(
         const groupClampOffset = minProposedFrame < 0 ? -minProposedFrame : 0
         const previewMovedItems = dragStateRef.current.draggedItems
           .map((draggedItem) => {
-            const sourceItem = currentItems.find(
-              (timelineItem) => timelineItem.id === draggedItem.id,
-            )
+            const sourceItem = currentItemById.get(draggedItem.id)
             if (!sourceItem) return null
 
             let itemNewTrackId = previewTrackTargets?.trackAssignments.get(draggedItem.id)
             if (!itemNewTrackId) {
-              const anchorTrackIndex = tracksRef.current.findIndex(
-                (track) => track.id === dragStateRef.current!.startTrackId,
-              )
-              const itemTrackIndex = tracksRef.current.findIndex(
-                (track) => track.id === draggedItem.initialTrackId,
-              )
-              const newAnchorTrackIndex = tracksRef.current.findIndex(
-                (track) => track.id === previewAnchorTrackId,
-              )
+              const anchorTrackIndex = trackIndexById.get(dragStateRef.current!.startTrackId) ?? -1
+              const itemTrackIndex = trackIndexById.get(draggedItem.initialTrackId) ?? -1
+              const newAnchorTrackIndex = trackIndexById.get(previewAnchorTrackId) ?? -1
               const trackOffset = itemTrackIndex - anchorTrackIndex
               const newItemTrackIndex = Math.max(
                 0,
@@ -946,6 +1096,7 @@ export function useTimelineDrag(
               previewItem.newTrackId,
               groupExcludeIds,
               currentItems,
+              currentItemsByTrackId,
             )
             const itemDelta = clamped - previewItem.newFrom
             // Pick the tightest (smallest magnitude) clamp in each direction
@@ -998,6 +1149,7 @@ export function useTimelineDrag(
               previewTargetTrackId,
               dragExcludeIds,
               currentItems,
+              currentItemsByTrackId,
             )
         const currentTop = previewVisualTopByTrackId.get(dragStateRef.current.startTrackId)
         const targetTop = previewVisualTopByTrackId.get(previewTargetTrackId)
@@ -1025,6 +1177,9 @@ export function useTimelineDrag(
 
       dragOffsetRef.current = anchorPreviewOffset
       dragPreviewOffsetByItemRef.current = previewOffsets ?? {}
+      if (isAltDragRef.current) {
+        updateLargeAltDragCanvas(previewOffsets ?? {}, anchorPreviewOffset)
+      }
       setDragOffset(anchorPreviewOffset)
 
       // Only update store when snap target or alt state actually changes to reduce re-renders
@@ -1207,7 +1362,9 @@ export function useTimelineDrag(
               elementRef.current.style.transform = ''
             }
             dragOffsetRef.current = { x: 0, y: 0 }
+            dragVisualTopByTrackIdRef.current.clear()
             dragPreviewOffsetByItemRef.current = {}
+            clearLargeAltDragCanvas()
             clearLinkedMovePreview()
             prevSnapTargetRef.current = null
             dragStateRef.current = null
@@ -1336,7 +1493,9 @@ export function useTimelineDrag(
         elementRef.current.style.transform = ''
       }
       dragOffsetRef.current = { x: 0, y: 0 } // Reset shared ref immediately
+      dragVisualTopByTrackIdRef.current.clear()
       dragPreviewOffsetByItemRef.current = {}
+      clearLargeAltDragCanvas()
       clearLinkedMovePreview()
       prevSnapTargetRef.current = null // Reset snap target tracking
       dragStateRef.current = null
@@ -1364,6 +1523,8 @@ export function useTimelineDrag(
       return () => {
         window.removeEventListener('mousemove', handleMouseMove)
         window.removeEventListener('mouseup', handleMouseUp)
+        dragVisualTopByTrackIdRef.current.clear()
+        clearLargeAltDragCanvas()
         clearLinkedMovePreview()
         clearGlobalDragCursor()
         document.body.style.userSelect = ''

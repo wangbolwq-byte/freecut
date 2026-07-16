@@ -18,7 +18,9 @@ type MediabunnyInputSource =
   | InstanceType<MediabunnyModule['UrlSource']>
 
 function isWorkerContext(): boolean {
-  return typeof self !== 'undefined' && typeof window === 'undefined'
+  // Export workers intentionally provide a `window` alias for browser-only
+  // third-party modules. `document` remains a reliable worker discriminator.
+  return typeof self !== 'undefined' && typeof document === 'undefined'
 }
 
 function canUseDirectFileAccess(

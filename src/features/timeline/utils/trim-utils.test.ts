@@ -234,4 +234,40 @@ describe('clampToAdjacentItems', () => {
       expect(result).toBe(20)
     })
   })
+
+  describe('reversed media source bounds', () => {
+    const reversed = makeItem({
+      id: 'reversed',
+      trackId,
+      from: 0,
+      durationInFrames: 60,
+      type: 'video',
+      isReversed: true,
+      sourceStart: 60,
+      sourceEnd: 120,
+      sourceDuration: 180,
+      sourceFps: 30,
+      speed: 1,
+    })
+
+    it('trimming the timeline start moves sourceEnd backward', () => {
+      expect(calculateTrimSourceUpdate(reversed, 'start', 15, 45, 30)).toEqual({
+        sourceEnd: 105,
+      })
+    })
+
+    it('extending the timeline end moves sourceStart backward and clamps at zero', () => {
+      expect(calculateTrimSourceUpdate(reversed, 'end', 30, 90, 30)).toEqual({
+        sourceStart: 30,
+      })
+      expect(clampTrimAmount(reversed, 'end', 100, 30).clampedAmount).toBe(60)
+    })
+
+    it('extending the timeline start moves sourceEnd toward source duration', () => {
+      expect(calculateTrimSourceUpdate(reversed, 'start', -30, 90, 30)).toEqual({
+        sourceEnd: 150,
+      })
+      expect(clampTrimAmount(reversed, 'start', -100, 30).clampedAmount).toBe(-60)
+    })
+  })
 })

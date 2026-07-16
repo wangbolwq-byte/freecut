@@ -5,6 +5,8 @@
       "graph": "曲线",
       "sheet": "表格",
       "split": "拆分",
+      "enterFocusMode": "聚焦关键帧编辑器",
+      "exitFocusMode": "退出关键帧聚焦模式",
       "selectItem": "选择一个项目以编辑关键帧",
       "parameters": "参数",
       "parameterDisplayOptions": "参数显示选项",

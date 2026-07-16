@@ -1,5 +1,10 @@
 // Bridge for player timing context.
-export { useClock, useClockFrame, useClockIsPlaying, useClockPlaybackRate } from './ClockContext'
+export {
+  useClock,
+  useClockFrameSelector,
+  useClockIsPlaying,
+  useClockPlaybackRate,
+} from './ClockContext'
 
 export {
   ClockBridgeProvider,

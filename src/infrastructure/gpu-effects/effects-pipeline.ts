@@ -128,8 +128,6 @@ export class EffectsPipeline {
   // Cached blit bind groups for ping/pong input views
   private blitBindGroupPing: GPUBindGroup | null = null
   private blitBindGroupPong: GPUBindGroup | null = null
-  // GPU backpressure: count of frames still in-flight on the GPU queue
-  private gpuFramesInFlight = 0
   // Reusable offscreen canvas for applyEffectsToCanvas output (non-batch)
   private outputCanvas: OffscreenCanvas | null = null
   private outputCtx: GPUCanvasContext | null = null
@@ -608,18 +606,6 @@ export class EffectsPipeline {
     }
   }
 
-  private trackSubmittedWork(): void {
-    this.gpuFramesInFlight++
-    this.device.queue.onSubmittedWorkDone().then(
-      () => {
-        this.gpuFramesInFlight = Math.max(0, this.gpuFramesInFlight - 1)
-      },
-      () => {
-        this.gpuFramesInFlight = Math.max(0, this.gpuFramesInFlight - 1)
-      },
-    )
-  }
-
   /**
    * Begin pooled output mode. Each applyEffectsToCanvas call gets its own
    * output canvas from a pool and submits immediately. This allows the GPU
@@ -818,7 +804,6 @@ export class EffectsPipeline {
       { width: w, height: h },
     )
     this.device.queue.submit([commandEncoder.finish()])
-    this.trackSubmittedWork()
     return true
   }
 
@@ -872,7 +857,6 @@ export class EffectsPipeline {
       { width, height },
     )
     this.device.queue.submit([commandEncoder.finish()])
-    this.trackSubmittedWork()
     return true
   }
 
@@ -1098,7 +1082,6 @@ export class EffectsPipeline {
       { width: w, height: h },
     )
     this.device.queue.submit([commandEncoder.finish()])
-    this.trackSubmittedWork()
     return true
   }
 
@@ -1134,7 +1117,6 @@ export class EffectsPipeline {
     this.effectBindGroupCache.clear()
     this.blitBindGroupPing = null
     this.blitBindGroupPong = null
-    this.gpuFramesInFlight = 0
     this.pipelines.clear()
     this.bindGroupLayouts.clear()
     this.computePipelines.clear()

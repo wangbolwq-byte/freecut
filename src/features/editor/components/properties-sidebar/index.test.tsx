@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 import { useItemsStore } from '@/features/editor/deps/timeline-store'
 import { useEditorStore } from '@/shared/state/editor'
@@ -6,12 +6,19 @@ import { useSelectionStore } from '@/shared/state/selection'
 import type { AudioItem, VideoItem } from '@/types/timeline'
 import { PropertiesSidebar } from './index'
 
+const panelModuleLoads = vi.hoisted(() => ({
+  clip: vi.fn(),
+}))
+
 vi.mock('./canvas-panel', () => ({
   CanvasPanel: () => <div>Canvas Panel</div>,
 }))
 
 vi.mock('./clip-panel', () => ({
-  ClipPanel: () => <div>Clip Panel</div>,
+  ClipPanel: (() => {
+    panelModuleLoads.clip()
+    return () => <div>Clip Panel</div>
+  })(),
 }))
 
 vi.mock('./marker-panel', () => ({
@@ -84,6 +91,17 @@ function resetStores(items: Array<VideoItem | AudioItem>, selectedItemIds: strin
 describe('PropertiesSidebar', () => {
   beforeEach(() => {
     resetStores([CLIP_A], [CLIP_A.id])
+  })
+
+  it('mounts the clip inspector before the first clip selection', async () => {
+    resetStores([CLIP_A], [])
+
+    render(<PropertiesSidebar />)
+
+    await waitFor(() => {
+      expect(panelModuleLoads.clip).toHaveBeenCalledTimes(1)
+    })
+    expect(screen.getByText('Canvas Panel')).toBeInTheDocument()
   })
 
   it('shows the selected clip filename in the header', async () => {

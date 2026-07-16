@@ -9,6 +9,7 @@
 import { createMediabunnyInputSource } from '@/infrastructure/browser/mediabunny-input-source'
 import type { ObjectUrlSourceMetadata } from '@/infrastructure/browser/object-url-registry'
 import { ensureProResDecoderRegistered } from '@/infrastructure/browser/register-prores-decoder'
+import { fitFilmstripFrameSize } from '../utils/fit-filmstrip-frame-size'
 
 const IMAGE_FORMAT = 'image/jpeg'
 const IMAGE_QUALITY = 0.7 // JPEG is substantially faster to encode for tiny thumbnails
@@ -199,10 +200,20 @@ async function extractAndSave(request: ExtractRequest, state: { aborted: boolean
     // handles it directly like any other codec.
     // CanvasSink poolSize matches our parallel save capacity to keep VRAM constant
     // and prevent allocation/deallocation churn.
+    const [squarePixelWidth, squarePixelHeight, rotation] = await Promise.all([
+      videoTrack.getSquarePixelWidth(),
+      videoTrack.getSquarePixelHeight(),
+      videoTrack.getRotation(),
+    ])
+    const quarterTurns = Math.round(rotation / 90) % 2
+    const displayWidth = quarterTurns === 0 ? squarePixelWidth : squarePixelHeight
+    const displayHeight = quarterTurns === 0 ? squarePixelHeight : squarePixelWidth
+    const frameSize = fitFilmstripFrameSize(displayWidth, displayHeight, width, height)
+
     sink = new CanvasSink(videoTrack, {
-      width,
-      height,
-      fit: 'cover',
+      width: frameSize.width,
+      height: frameSize.height,
+      fit: 'fill',
       poolSize: 4, // Reduced for 1fps extraction
     })
     const canvasIterable: AsyncIterable<{ canvas: OffscreenCanvas | HTMLCanvasElement } | null> =

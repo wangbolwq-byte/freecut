@@ -1,17 +1,14 @@
-import { memo, useCallback, useMemo, useRef, type PointerEvent } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, type PointerEvent } from 'react'
 import { useSelectionStore } from '@/shared/state/selection'
 import type { ItemEffect } from '@/types/effects'
 import type { TimelineItem } from '@/types/timeline'
-import { resolveTransform, getSourceDimensions } from '@/features/preview/deps/composition-runtime'
+import { usePlaybackStore } from '@/shared/state/playback'
 import { useGizmoStore } from '../stores/gizmo-store'
-import { useItemsStore, useTimelineStore } from '../deps/timeline-store'
-import type { CoordinateParams, Point, Transform } from '../types/gizmo'
-import {
-  getEffectiveScale,
-  rotatePoint,
-  screenToCanvas,
-  transformToScreenBounds,
-} from '../utils/coordinate-transform'
+import { usePowerWindowEditorStore } from '../stores/power-window-editor-store'
+import { useItemsStore, useKeyframesStore, useTimelineStore } from '../deps/timeline-store'
+import type { CoordinateParams, Point } from '../types/gizmo'
+import { screenToCanvas } from '../utils/coordinate-transform'
+import { planEffectGizmoCommit } from '../utils/effect-gizmo-keyframes'
 import {
   buildPowerWindowEffects,
   derivePowerWindowDragParams,
@@ -33,31 +30,16 @@ interface PowerWindowOverlayProps {
   playerSize: { width: number; height: number }
   item: TimelineItem
   effect: ItemEffect
-  itemTransform: Transform
 }
 
 const HANDLE_SIZE = 14
+const POWER_WINDOW_NUMBER_KEYS = ['centerX', 'centerY', 'sizeX', 'sizeY', 'rotation'] as const
 
-function resolveItemTransform(item: TimelineItem, projectSize: { width: number; height: number }) {
-  const canvas = { width: projectSize.width, height: projectSize.height, fps: 30 }
-  const resolved = resolveTransform(item, canvas, getSourceDimensions(item))
-  return {
-    x: resolved.x,
-    y: resolved.y,
-    width: resolved.width,
-    height: resolved.height,
-    anchorX: resolved.anchorX,
-    anchorY: resolved.anchorY,
-    rotation: resolved.rotation,
-    opacity: resolved.opacity,
-    cornerRadius: resolved.cornerRadius,
-  }
-}
-
-function findPowerWindowEffect(item: TimelineItem): ItemEffect | null {
+function findPowerWindowEffect(item: TimelineItem, effectId: string): ItemEffect | null {
   return (
     (item.effects ?? []).find(
       (entry) =>
+        entry.id === effectId &&
         entry.enabled &&
         entry.effect.type === 'gpu-effect' &&
         entry.effect.gpuEffectType === 'gpu-power-window',
@@ -65,20 +47,14 @@ function findPowerWindowEffect(item: TimelineItem): ItemEffect | null {
   )
 }
 
-function pointerToItemUv(
+function pointerToCanvasUv(
   event: Pick<PointerEvent<HTMLElement>, 'clientX' | 'clientY'>,
   coordParams: CoordinateParams,
-  itemTransform: Transform,
 ): Point {
   const projectPoint = screenToCanvas(event.clientX, event.clientY, coordParams)
-  const center = {
-    x: coordParams.projectSize.width / 2 + itemTransform.x,
-    y: coordParams.projectSize.height / 2 + itemTransform.y,
-  }
-  const unrotated = rotatePoint(projectPoint, center, -itemTransform.rotation)
   return {
-    x: (unrotated.x - (center.x - itemTransform.width / 2)) / itemTransform.width,
-    y: (unrotated.y - (center.y - itemTransform.height / 2)) / itemTransform.height,
+    x: projectPoint.x / coordParams.projectSize.width,
+    y: projectPoint.y / coordParams.projectSize.height,
   }
 }
 
@@ -90,30 +66,52 @@ export const PowerWindowOverlayContainer = memo(function PowerWindowOverlayConta
 }: PowerWindowOverlayContainerProps) {
   const selectedItemIds = useSelectionStore((s) => s.selectedItemIds)
   const items = useItemsStore((s) => s.items)
+  const isEditing = usePowerWindowEditorStore((s) => s.isEditing)
+  const editingItemId = usePowerWindowEditorStore((s) => s.editingItemId)
+  const editingEffectId = usePowerWindowEditorStore((s) => s.editingEffectId)
+  const stopEditing = usePowerWindowEditorStore((s) => s.stopEditing)
+  const clearPreviewForItems = useGizmoStore((s) => s.clearPreviewForItems)
 
-  const selectedItem = useMemo(() => {
-    if (selectedItemIds.length !== 1) return null
-    return items.find((item) => item.id === selectedItemIds[0]) ?? null
-  }, [items, selectedItemIds])
+  const editingItem = useMemo(() => {
+    if (!isEditing || !editingItemId || !selectedItemIds.includes(editingItemId)) return null
+    return items.find((item) => item.id === editingItemId) ?? null
+  }, [editingItemId, isEditing, items, selectedItemIds])
 
-  const effect = selectedItem ? findPowerWindowEffect(selectedItem) : null
+  const effect =
+    editingItem && editingEffectId !== null
+      ? findPowerWindowEffect(editingItem, editingEffectId)
+      : null
   const coordParams = useMemo((): CoordinateParams | null => {
     if (!containerRect) return null
     return { containerRect, playerSize, projectSize, zoom }
   }, [containerRect, playerSize, projectSize, zoom])
-  const itemTransform = useMemo(
-    () => (selectedItem ? resolveItemTransform(selectedItem, projectSize) : null),
-    [projectSize, selectedItem],
-  )
+  useEffect(() => {
+    if (!isEditing) return
+    if (!editingItem || !effect) {
+      if (editingItemId) clearPreviewForItems([editingItemId])
+      stopEditing()
+    }
+  }, [clearPreviewForItems, editingItem, editingItemId, effect, isEditing, stopEditing])
 
-  if (!coordParams || !selectedItem || !effect || !itemTransform) return null
+  useEffect(() => {
+    if (!isEditing) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      if (editingItemId) clearPreviewForItems([editingItemId])
+      stopEditing()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [clearPreviewForItems, editingItemId, isEditing, stopEditing])
+
+  if (!coordParams || !editingItem || !effect) return null
 
   return (
     <PowerWindowOverlay
       coordParams={coordParams}
       effect={effect}
-      item={selectedItem}
-      itemTransform={itemTransform}
+      item={editingItem}
       playerSize={playerSize}
     />
   )
@@ -123,40 +121,85 @@ const PowerWindowOverlay = memo(function PowerWindowOverlay({
   coordParams,
   effect,
   item,
-  itemTransform,
+  playerSize,
 }: PowerWindowOverlayProps) {
   const dragRef = useRef<PowerWindowDragState | null>(null)
+  const dragEffectsRef = useRef<ItemEffect[] | null>(null)
   const setEffectsPreviewNew = useGizmoStore((s) => s.setEffectsPreviewNew)
   const clearPreviewForItems = useGizmoStore((s) => s.clearPreviewForItems)
+  const previewEffect = useGizmoStore((s) =>
+    s.preview?.[item.id]?.effects?.find((entry) => entry.id === effect.id),
+  )
   const setItemEffects = useTimelineStore((s) => s.setItemEffects)
+  const applyAutoKeyframeOperations = useTimelineStore((s) => s.applyAutoKeyframeOperations)
+  const itemKeyframes = useKeyframesStore((s) => s.keyframesByItemId[item.id])
 
-  const params = readPowerWindowParams(effect)
-  const scale = getEffectiveScale(coordParams)
-  const bounds = transformToScreenBounds(itemTransform, coordParams)
-  const transformOrigin = `${(itemTransform.anchorX ?? itemTransform.width / 2) * scale}px ${
-    (itemTransform.anchorY ?? itemTransform.height / 2) * scale
-  }px`
+  const params = readPowerWindowParams(previewEffect ?? effect)
+  const currentEffects = useMemo(
+    () =>
+      (item.effects ?? []).map((entry) =>
+        entry.id === effect.id && previewEffect ? previewEffect : entry,
+      ),
+    [effect.id, item.effects, previewEffect],
+  )
+  const canvasAspectRatio =
+    coordParams.projectSize.width / Math.max(coordParams.projectSize.height, 1)
 
   const applyPreview = useCallback(
     (nextParams: PowerWindowParams) => {
       setEffectsPreviewNew({
-        [item.id]: buildPowerWindowEffects(item.effects ?? [], effect.id, nextParams),
+        [item.id]: buildPowerWindowEffects(
+          dragEffectsRef.current ?? currentEffects,
+          effect.id,
+          nextParams,
+        ),
       })
     },
-    [effect.id, item.effects, item.id, setEffectsPreviewNew],
+    [currentEffects, effect.id, item.id, setEffectsPreviewNew],
   )
 
   const commit = useCallback(
-    (nextParams: PowerWindowParams) => {
-      setItemEffects([
-        {
-          itemId: item.id,
-          effects: buildPowerWindowEffects(item.effects ?? [], effect.id, nextParams),
-        },
-      ])
+    (nextParams: PowerWindowParams, startParams: PowerWindowParams) => {
+      const changedUpdates: Record<string, number> = {}
+      for (const key of POWER_WINDOW_NUMBER_KEYS) {
+        if (nextParams[key] !== startParams[key]) changedUpdates[key] = nextParams[key]
+      }
+      const plan = planEffectGizmoCommit(
+        item,
+        effect,
+        itemKeyframes,
+        usePlaybackStore.getState().currentFrame,
+        changedUpdates,
+      )
+      if (plan.autoKeyframeOperations.length > 0) {
+        applyAutoKeyframeOperations(plan.autoKeyframeOperations)
+      }
+      if (Object.keys(plan.baseParamUpdates).length > 0) {
+        const rawParams = readPowerWindowParams(effect) ?? startParams
+        const baseParams: PowerWindowParams = { ...rawParams, ...plan.baseParamUpdates }
+        setItemEffects([
+          {
+            itemId: item.id,
+            effects: buildPowerWindowEffects(
+              dragEffectsRef.current ?? currentEffects,
+              effect.id,
+              baseParams,
+              POWER_WINDOW_NUMBER_KEYS,
+            ),
+          },
+        ])
+      }
       clearPreviewForItems([item.id])
     },
-    [clearPreviewForItems, effect.id, item.effects, item.id, setItemEffects],
+    [
+      applyAutoKeyframeOperations,
+      clearPreviewForItems,
+      currentEffects,
+      effect,
+      item,
+      itemKeyframes,
+      setItemEffects,
+    ],
   )
 
   const handlePointerDown = useCallback(
@@ -168,10 +211,11 @@ const PowerWindowOverlay = memo(function PowerWindowOverlay({
       dragRef.current = {
         handle,
         startParams: params,
-        startUv: pointerToItemUv(event, coordParams, itemTransform),
+        startUv: pointerToCanvasUv(event, coordParams),
       }
+      dragEffectsRef.current = currentEffects
     },
-    [coordParams, itemTransform, params],
+    [coordParams, currentEffects, params],
   )
 
   const handlePointerMove = useCallback(
@@ -181,10 +225,13 @@ const PowerWindowOverlay = memo(function PowerWindowOverlay({
       event.preventDefault()
       event.stopPropagation()
       applyPreview(
-        derivePowerWindowDragParams(drag, pointerToItemUv(event, coordParams, itemTransform)),
+        derivePowerWindowDragParams(drag, pointerToCanvasUv(event, coordParams), {
+          canvasAspectRatio,
+          snapRotation: event.shiftKey,
+        }),
       )
     },
-    [applyPreview, coordParams, itemTransform],
+    [applyPreview, canvasAspectRatio, coordParams],
   )
 
   const handlePointerUp = useCallback(
@@ -193,14 +240,15 @@ const PowerWindowOverlay = memo(function PowerWindowOverlay({
       if (!drag) return
       event.preventDefault()
       event.stopPropagation()
-      const nextParams = derivePowerWindowDragParams(
-        drag,
-        pointerToItemUv(event, coordParams, itemTransform),
-      )
+      const nextParams = derivePowerWindowDragParams(drag, pointerToCanvasUv(event, coordParams), {
+        canvasAspectRatio,
+        snapRotation: event.shiftKey,
+      })
       dragRef.current = null
-      commit(nextParams)
+      commit(nextParams, drag.startParams)
+      dragEffectsRef.current = null
     },
-    [commit, coordParams, itemTransform],
+    [canvasAspectRatio, commit, coordParams],
   )
 
   if (!params) return null
@@ -209,28 +257,33 @@ const PowerWindowOverlay = memo(function PowerWindowOverlay({
     width: HANDLE_SIZE,
     height: HANDLE_SIZE,
   }
-  const shapeClass = params.shape === 'rectangle' ? 'rounded-[2px]' : 'rounded-full'
+  const shapeBorderRadius = params.shape === 'rectangle' ? '2px' : '50%'
 
   return (
     <div
-      className="pointer-events-none absolute z-50"
+      className="pointer-events-auto absolute z-50"
       data-testid="power-window-overlay"
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+      }}
       style={{
-        left: bounds.left,
-        top: bounds.top,
-        width: bounds.width,
-        height: bounds.height,
-        transform: `rotate(${itemTransform.rotation}deg)`,
-        transformOrigin,
+        left: 0,
+        top: 0,
+        width: playerSize.width,
+        height: playerSize.height,
       }}
     >
       <div
-        className={`absolute border border-white/90 shadow-[0_0_0_1px_rgba(0,0,0,0.65)] ${shapeClass}`}
+        className="absolute border border-white/90 shadow-[0_0_0_1px_rgba(0,0,0,0.65)]"
         style={{
           left: `${params.centerX * 100}%`,
           top: `${params.centerY * 100}%`,
           width: `${params.sizeX * 100}%`,
           height: `${params.sizeY * 100}%`,
+          borderRadius: shapeBorderRadius,
           transform: `translate(-50%, -50%) rotate(${params.rotation}deg)`,
         }}
       >
@@ -261,6 +314,19 @@ const PowerWindowOverlay = memo(function PowerWindowOverlay({
             onPointerUp={handlePointerUp}
           />
         ))}
+        <div
+          className="pointer-events-none absolute -top-[22px] left-1/2 h-[22px] border-l border-dashed border-white/90 shadow-[1px_0_0_rgba(0,0,0,0.65)]"
+          aria-hidden="true"
+        />
+        <button
+          type="button"
+          aria-label="Rotate power window"
+          title="Rotate power window · Hold Shift to snap to 15°"
+          className="pointer-events-auto absolute -top-7 left-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border border-black/70 bg-white shadow-sm active:cursor-grabbing focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white"
+          onPointerDown={(event) => handlePointerDown('rotation', event)}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+        />
       </div>
     </div>
   )

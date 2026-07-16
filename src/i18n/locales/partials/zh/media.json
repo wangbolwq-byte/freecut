@@ -52,6 +52,7 @@
       }
     },
     "compositions": {
+      "compositionsGroup": "合成",
       "compoundClipsGroup": "复合剪辑",
       "deleteBody": "要删除复合剪辑“{{name}}”吗？此操作无法撤消。",
       "deleteInstancesDetail": "使用此复合剪辑的 {{count}} 个时间线实例也将被移除。",

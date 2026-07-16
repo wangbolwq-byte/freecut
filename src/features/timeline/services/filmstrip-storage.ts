@@ -36,6 +36,7 @@ const FRAME_RATE = 1 // Must match worker - 1fps for filmstrip thumbnails
 const PRIMARY_FRAME_EXT = 'jpg'
 const LEGACY_FRAME_EXT = 'webp'
 const FRAME_EXTENSIONS = new Set([PRIMARY_FRAME_EXT, LEGACY_FRAME_EXT])
+const FILMSTRIP_FRAME_SCHEMA_VERSION = 2
 
 function parseFrameFileNameParts(name: string): { index: number; ext: string } | null {
   const dotIndex = name.lastIndexOf('.')
@@ -52,6 +53,7 @@ function parseFrameFileName(name: string): number | null {
 }
 
 interface FilmstripMetadata {
+  version?: number
   width: number
   height: number
   isComplete: boolean
@@ -133,7 +135,16 @@ class FilmstripStorage {
 
   private async ensureWorkspaceFilmstrip(mediaId: string): Promise<FilmstripMetadata | null> {
     const existing = await this.readMetadata(mediaId)
-    if (existing) return existing
+    if (existing) {
+      if (existing.version === FILMSTRIP_FRAME_SCHEMA_VERSION) return existing
+      const staleUrls = this.objectUrls.get(mediaId)
+      if (staleUrls) this.scheduleRevoke([...staleUrls.values()])
+      await Promise.resolve(
+        removeEntry(requireWorkspaceRoot(), filmstripDir(mediaId), { recursive: true }),
+      ).catch(() => undefined)
+      this.objectUrls.delete(mediaId)
+      return null
+    }
 
     const hydrated = await this.hydrateFromLegacyOpfs(mediaId)
     if (!hydrated) return null
@@ -215,7 +226,10 @@ class FilmstripStorage {
       const metaHandle = await mediaDir.getFileHandle('meta.json')
       const metaFile = await metaHandle.getFile()
       const metadata = JSON.parse(await metaFile.text()) as FilmstripMetadata
-      await writeJsonAtomic(requireWorkspaceRoot(), filmstripMetaPath(mediaId), metadata)
+      await writeJsonAtomic(requireWorkspaceRoot(), filmstripMetaPath(mediaId), {
+        ...metadata,
+        version: FILMSTRIP_FRAME_SCHEMA_VERSION,
+      })
 
       for await (const entry of mediaDir.values()) {
         if (entry.kind !== 'file') continue
@@ -242,7 +256,10 @@ class FilmstripStorage {
     mediaId: string,
     metadata: { width: number; height: number; isComplete: boolean; frameCount: number },
   ): Promise<void> {
-    await writeJsonAtomic(requireWorkspaceRoot(), filmstripMetaPath(mediaId), metadata)
+    await writeJsonAtomic(requireWorkspaceRoot(), filmstripMetaPath(mediaId), {
+      ...metadata,
+      version: FILMSTRIP_FRAME_SCHEMA_VERSION,
+    })
   }
 
   async saveFrameBlob(mediaId: string, index: number, blob: Blob): Promise<void> {

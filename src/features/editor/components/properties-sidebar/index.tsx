@@ -27,15 +27,27 @@ import {
   getEditorLayout,
 } from '@/config/editor-layout'
 
-const LazyClipPanel = lazy(() =>
-  import('./clip-panel').then((module) => ({ default: module.ClipPanel })),
-)
+function loadClipPropertiesPanel() {
+  return import('./clip-panel').then((module) => ({ default: module.ClipPanel }))
+}
+
+const LazyClipPanel = lazy(loadClipPropertiesPanel)
 const LazyMarkerPanel = lazy(() =>
   import('./marker-panel').then((module) => ({ default: module.MarkerPanel })),
 )
 const LazyTransitionPanel = lazy(() =>
   import('./transition-panel').then((module) => ({ default: module.TransitionPanel })),
 )
+
+function PropertiesPanelLoadingFallback() {
+  return (
+    <div className="space-y-3 animate-pulse" aria-hidden="true" data-testid="properties-loading">
+      <div className="h-8 rounded bg-muted/60" />
+      <div className="h-24 rounded bg-muted/40" />
+      <div className="h-16 rounded bg-muted/30" />
+    </div>
+  )
+}
 
 type HeaderItem = Pick<TimelineItem, 'id' | 'label' | 'linkedGroupId' | 'type'>
 
@@ -300,12 +312,21 @@ export const PropertiesSidebar = memo(function PropertiesSidebar() {
                 <Suspense fallback={null}>
                   <LazyMarkerPanel />
                 </Suspense>
-              ) : hasClipSelection ? (
-                <Suspense fallback={null}>
-                  <LazyClipPanel />
-                </Suspense>
               ) : (
-                <CanvasPanel />
+                <>
+                  {/* Mount the lazy inspector before the first selection. Once
+                      its chunk resolves it stays subscribed while hidden, so a
+                      selection made during playback can commit synchronously
+                      instead of waiting for a starved Suspense retry. */}
+                  <div hidden={!hasClipSelection}>
+                    <Suspense fallback={<PropertiesPanelLoadingFallback />}>
+                      <LazyClipPanel />
+                    </Suspense>
+                  </div>
+                  <div hidden={hasClipSelection}>
+                    <CanvasPanel />
+                  </div>
+                </>
               )}
             </div>
           </div>

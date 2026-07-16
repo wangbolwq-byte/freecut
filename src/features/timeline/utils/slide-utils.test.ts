@@ -171,7 +171,7 @@ describe('computeSlideContinuitySourceDelta', () => {
     expect(delta).toBe(40)
   })
 
-  it('returns 0 when full source delta cannot be applied', () => {
+  it('clamps continuously when the full source delta cannot be applied', () => {
     const left = makeVideoItem({
       id: 'left',
       from: 0,
@@ -197,6 +197,6 @@ describe('computeSlideContinuitySourceDelta', () => {
     })
 
     const delta = computeSlideContinuitySourceDelta(middle, left, right, 20, 30)
-    expect(delta).toBe(0)
+    expect(delta).toBe(5)
   })
 })

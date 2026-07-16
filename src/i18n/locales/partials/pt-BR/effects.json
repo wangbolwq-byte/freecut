@@ -53,6 +53,15 @@
     "midtones": "Meios-tons",
     "highlights": "Realces"
   },
+  "powerWindow": {
+    "window": "Janela",
+    "matte": "Máscara",
+    "correction": "Correção",
+    "ellipse": "Elipse",
+    "rectangle": "Retângulo",
+    "editOnCanvas": "Editar na tela",
+    "editingOnCanvas": "Editando na tela"
+  },
   "params": {
     "flow": "Fluxo",
     "span": "Intervalo",

@@ -1,4 +1,4 @@
-import type { TimelineItem } from '@/types/timeline'
+import type { CompositionItem, TimelineItem } from '@/types/timeline'
 import type { ActiveTransition } from './canvas-transitions'
 import { timelineToSourceFrames } from '@/features/export/deps/timeline-frame'
 
@@ -71,6 +71,24 @@ export function getRenderTimelineSourceStart(
     return 0
   }
   return span?.sourceStart ?? getSourceTimedItemStart(item)
+}
+
+export function resolveCompositionSourceFrame(
+  item: CompositionItem,
+  frame: number,
+  parentFps: number,
+  subCompositionFps: number,
+  span: RenderTimelineSpan = getItemRenderTimelineSpan(item),
+): number {
+  return (
+    getRenderTimelineSourceStart(item, span) +
+    timelineToSourceFrames(
+      frame - span.from,
+      item.speed ?? 1,
+      parentFps,
+      item.sourceFps ?? subCompositionFps,
+    )
+  )
 }
 
 export function applyRenderTimelineSpan<TItem extends TimelineItem>(

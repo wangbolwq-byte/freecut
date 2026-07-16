@@ -93,6 +93,15 @@ export interface ItemRenderContext {
   renderMode: 'export' | 'preview'
   renderItem: RenderItemDelegate
   scrubbingCache?: ScrubbingCache | null
+  /** Skip the expensive full-resolution per-video ImageBitmap copy on isolated seeks. */
+  captureDecodedVideoFrames?: boolean
+  /** Maximum wait for an existing worker decode; undefined uses the short opportunistic wait. */
+  workerPredecodeWaitMs?: number
+  getResolvedVideoSource?: (
+    item: VideoItem,
+    sourceTime?: number,
+    toleranceSeconds?: number,
+  ) => string | null
   getCurrentItemSnapshot?: <TItem extends TimelineItem>(item: TItem) => TItem
   getLiveItemSnapshotById?: (itemId: string) => TimelineItem | undefined
   getCurrentKeyframes?: (itemId: string) => ItemKeyframes | undefined
@@ -111,12 +120,33 @@ export interface ItemRenderContext {
     timestamp: number,
     toleranceSeconds?: number,
   ) => ImageBitmap | null
+  getCachedActivePreviewFallbackBitmap?: (
+    src: string,
+    timestamp: number,
+    toleranceSeconds?: number,
+  ) => ImageBitmap | null
   waitForInflightPredecodedBitmap?: (
     src: string,
     timestamp: number,
     toleranceSeconds?: number,
     maxWaitMs?: number,
   ) => Promise<ImageBitmap | null>
+  isActivePreviewTargetSuperseded?: (
+    src: string,
+    timestamp: number,
+    toleranceSeconds?: number,
+  ) => boolean
+  isActivePreviewFrameSuperseded?: (frame: number) => boolean
+  isActivePreviewFrameCurrent?: (frame: number) => boolean
+  isActivePreviewFrameDecodeReady?: (frame: number) => boolean
+  isActivePreviewSourceTarget?: (
+    src: string,
+    timestamp: number,
+    toleranceSeconds?: number,
+  ) => boolean
+  markActivePreviewFramePending?: () => void
+  markActivePreviewFallbackUsed?: () => void
+  previewRootTimelineFrame?: number
   reverseVideoFrameCache?: ReverseVideoFrameCache
 
   // Image / GIF state

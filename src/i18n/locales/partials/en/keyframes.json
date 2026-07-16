@@ -5,6 +5,8 @@
       "graph": "Graph",
       "sheet": "Sheet",
       "split": "Split",
+      "enterFocusMode": "Focus keyframe editor",
+      "exitFocusMode": "Exit keyframe focus mode",
       "selectItem": "Select an item to edit keyframes",
       "parameters": "Parameters",
       "parameterDisplayOptions": "Parameter display options",

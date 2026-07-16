@@ -4,9 +4,10 @@ import { toast } from 'sonner'
 import type { TimelineItem as TimelineItemType } from '@/types/timeline'
 import type { MediaMetadata } from '@/types/storage'
 import { createLogger } from '@/shared/logging/logger'
-import { useTimelineZoomContext } from '../contexts/timeline-zoom-context'
+import { useTimelineCommittedZoomContext } from '../contexts/timeline-zoom-context'
 import { useTimelineStore } from '../stores/timeline-store'
 import { useCompositionsStore } from '../stores/compositions-store'
+import { pixelsToFrameNow } from '../utils/zoom-conversions'
 import {
   registerNewTrackZoneGhostOverlay,
   useNewTrackZonePreviewStore,
@@ -166,26 +167,23 @@ export const TimelineMediaDropZone = memo(function TimelineMediaDropZone({
   const clearZoneGhostPreviews = useNewTrackZonePreviewStore((s) => s.clearGhostPreviews)
   const getMedia = useMediaLibraryStore((s) => s.mediaItems)
   const importHandlesForPlacement = useMediaLibraryStore((s) => s.importHandlesForPlacement)
-  const { pixelsToFrame, frameToPixels } = useTimelineZoomContext()
+  const { frameToPixels } = useTimelineCommittedZoomContext()
 
-  const getDropFrame = useCallback(
-    (event: React.DragEvent): number | null => {
-      if (!zoneRef.current) {
-        return null
-      }
+  const getDropFrame = useCallback((event: React.DragEvent): number | null => {
+    if (!zoneRef.current) {
+      return null
+    }
 
-      const timelineContainer = zoneRef.current.closest('.timeline-container') as HTMLElement | null
-      if (!timelineContainer) {
-        return null
-      }
+    const timelineContainer = zoneRef.current.closest('.timeline-container') as HTMLElement | null
+    if (!timelineContainer) {
+      return null
+    }
 
-      const scrollLeft = timelineContainer.scrollLeft || 0
-      const containerRect = timelineContainer.getBoundingClientRect()
-      const offsetX = event.clientX - containerRect.left + scrollLeft
-      return pixelsToFrame(offsetX)
-    },
-    [pixelsToFrame],
-  )
+    const scrollLeft = timelineContainer.scrollLeft || 0
+    const containerRect = timelineContainer.getBoundingClientRect()
+    const offsetX = event.clientX - containerRect.left + scrollLeft
+    return pixelsToFrameNow(offsetX)
+  }, [])
 
   const ensureVideoZoneTrack = useCallback(
     (tracks: ReturnType<typeof useTimelineStore.getState>['tracks']) => {

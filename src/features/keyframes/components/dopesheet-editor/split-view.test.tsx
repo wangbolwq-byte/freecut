@@ -45,6 +45,8 @@ describe('DopesheetEditor split view', () => {
     // Sheet pane (its aligned playhead overlay) and the curve/graph pane both present.
     expect(screen.getByTestId('dopesheet-playhead-clip')).toBeInTheDocument()
     expect(screen.getByTestId('dopesheet-graph-pane')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Sheet' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Graph' })).toBeInTheDocument()
     // The shared ruler is rendered once.
     expect(screen.getAllByTestId('dopesheet-ruler')).toHaveLength(1)
   })

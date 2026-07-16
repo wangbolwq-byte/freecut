@@ -19,6 +19,8 @@ interface PlayheadMarksProps {
   bleedBottom?: boolean
   /** Extra classes merged onto the vertical line (e.g. a z-index override). */
   className?: string
+  /** Extra classes merged onto the optional flag handle. */
+  handleClassName?: string
   /**
    * Drop the whole group (line + flag + pointer) down by this many pixels. Used
    * by the Edit ruler so the flag sits in the tick lane below the IO bar's
@@ -44,11 +46,13 @@ export function PlayheadMarks({
   pointer = false,
   bleedBottom = false,
   className,
+  handleClassName,
   topOffsetPx = 0,
 }: PlayheadMarksProps) {
   return (
     <>
       <span
+        data-playhead-mark="line"
         className={cn(
           'pointer-events-none absolute w-px -translate-x-1/2 bg-timeline-playhead shadow-[0_0_5px_rgba(255,140,58,0.65)]',
           bleedBottom ? '-bottom-px' : 'bottom-0',
@@ -58,7 +62,11 @@ export function PlayheadMarks({
       />
       {handle === 'flag' && (
         <span
-          className="pointer-events-none absolute left-0 h-3 w-2 -translate-x-1/2 rounded-b-[2px] border border-timeline-playhead/60 bg-timeline-playhead shadow-[0_0_7px_rgba(255,140,58,0.55)]"
+          data-playhead-mark="handle"
+          className={cn(
+            'pointer-events-none absolute left-0 block h-3 w-2 -translate-x-1/2 rounded-b-[2px] border border-timeline-playhead/60 bg-timeline-playhead shadow-[0_0_7px_rgba(255,140,58,0.55)]',
+            handleClassName,
+          )}
           style={{ top: topOffsetPx }}
         />
       )}

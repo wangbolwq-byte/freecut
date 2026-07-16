@@ -38,6 +38,7 @@ function resolveTargetForPair(
   preferredDurationInFrames: number,
   alignment = 0.5,
   allowDurationClamp = true,
+  timelineFps = 30,
 ): ResolvedTransitionTarget | null {
   if (!isTransitionableItem(leftClip) || !isTransitionableItem(rightClip)) return null
   if (leftClip.trackId !== rightClip.trackId) return null
@@ -63,7 +64,12 @@ function resolveTargetForPair(
     }
   }
 
-  const maxDurationInFrames = getMaxTransitionDurationForHandles(leftClip, rightClip, alignment)
+  const maxDurationInFrames = getMaxTransitionDurationForHandles(
+    leftClip,
+    rightClip,
+    alignment,
+    timelineFps,
+  )
   if (maxDurationInFrames < 1) {
     return {
       leftClipId: leftClip.id,
@@ -117,6 +123,7 @@ export function resolveTransitionTargetForEdge(params: {
   preferredDurationInFrames?: number
   alignment?: number
   allowDurationClamp?: boolean
+  timelineFps?: number
 }): ResolvedTransitionTarget | null {
   const {
     itemId,
@@ -126,6 +133,7 @@ export function resolveTransitionTargetForEdge(params: {
     preferredDurationInFrames = TRANSITION_CONFIGS.crossfade.defaultDuration,
     alignment = 0.5,
     allowDurationClamp = true,
+    timelineFps = 30,
   } = params
 
   const item = items.find((candidate) => candidate.id === itemId)
@@ -149,6 +157,7 @@ export function resolveTransitionTargetForEdge(params: {
           preferredDurationInFrames,
           alignment,
           allowDurationClamp,
+          timelineFps,
         )
       : null
   }
@@ -166,6 +175,7 @@ export function resolveTransitionTargetForEdge(params: {
         preferredDurationInFrames,
         alignment,
         allowDurationClamp,
+        timelineFps,
       )
     : null
 }
@@ -177,6 +187,7 @@ export function resolveTransitionTargetFromSelection(params: {
   preferredDurationInFrames?: number
   alignment?: number
   allowDurationClamp?: boolean
+  timelineFps?: number
 }): ResolvedTransitionTarget | null {
   const {
     selectedItemIds,
@@ -185,6 +196,7 @@ export function resolveTransitionTargetFromSelection(params: {
     preferredDurationInFrames = TRANSITION_CONFIGS.crossfade.defaultDuration,
     alignment = 0.5,
     allowDurationClamp = true,
+    timelineFps = 30,
   } = params
 
   if (selectedItemIds.length !== 1) return null
@@ -198,6 +210,7 @@ export function resolveTransitionTargetFromSelection(params: {
     preferredDurationInFrames,
     alignment,
     allowDurationClamp,
+    timelineFps,
   })
   if (rightTarget && (rightTarget.hasExisting || rightTarget.canApply)) {
     return rightTarget
@@ -211,6 +224,7 @@ export function resolveTransitionTargetFromSelection(params: {
     preferredDurationInFrames,
     alignment,
     allowDurationClamp,
+    timelineFps,
   })
   if (leftTarget && (leftTarget.hasExisting || leftTarget.canApply)) {
     return leftTarget

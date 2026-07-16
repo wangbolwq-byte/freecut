@@ -222,13 +222,17 @@ npm run perf                # Build + serve a production-like perf target
 npm run lint                # Oxlint through Vite+
 npm run format              # Oxfmt
 npm run test:run            # Run the test suite once (npm run test to watch)
-npm run verify              # Full local quality gate (lint, types, tests, arch checks)
+npm run verify              # Full gate: static/arch/unit/build + portable headless contracts
+npm run headless:test       # Build once, then run the complete portable headless suite
 
 npm run routes              # Regenerate the TanStack Router route tree
 ```
 
 `npm run verify` runs the complete quality gate, including architecture and
-dead-code checks scoped to the current diff; the pre-push hook runs the same set.
+dead-code checks scoped to the current diff, all Node headless contracts, the
+built-harness Chrome regression, every public edit operation, and generated
+media/audio rendering. Real-GPU effects remain an explicit operator/release
+gate because hosted PR CI does not provide a portable WebGPU adapter.
 
 ### Performance Checks
 

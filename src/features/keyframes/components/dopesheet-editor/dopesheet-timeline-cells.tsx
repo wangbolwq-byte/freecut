@@ -84,6 +84,7 @@ function KeyframeConnectors({ segments }: { segments: ConnectorSegment[] }) {
   return segments.map((segment) => (
     <div
       key={segment.key}
+      data-testid="keyframe-connector"
       className={cn(
         'pointer-events-none absolute z-0 -translate-y-1/2',
         segment.held ? 'border-t border-dashed border-neutral-500/50' : 'h-px bg-neutral-400/50',
@@ -115,6 +116,9 @@ function ProceduralBandView({
   const width = Math.max(3, frameToX(band.toFrame) - left)
   return (
     <div
+      data-testid={`procedural-band-${band.property}`}
+      data-from-frame={band.fromFrame}
+      data-to-frame={band.toFrame}
       className="pointer-events-none absolute top-1/2 z-0 h-2 -translate-y-1/2 overflow-hidden rounded-sm border border-sky-400/40 bg-sky-400/10"
       style={{ left, width, backgroundImage: PROCEDURAL_HATCH }}
       title={title}
@@ -177,13 +181,11 @@ export const GroupTimelineCell = memo(function GroupTimelineCell({
   const renderedFrameGroups = sheetPreviewDuplicateKeyframeIds ? frameGroups : displayedFrameGroups
   const connectorSegments = buildConnectorSegments(
     renderedFrameGroups.flatMap((frameGroup) => {
-      const x = getRenderedKeyframeX(frameGroup.frame)
-      if (x === null) return []
       return [
         {
           id: `${groupId}-${frameGroup.frame}`,
           frame: frameGroup.frame,
-          x,
+          x: frameToX(frameGroup.frame),
           // A group span only "holds" if every property parks across it.
           held: frameGroup.keyframes.every(({ keyframe }) => keyframe.easing === 'hold'),
         },
@@ -196,11 +198,11 @@ export const GroupTimelineCell = memo(function GroupTimelineCell({
   const segmentSpans =
     onSegmentEasingChange && !disabled && !sheetPreviewDuplicateKeyframeIds
       ? buildSegmentSpans(
-          renderedFrameGroups.flatMap((frameGroup) => {
-            const x = getRenderedKeyframeX(frameGroup.frame)
-            if (x === null) return []
-            return [{ from: frameGroup, frame: frameGroup.frame, x }]
-          }),
+          renderedFrameGroups.map((frameGroup) => ({
+            from: frameGroup,
+            frame: frameGroup.frame,
+            x: frameToX(frameGroup.frame),
+          })),
         )
       : []
 
@@ -388,15 +390,15 @@ export const PropertyTimelineCell = memo(function PropertyTimelineCell({
     if (previewFrame !== undefined) return getRenderedKeyframeX(previewFrame)
     return renderedKeyframeXById.get(keyframe.id) ?? null
   }
+  const xForSegmentKeyframe = (keyframe: Keyframe): number => frameToX(displayedFrame(keyframe))
 
   const connectorSegments = buildConnectorSegments(
-    keyframes.flatMap((keyframe) => {
-      const x = xForKeyframe(keyframe)
-      if (x === null) return []
-      return [
-        { id: keyframe.id, frame: displayedFrame(keyframe), x, held: keyframe.easing === 'hold' },
-      ]
-    }),
+    keyframes.map((keyframe) => ({
+      id: keyframe.id,
+      frame: displayedFrame(keyframe),
+      x: xForSegmentKeyframe(keyframe),
+      held: keyframe.easing === 'hold',
+    })),
   )
 
   // Clickable easing spans between consecutive keyframes (skipped while locked or
@@ -404,11 +406,11 @@ export const PropertyTimelineCell = memo(function PropertyTimelineCell({
   const segmentSpans =
     onSegmentEasingChange && !locked && !disabled && !sheetPreviewDuplicateKeyframeIds
       ? buildSegmentSpans(
-          keyframes.flatMap((keyframe) => {
-            const x = xForKeyframe(keyframe)
-            if (x === null) return []
-            return [{ from: keyframe, frame: displayedFrame(keyframe), x }]
-          }),
+          keyframes.map((keyframe) => ({
+            from: keyframe,
+            frame: displayedFrame(keyframe),
+            x: xForSegmentKeyframe(keyframe),
+          })),
         )
       : []
 

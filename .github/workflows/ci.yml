@@ -75,10 +75,10 @@ jobs:
       - name: Build
         run: vp build
 
-      # Self-contained render+edit regression in headless Chrome (no media,
-      # no workspace, no WebGPU). Reuses the dist/ from the Build step.
-      - name: Headless smoke test
-        run: node headless/test.mjs --skip-build
+      # Portable Node, Chrome, edit-operation, and generated-media/audio
+      # contracts. Reuses dist/ from Build and never requires WebGPU.
+      - name: Portable headless contract suite
+        run: npm run headless:test:portable
 
       # Quality ratchet: fails only on dead code / complexity / duplication
       # INTRODUCED by the PR (gate new-only), never on inherited issues.

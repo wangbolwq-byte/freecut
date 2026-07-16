@@ -158,8 +158,21 @@ async function main() {
     )
   }
 
-  const server = await createHarnessServer({ distDir })
-  const browser = await chromium.launch({ channel: 'chrome', headless: true, args: chromeLaunchArgs() })
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freecut-headless-regression-'))
+  const probeSource = path.join(tempDir, 'probe.svg')
+  fs.writeFileSync(
+    probeSource,
+    '<svg xmlns="http://www.w3.org/2000/svg" width="2" height="3"><rect width="2" height="3"/></svg>',
+  )
+  const server = await createHarnessServer({
+    distDir,
+    resolveMedia: (id) => (id === 'probe-source' ? probeSource : null),
+  })
+  const browser = await chromium.launch({
+    channel: 'chrome',
+    headless: true,
+    args: chromeLaunchArgs(),
+  })
   try {
     const context = await browser.newContext({ acceptDownloads: true })
     const page = await context.newPage()
@@ -171,20 +184,107 @@ async function main() {
     await page.goto(server.harnessUrl, { waitUntil: 'load', timeout: 60_000 })
     await page.waitForFunction(() => Boolean(window.freecut?.ready), { timeout: 30_000 })
 
+    const probeContract = await page.evaluate(async (url) => {
+      const originalBlob = Response.prototype.blob
+      let blobCalled = false
+      Response.prototype.blob = async function () {
+        blobCalled = true
+        throw new Error('response.blob must not be used')
+      }
+      try {
+        const probe = await window.freecut.probeMedia({
+          url,
+          fileName: 'probe.svg',
+          mimeType: 'image/svg+xml',
+        })
+        const root = await navigator.storage.getDirectory()
+        const leftovers = []
+        for await (const name of root.keys()) {
+          if (name.startsWith('.freecut-probe-')) leftovers.push(name)
+        }
+        return { blobCalled, leftovers, mimeType: probe.mimeType }
+      } finally {
+        Response.prototype.blob = originalBlob
+      }
+    }, server.mediaUrl('probe-source'))
+    check('media probe streams without response.blob', probeContract.blobCalled === false)
+    check('media probe removes its OPFS temporary file', probeContract.leftovers.length === 0)
+    check(
+      'streaming media probe keeps authoritative MIME',
+      probeContract.mimeType === 'image/svg+xml',
+    )
+
     // --- Render path ---
     console.log('\nRender:')
     const downloadPromise = page.waitForEvent('download', { timeout: 120_000 })
     downloadPromise.catch(() => {})
-    const summary = await page.evaluate((input) => window.freecut.renderTimeline(input), TEXT_TIMELINE)
-    const outPath = path.join(os.tmpdir(), 'freecut-headless-regression.webm')
+    const summary = await page.evaluate(
+      (input) => window.freecut.renderTimeline(input),
+      TEXT_TIMELINE,
+    )
+    const outPath = path.join(tempDir, 'render.webm')
     const download = await downloadPromise
     await download.saveAs(outPath)
     const size = fs.existsSync(outPath) ? fs.statSync(outPath).size : 0
 
     check('render returns ok', summary.ok === true)
     check('render mime is video', /video\//.test(summary.mimeType), summary.mimeType)
-    check('render duration ~3s', Math.abs(summary.durationSeconds - 3) < 0.3, `got ${summary.durationSeconds}`)
+    check('supported render reports effective codec', summary.effectiveSettings?.codec === 'vp9')
+    check(
+      'supported render has no codec fallback warning',
+      !summary.warnings.some((w) => w.code === 'CODEC_FALLBACK'),
+    )
+    check(
+      'render duration ~3s',
+      Math.abs(summary.durationSeconds - 3) < 0.3,
+      `got ${summary.durationSeconds}`,
+    )
     check('render produced bytes (>1KB)', size > 1000, `size ${size}`)
+
+    // Deterministic capability seam: force AVC to adapt to VP9 regardless of
+    // the codecs installed on the CI host.
+    console.log('\nForced codec fallback:')
+    await page.evaluate(() => {
+      globalThis.__freecutSupportedCodecsOverride = ['vp9']
+    })
+    const fallbackInput = structuredClone(TEXT_TIMELINE)
+    fallbackInput.settings.codec = 'avc'
+    fallbackInput.settings.container = 'mp4'
+    fallbackInput.outputFileName = 'regression-fallback.mp4'
+    const fallbackDownloadPromise = page.waitForEvent('download', { timeout: 120_000 })
+    fallbackDownloadPromise.catch(() => {})
+    const fallbackSummary = await page.evaluate(
+      (input) => window.freecut.renderTimeline(input),
+      fallbackInput,
+    )
+    const fallbackOutPath = path.join(tempDir, 'fallback.webm')
+    const fallbackDownload = await fallbackDownloadPromise
+    await fallbackDownload.saveAs(fallbackOutPath)
+    const fallbackSignature = fs.readFileSync(fallbackOutPath).subarray(0, 4).toString('hex')
+    check(
+      'fallback reports stable warning code',
+      fallbackSummary.warnings.some((w) => w.code === 'CODEC_FALLBACK'),
+    )
+    check(
+      'fallback reports effective VP9/WebM',
+      fallbackSummary.effectiveSettings?.codec === 'vp9' &&
+        fallbackSummary.effectiveSettings?.container === 'webm' &&
+        fallbackSummary.effectiveSettings?.audioCodec === 'opus',
+    )
+    check(
+      'fallback MIME matches effective WebM',
+      fallbackSummary.mimeType.startsWith('video/webm'),
+      fallbackSummary.mimeType,
+    )
+    check(
+      'fallback filename matches effective WebM',
+      fallbackSummary.fileName.endsWith('.webm'),
+      fallbackSummary.fileName,
+    )
+    check('fallback bytes have WebM signature', fallbackSignature === '1a45dfa3', fallbackSignature)
+    await page.evaluate(() => {
+      delete globalThis.__freecutSupportedCodecsOverride
+    })
 
     // --- Edit path ---
     console.log('\nEdit:')
@@ -217,6 +317,64 @@ async function main() {
     const after = edit.project?.timeline?.items?.length ?? 0
     check('edit added an item', after === before + 1, `items ${before} -> ${after}`)
 
+    const referencedEdit = await page.evaluate(
+      (project) =>
+        window.freecut.editProject({
+          project,
+          ops: [
+            { callerId: 'created', op: 'addText', text: 'referenced', from: 0 },
+            {
+              callerId: 'moved',
+              op: 'moveItem',
+              id: { $ref: 'created#/detail/id' },
+              from: 12,
+            },
+          ],
+        }),
+      SAMPLE_PROJECT,
+    )
+    const referencedId = referencedEdit.results?.[0]?.detail?.id
+    check('caller result reference resolves generated id', Boolean(referencedId))
+    check(
+      'referenced operation moved the generated item',
+      referencedEdit.project?.timeline?.items?.find((item) => item.id === referencedId)?.from ===
+        12,
+    )
+
+    const missingTargetError = await page.evaluate(async (project) => {
+      try {
+        await window.freecut.editProject({
+          project,
+          ops: [{ op: 'updateItem', id: 'missing', updates: { label: 'nope' } }],
+        })
+        return null
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error)
+      }
+    }, SAMPLE_PROJECT)
+    check(
+      'missing update target fails truthfully',
+      /id: item "missing" does not exist/.test(missingTargetError ?? ''),
+      missingTargetError,
+    )
+
+    const missingRemoveError = await page.evaluate(async (project) => {
+      try {
+        await window.freecut.editProject({
+          project,
+          ops: [{ op: 'removeItems', ids: ['text-1', 'missing'] }],
+        })
+        return null
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error)
+      }
+    }, SAMPLE_PROJECT)
+    check(
+      'removeItems rejects a batch containing missing ids',
+      /ids: item "missing" does not exist/.test(missingRemoveError ?? ''),
+      missingRemoveError,
+    )
+
     const reopenedProject = JSON.parse(JSON.stringify(edit.project))
     const items = reopenedProject.timeline?.items ?? []
     const keyframes = reopenedProject.timeline?.keyframes ?? []
@@ -236,21 +394,22 @@ async function main() {
     console.log('\nEdited project render:')
     const editedDownloadPromise = page.waitForEvent('download', { timeout: 120_000 })
     editedDownloadPromise.catch(() => {})
-    const editedSummary = await page.evaluate(
-      (input) => window.freecut.renderProject(input),
-      {
-        project: reopenedProject,
-        settings: textProjectRenderSettings(reopenedProject),
-        outputFileName: 'regression-edited.webm',
-      },
-    )
-    const editedOutPath = path.join(os.tmpdir(), 'freecut-headless-regression-edited.webm')
+    const editedSummary = await page.evaluate((input) => window.freecut.renderProject(input), {
+      project: reopenedProject,
+      settings: textProjectRenderSettings(reopenedProject),
+      outputFileName: 'regression-edited.webm',
+    })
+    const editedOutPath = path.join(tempDir, 'edited.webm')
     const editedDownload = await editedDownloadPromise
     await editedDownload.saveAs(editedOutPath)
     const editedSize = fs.existsSync(editedOutPath) ? fs.statSync(editedOutPath).size : 0
 
     check('edited render returns ok', editedSummary.ok === true)
-    check('edited render mime is video', /video\//.test(editedSummary.mimeType), editedSummary.mimeType)
+    check(
+      'edited render mime is video',
+      /video\//.test(editedSummary.mimeType),
+      editedSummary.mimeType,
+    )
     check(
       'edited render duration matches timeline',
       Math.abs(editedSummary.durationSeconds - expectedEditedDurationSeconds) < 0.3,
@@ -260,6 +419,7 @@ async function main() {
   } finally {
     await browser.close()
     await server.close()
+    fs.rmSync(tempDir, { recursive: true, force: true })
   }
 
   if (failures > 0) {

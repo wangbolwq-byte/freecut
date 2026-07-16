@@ -52,6 +52,7 @@
       }
     },
     "compositions": {
+      "compositionsGroup": "コンポジション",
       "compoundClipsGroup": "複合クリップ",
       "deleteBody": "複合クリップ「{{name}}」を削除しますか？この操作は元に戻せません。",
       "deleteInstancesDetail": "この複合クリップを使用しているタイムライン上の {{count}} 個のインスタンスも削除されます。",

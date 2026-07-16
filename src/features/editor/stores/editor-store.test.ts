@@ -6,6 +6,7 @@ import {
   getLeftEditorSidebarBounds,
 } from '@/config/editor-layout'
 import { useSettingsStore } from '@/features/editor/deps/settings'
+import { usePlaybackStore } from '@/shared/state/playback'
 
 describe('editor-store', () => {
   beforeEach(() => {
@@ -49,6 +50,7 @@ describe('editor-store', () => {
       propertiesFullColumn: false,
       mediaFullColumn: true,
     })
+    usePlaybackStore.setState({ isPlaying: false, previewFrame: null, previewItemId: null })
   })
 
   it('sets active panel', () => {
@@ -249,6 +251,16 @@ describe('editor-store', () => {
     const currentState = useEditorStore.getState()
     useEditorStore.getState().setWorkspace('edit')
     expect(useEditorStore.getState()).toBe(currentState)
+  })
+
+  it('stops transient preview playback before switching workspaces', () => {
+    usePlaybackStore.setState({ isPlaying: true, previewFrame: 42, previewItemId: 'clip-1' })
+
+    useEditorStore.getState().setWorkspace('color')
+
+    expect(usePlaybackStore.getState().isPlaying).toBe(false)
+    expect(usePlaybackStore.getState().previewFrame).toBeNull()
+    expect(usePlaybackStore.getState().previewItemId).toBeNull()
   })
 
   it('toggles linked selection', () => {

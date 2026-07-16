@@ -130,6 +130,7 @@ export const CustomDecoderBufferedAudio: React.FC<CustomDecoderBufferedAudioProp
       frame,
       fps,
       playing,
+      isPreviewScrubbing,
       resolvedVolume: audioVolume,
       resolvedAudioEqStages,
     } = useAudioPlaybackState({
@@ -224,7 +225,7 @@ export const CustomDecoderBufferedAudio: React.FC<CustomDecoderBufferedAudioProp
     )
 
     useEffect(() => {
-      if (!mediaId || !src) return
+      if (!mediaId || !src || isPreviewScrubbing) return
 
       let cancelled = false
       let fullDecodeStarted = false
@@ -406,6 +407,7 @@ export const CustomDecoderBufferedAudio: React.FC<CustomDecoderBufferedAudioProp
     }, [
       acceptPartialSlice,
       fps,
+      isPreviewScrubbing,
       mediaId,
       playbackRate,
       requestPartialSlice,
@@ -511,7 +513,7 @@ export const CustomDecoderBufferedAudio: React.FC<CustomDecoderBufferedAudioProp
     ])
 
     useEffect(() => {
-      if (playing) {
+      if (playing || isPreviewScrubbing) {
         if (pausedSeekPrefetchTimerRef.current !== null) {
           clearTimeout(pausedSeekPrefetchTimerRef.current)
           pausedSeekPrefetchTimerRef.current = null
@@ -616,6 +618,7 @@ export const CustomDecoderBufferedAudio: React.FC<CustomDecoderBufferedAudioProp
       audioSlice,
       fps,
       frame,
+      isPreviewScrubbing,
       mediaId,
       playbackRate,
       playing,
@@ -626,6 +629,8 @@ export const CustomDecoderBufferedAudio: React.FC<CustomDecoderBufferedAudioProp
     ])
 
     useEffect(() => {
+      if (isPreviewScrubbing) return
+
       // Keep the preview graph alive across EQ toggles; the EQ stages ramp in place below.
       const graph = createPreviewClipAudioGraph()
       if (!graph) return
@@ -659,7 +664,7 @@ export const CustomDecoderBufferedAudio: React.FC<CustomDecoderBufferedAudioProp
         graph.dispose()
         graphRef.current = null
       }
-    }, [])
+    }, [isPreviewScrubbing])
 
     useEffect(() => {
       const resume = () => {

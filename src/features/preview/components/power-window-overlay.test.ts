@@ -94,6 +94,50 @@ describe('power window overlay helpers', () => {
     ).toBeCloseTo(0.6)
   })
 
+  it('resizes a rotated window in aspect-correct canvas space', () => {
+    const params = derivePowerWindowDragParams(
+      {
+        handle: 'east',
+        startParams: { ...baseParams, rotation: 45 },
+        startUv: { x: 0.64142, y: 0.75142 },
+      },
+      { x: 0.71213, y: 0.87712 },
+      { canvasAspectRatio: 16 / 9 },
+    )
+
+    expect(params.sizeX).toBeCloseTo(0.6, 4)
+  })
+
+  it('rotates around the window center with aspect-correct pointer math', () => {
+    const params = derivePowerWindowDragParams(
+      {
+        handle: 'rotation',
+        startParams: baseParams,
+        startUv: { x: 0.5, y: 0.35 },
+      },
+      { x: 0.584375, y: 0.35 },
+      { canvasAspectRatio: 16 / 9 },
+    )
+
+    expect(params.rotation).toBeCloseTo(45)
+    expect(params.centerX).toBe(baseParams.centerX)
+    expect(params.sizeX).toBe(baseParams.sizeX)
+  })
+
+  it('snaps rotation to 15 degree increments', () => {
+    const params = derivePowerWindowDragParams(
+      {
+        handle: 'rotation',
+        startParams: baseParams,
+        startUv: { x: 0.5, y: 0.35 },
+      },
+      { x: 0.584375, y: 0.48423 },
+      { canvasAspectRatio: 16 / 9, snapRotation: true },
+    )
+
+    expect(params.rotation).toBe(90)
+  })
+
   it('updates only the target effect and preserves correction params', () => {
     const otherEffect: ItemEffect = {
       id: 'brightness-1',

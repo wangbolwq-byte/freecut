@@ -98,3 +98,4 @@ ds-bundle/
 .design-sync/freecut-tailwind.css
 
 artifacts/
+.playwright-cli/

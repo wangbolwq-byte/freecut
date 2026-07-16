@@ -222,12 +222,9 @@ export const ClipFilmstrip = memo(function ClipFilmstrip({
   const refreshingFrameIndicesRef = useRef<Set<number>>(new Set())
   const proxyStatus = useMediaLibraryStore((s) => s.proxyStatus.get(mediaId) ?? null)
 
-  const proxyBlobUrl = useMemo(() => {
-    if (proxyStatus !== 'ready') {
-      return null
-    }
-    return resolveProxyUrl(mediaId)
-  }, [mediaId, proxyStatus])
+  // A tab-wake refresh replaces the proxy URL while its status stays `ready`.
+  // Re-read it on render so the blob URL version update cannot retain a revoked URL.
+  const proxyBlobUrl = proxyStatus === 'ready' ? resolveProxyUrl(mediaId) : null
   const filmstripSourceUrl = proxyBlobUrl ?? blobUrl
 
   // Measure container height

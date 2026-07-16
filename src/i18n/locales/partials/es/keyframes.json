@@ -5,6 +5,8 @@
       "graph": "Gráfico",
       "sheet": "Hoja",
       "split": "Dividido",
+      "enterFocusMode": "Enfocar el editor de fotogramas clave",
+      "exitFocusMode": "Salir del modo de enfoque de fotogramas clave",
       "selectItem": "Selecciona un elemento para editar fotogramas clave",
       "parameters": "Parámetros",
       "parameterDisplayOptions": "Opciones de visualización de parámetros",

@@ -465,4 +465,42 @@ describe('proxyService.loadExistingProxies', () => {
       })
     })
   })
+
+  it('cancels an automatically scheduled background proxy during preview cleanup', async () => {
+    const worker = { postMessage: vi.fn() } as unknown as Worker
+    workerManagerMocks.getWorker.mockReturnValue(worker)
+    const { proxyService } = await import('./proxy-service')
+
+    proxyService.generateProxy(
+      'video-background',
+      { kind: 'opfs', path: 'content/background/data', mimeType: 'video/mp4' },
+      1920,
+      1080,
+      'proxy-video-background',
+      { priority: 'background' },
+    )
+    await vi.waitFor(() => expect(worker.postMessage).toHaveBeenCalledTimes(1))
+    proxyService.cancelBackgroundProxy('video-background', 'proxy-video-background')
+
+    expect(worker.postMessage).toHaveBeenLastCalledWith({
+      type: 'cancel',
+      mediaId: 'proxy-video-background',
+    })
+  })
+
+  it('does not cancel a background proxy after a user promotes it', async () => {
+    const worker = { postMessage: vi.fn() } as unknown as Worker
+    workerManagerMocks.getWorker.mockReturnValue(worker)
+    const { proxyService } = await import('./proxy-service')
+    const source = { kind: 'opfs', path: 'content/promoted/data', mimeType: 'video/mp4' } as const
+
+    proxyService.generateProxy('video-promoted', source, 1920, 1080, 'proxy-video-promoted', {
+      priority: 'background',
+    })
+    await vi.waitFor(() => expect(worker.postMessage).toHaveBeenCalledTimes(1))
+    proxyService.generateProxy('video-promoted', source, 1920, 1080, 'proxy-video-promoted')
+    proxyService.cancelBackgroundProxy('video-promoted', 'proxy-video-promoted')
+
+    expect(worker.postMessage).toHaveBeenCalledTimes(1)
+  })
 })

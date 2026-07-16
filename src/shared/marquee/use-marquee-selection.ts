@@ -65,6 +65,9 @@ interface UseMarqueeSelectionOptions {
   /** Optional callback for lightweight live preview updates during drag */
   onPreviewSelectionChange?: (selectedIds: string[]) => void
 
+  /** Called when an accepted marquee pointer gesture releases. */
+  onGestureEnd?: (event: MouseEvent, wasActualDrag: boolean) => void
+
   /** Whether marquee selection is enabled */
   enabled?: boolean
 
@@ -77,7 +80,10 @@ interface UseMarqueeSelectionOptions {
   /** Defer onSelectionChange until mouseup; useful when live commits are too expensive */
   commitSelectionOnMouseUp?: boolean
 
-  /** When deferring selection, still publish throttled live commits at this cadence */
+  /**
+   * When deferring selection, optionally publish throttled live commits at this cadence.
+   * Defaults to 0 so expensive global selection consumers only update on mouseup.
+   */
   liveCommitThrottleMs?: number
 }
 
@@ -167,11 +173,12 @@ export function useMarqueeSelection({
   items,
   onSelectionChange,
   onPreviewSelectionChange,
+  onGestureEnd,
   enabled = true,
   appendMode = false,
   threshold = 5,
   commitSelectionOnMouseUp = false,
-  liveCommitThrottleMs = commitSelectionOnMouseUp ? 33 : 0,
+  liveCommitThrottleMs = 0,
 }: UseMarqueeSelectionOptions) {
   // Use hitAreaRef for bounds checking if provided, otherwise fall back to containerRef
   const boundsRef = hitAreaRef ?? containerRef
@@ -485,6 +492,9 @@ export function useMarqueeSelection({
     if (!isDraggingRef.current) return
 
     const wasActualDrag = hasMovedRef.current
+
+    // Notify the owner before a completed marquee consumes the mouseup event.
+    onGestureEnd?.(e, wasActualDrag)
 
     // Cancel any pending RAF
     if (rafIdRef.current !== null) {

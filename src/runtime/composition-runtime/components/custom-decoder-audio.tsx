@@ -181,7 +181,7 @@ const CustomDecoderPitchPreservedAudio: React.FC<CustomDecoderAudioProps> = ({
   crossfadeFadeOut,
   volumeMultiplier = 1,
 }) => {
-  const { frame, fps, playing } = useAudioPlaybackState({
+  const { frame, fps, playing, isPreviewScrubbing } = useAudioPlaybackState({
     itemId,
     liveGainItemIds,
     volume,
@@ -210,7 +210,7 @@ const CustomDecoderPitchPreservedAudio: React.FC<CustomDecoderAudioProps> = ({
   const pendingExtensionKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
-    if (!mediaId || !src) return
+    if (!mediaId || !src || isPreviewScrubbing) return
 
     let cancelled = false
     let fullDecodeStarted = false
@@ -305,7 +305,7 @@ const CustomDecoderPitchPreservedAudio: React.FC<CustomDecoderAudioProps> = ({
       cancelled = true
       clearScheduledFullDecode()
     }
-  }, [isReversed, mediaId, reverseSourceEnd, sourceFps, src, trimBefore])
+  }, [isPreviewScrubbing, isReversed, mediaId, reverseSourceEnd, sourceFps, src, trimBefore])
 
   useEffect(() => {
     const currentSource = decodedSource

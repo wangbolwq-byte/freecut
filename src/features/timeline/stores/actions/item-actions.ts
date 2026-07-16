@@ -68,6 +68,45 @@ function copyInternalTransitionsForDuplicatedItems(
   }
 }
 
+function copyKeyframesForDuplicatedItems(itemIds: string[], newItems: TimelineItem[]): void {
+  if (newItems.length === 0) return
+
+  const keyframesState = useKeyframesStore.getState()
+  const copiedKeyframes = itemIds.flatMap((itemId, index) => {
+    const newItem = newItems[index]
+    const source = keyframesState.keyframesByItemId[itemId]
+    if (!newItem || !source) return []
+
+    return [
+      {
+        itemId: newItem.id,
+        properties: source.properties.map((property) => ({
+          property: property.property,
+          keyframes: property.keyframes.map((keyframe) => ({
+            ...keyframe,
+            id: crypto.randomUUID(),
+            easingConfig: keyframe.easingConfig
+              ? {
+                  ...keyframe.easingConfig,
+                  ...(keyframe.easingConfig.bezier && {
+                    bezier: { ...keyframe.easingConfig.bezier },
+                  }),
+                  ...(keyframe.easingConfig.spring && {
+                    spring: { ...keyframe.easingConfig.spring },
+                  }),
+                }
+              : undefined,
+          })),
+        })),
+      },
+    ]
+  })
+
+  if (copiedKeyframes.length > 0) {
+    keyframesState.setKeyframes([...keyframesState.keyframes, ...copiedKeyframes])
+  }
+}
+
 export function addItem(item: TimelineItem): void {
   const [placedItem] = placeItemsWithoutTimelineOverlap([item])
   if (!placedItem) return
@@ -157,6 +196,21 @@ export function addItemOnNewTrack(item: TimelineItem, tracks: TimelineTrack[]): 
       useTimelineSettingsStore.getState().markDirty()
     },
     { itemId: item.id, type: item.type, trackId: item.trackId },
+  )
+}
+
+/** Add several layer items and their already-planned backing tracks atomically. */
+export function addItemsOnNewTracks(items: TimelineItem[], tracks: TimelineTrack[]): void {
+  if (items.length === 0) return
+  execute(
+    'ADD_ITEMS_ON_NEW_TRACKS',
+    () => {
+      const store = useItemsStore.getState()
+      store.setTracks(tracks)
+      store._addItems(items)
+      useTimelineSettingsStore.getState().markDirty()
+    },
+    { count: items.length, trackCount: tracks.length },
   )
 }
 
@@ -303,6 +357,9 @@ export function reverseItems(ids: string[]): void {
             reverseConformPreviewPath: undefined,
             reverseConformPreviewKey: undefined,
             reverseConformPreviewUsesProxy: undefined,
+            reverseConformPreviewIsSourceLevel: undefined,
+            reverseConformPreviewSourceDuration: undefined,
+            reverseConformPreviewFps: undefined,
             reverseConformStatus: undefined,
           }),
         } as Partial<TimelineItem>)
@@ -341,6 +398,9 @@ export function commitPreparedReverseItems(
                     reverseConformPreviewPath: result.path,
                     reverseConformPreviewKey: result.key,
                     reverseConformPreviewUsesProxy: result.usesProxy,
+                    reverseConformPreviewIsSourceLevel: result.isSourceLevel,
+                    reverseConformPreviewSourceDuration: result.sourceDuration,
+                    reverseConformPreviewFps: result.conformFps,
                   }),
               reverseConformStatus: 'ready',
             }),
@@ -739,6 +799,7 @@ export function duplicateItems(
     () => {
       const newItems = useItemsStore.getState()._duplicateItems(itemIds, positions)
       copyInternalTransitionsForDuplicatedItems(itemIds, newItems)
+      copyKeyframesForDuplicatedItems(itemIds, newItems)
       useTimelineSettingsStore.getState().markDirty()
       return newItems
     },
@@ -759,6 +820,7 @@ export function duplicateItemsWithTrackChanges(
       useItemsStore.getState().setTracks(tracks)
       const newItems = useItemsStore.getState()._duplicateItems(itemIds, positions)
       copyInternalTransitionsForDuplicatedItems(itemIds, newItems)
+      copyKeyframesForDuplicatedItems(itemIds, newItems)
       useTimelineSettingsStore.getState().markDirty()
       return newItems
     },

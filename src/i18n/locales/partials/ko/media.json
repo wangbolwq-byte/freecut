@@ -52,6 +52,7 @@
       }
     },
     "compositions": {
+      "compositionsGroup": "컴포지션",
       "compoundClipsGroup": "복합 클립",
       "deleteBody": "복합 클립 “{{name}}”을(를) 삭제할까요? 이 작업은 되돌릴 수 없습니다.",
       "deleteInstancesDetail": "이 복합 클립을 사용하는 타임라인 인스턴스 {{count}}개도 함께 제거됩니다.",

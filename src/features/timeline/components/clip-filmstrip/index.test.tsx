@@ -137,6 +137,41 @@ describe('ClipFilmstrip', () => {
     )
   })
 
+  it('uses the refreshed proxy URL when blob URLs are invalidated', () => {
+    useMediaLibraryStoreMock.mockImplementation((selector) =>
+      selector({
+        proxyStatus: new Map([['media-1', 'ready']]),
+      }),
+    )
+    mediaResolverMocks.resolveProxyUrl.mockReturnValue('blob:stale-proxy')
+
+    const props = {
+      mediaId: 'media-1',
+      clipWidth: 320,
+      sourceStart: 0,
+      sourceDuration: 10,
+      trimStart: 0,
+      speed: 1,
+      fps: 31,
+      isVisible: true,
+      pixelsPerSecond: 120,
+    }
+    const { rerender } = render(<ClipFilmstrip {...props} />)
+
+    expect(useFilmstripMock.mock.calls.at(-1)?.[0]?.blobUrl).toBe('blob:stale-proxy')
+
+    mediaResolverMocks.resolveProxyUrl.mockReturnValue('blob:refreshed-proxy')
+    useMediaBlobUrlMock.mockReturnValue({
+      blobUrl: 'blob:refreshed-original',
+      setBlobUrl: vi.fn(),
+      hasStartedLoadingRef: { current: false },
+      blobUrlVersion: 1,
+    })
+    rerender(<ClipFilmstrip {...props} fps={32} />)
+
+    expect(useFilmstripMock.mock.calls.at(-1)?.[0]?.blobUrl).toBe('blob:refreshed-proxy')
+  })
+
   it('falls back to the original media blob when no proxy is ready', () => {
     render(
       <ClipFilmstrip

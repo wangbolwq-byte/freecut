@@ -30,6 +30,27 @@ function applySuccessfulRelink(set: Set, get: Get, mediaId: string, updated: Med
   // Invalidate stale blob URL so preview re-fetches from the new handle.
   blobUrlManager.invalidate(mediaId)
   replaceMediaItem(set, mediaId, updated)
+  const timelineActions = getMediaRelinkingTimelineActions()
+  if (timelineActions) {
+    for (const item of timelineActions.getItemsState().items) {
+      if (item.mediaId !== mediaId) continue
+      timelineActions.updateProjectItem(item.id, {
+        src: undefined,
+        reverseConformSrc: undefined,
+        reverseConformPath: undefined,
+        reverseConformKey: undefined,
+        reverseConformPreviewSrc: undefined,
+        reverseConformPreviewPath: undefined,
+        reverseConformPreviewKey: undefined,
+        reverseConformPreviewUsesProxy: undefined,
+        reverseConformPreviewIsSourceLevel: undefined,
+        reverseConformPreviewSourceDuration: undefined,
+        reverseConformPreviewFps: undefined,
+        reverseConformStatus: undefined,
+        reverseConformLocalStart: undefined,
+      })
+    }
+  }
   get().markMediaHealthy(mediaId)
 }
 

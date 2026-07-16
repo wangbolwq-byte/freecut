@@ -10,6 +10,7 @@ export { getSharedProxyKey } from '@/features/media-library/utils/proxy-key'
 export { resolveMediaUrl } from '@/features/media-library/utils/media-resolver'
 export {
   clearMediaDragData,
+  getMediaDragData,
   setMediaDragData,
 } from '@/features/media-library/utils/drag-data-cache'
 export { MediaLibrary } from '@/features/media-library/components/media-library'

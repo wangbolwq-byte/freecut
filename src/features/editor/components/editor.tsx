@@ -11,13 +11,11 @@ import { ProjectSyncConflictDialog } from './project-sync-conflict-dialog'
 import { MediaSidebar } from './media-sidebar'
 import { PropertiesSidebar } from './properties-sidebar'
 import { PreviewArea } from './preview-area'
-import { ColorGradingDock } from './color-grading-dock'
-import { ColorTimelineNavigator } from './color-timeline-navigator'
-import { AnimateLayout } from './animate-workspace/animate-layout'
+import { MotionPreviewArea, MotionTimelineDock } from './compose-workspace/compose-layout'
 import { InteractionLockRegion } from './interaction-lock-region'
 import { AudioMeterPanel } from './audio-meter-panel'
 import {
-  Timeline,
+  importTimeline,
   importBentoLayoutDialog,
   importFillerRemovalDialog,
   importReverseConformDialog,
@@ -79,6 +77,20 @@ import {
   getWorkspaceRoot,
 } from '@/infrastructure/storage'
 const logger = createLogger('Editor')
+const LazyTimeline = lazy(() => importTimeline().then(({ Timeline }) => ({ default: Timeline })))
+const LazyAnimateLayout = lazy(() =>
+  import('./animate-workspace/animate-layout').then(({ AnimateLayout }) => ({
+    default: AnimateLayout,
+  })),
+)
+const LazyColorGradingDock = lazy(() =>
+  import('./color-grading-dock').then(({ ColorGradingDock }) => ({ default: ColorGradingDock })),
+)
+const LazyColorTimelineNavigator = lazy(() =>
+  import('./color-timeline-navigator').then(({ ColorTimelineNavigator }) => ({
+    default: ColorTimelineNavigator,
+  })),
+)
 const EDITOR_PROJECT_ROUTE_ID = '/editor/$projectId'
 
 function workspaceTimelineSizeStorageKey(workspace: EditorWorkspaceId): string {
@@ -746,8 +758,9 @@ export const LoadedEditor = memo(function LoadedEditor({
   const timelineDuration = 30
   const isColorWorkspace = workspace === 'color'
   const isAnimateWorkspace = workspace === 'animate'
-  // Both the Color and Animate workspaces replace the default split layout and
-  // hide the inline media/properties sidebars.
+  const isMotionWorkspace = workspace === 'motion'
+  // Color and Animate replace the default editor shell. Motion deliberately
+  // keeps it and swaps only the lower timeline dock.
   const hidesDefaultSidebars = isColorWorkspace || isAnimateWorkspace
 
   return (
@@ -798,7 +811,9 @@ export const LoadedEditor = memo(function LoadedEditor({
 
         {/* Right side: Preview/Properties + Timeline */}
         {isAnimateWorkspace ? (
-          <AnimateLayout project={project} />
+          <Suspense fallback={null}>
+            <LazyAnimateLayout project={project} />
+          </Suspense>
         ) : isColorWorkspace ? (
           <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -806,13 +821,17 @@ export const LoadedEditor = memo(function LoadedEditor({
                 <PreviewArea project={project} />
               </ErrorBoundary>
             </div>
-            <ColorTimelineNavigator />
+            <Suspense fallback={null}>
+              <LazyColorTimelineNavigator />
+            </Suspense>
             <InteractionLockRegion
               locked={isMaskEditingActive}
               className="h-[37%] min-h-[288px] max-h-[39vh] shrink-0"
             >
               <ErrorBoundary level="feature">
-                <ColorGradingDock />
+                <Suspense fallback={null}>
+                  <LazyColorGradingDock />
+                </Suspense>
               </ErrorBoundary>
             </InteractionLockRegion>
           </div>
@@ -840,7 +859,11 @@ export const LoadedEditor = memo(function LoadedEditor({
 
                 {/* Center - Preview */}
                 <ErrorBoundary level="feature">
-                  <PreviewArea project={project} />
+                  {isMotionWorkspace ? (
+                    <MotionPreviewArea project={project} />
+                  ) : (
+                    <PreviewArea project={project} />
+                  )}
                 </ErrorBoundary>
 
                 {/* Right Sidebar - Properties (inline with preview) */}
@@ -870,7 +893,13 @@ export const LoadedEditor = memo(function LoadedEditor({
                 <ErrorBoundary level="feature">
                   <div className="h-full flex overflow-hidden">
                     <div className="min-w-0 flex-1">
-                      <Timeline duration={timelineDuration} />
+                      {isMotionWorkspace ? (
+                        <MotionTimelineDock project={project} />
+                      ) : (
+                        <Suspense fallback={null}>
+                          <LazyTimeline duration={timelineDuration} />
+                        </Suspense>
+                      )}
                     </div>
                     <AudioMeterPanel />
                   </div>

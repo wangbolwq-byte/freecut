@@ -49,9 +49,14 @@ export function useTransitionResize(transition: Transition) {
       return Math.max(1, Math.max(transition.durationInFrames, legacyMax))
     }
 
-    const handleMax = getMaxTransitionDurationForHandles(leftClip, rightClip, transition.alignment)
+    const handleMax = getMaxTransitionDurationForHandles(
+      leftClip,
+      rightClip,
+      transition.alignment,
+      fps,
+    )
     return Math.max(1, Math.max(transition.durationInFrames, handleMax))
-  }, [leftClip, rightClip, transition.alignment, transition.durationInFrames])
+  }, [fps, leftClip, rightClip, transition.alignment, transition.durationInFrames])
 
   const [resizeState, setResizeState] = useState<ResizeState>({
     isResizing: false,

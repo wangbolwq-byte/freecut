@@ -101,157 +101,165 @@ export async function compositeFrameResults(deps: FrameCompositingDeps): Promise
       fallbackMasks: typeof activeMasks
     }> = []
 
-    for (let i = 0; i < results.length; i++) {
-      const task = renderTasks[i]!
-      const taskHasCornerPin =
-        task.type === 'item'
-          ? hasCornerPin(getCurrentItem(task.item).cornerPin)
-          : hasCornerPin(getCurrentItem(task.transition.leftClip).cornerPin) ||
-            hasCornerPin(getCurrentItem(task.transition.rightClip).cornerPin)
-      const applicableMasks = activeMasks.filter((mask) =>
-        doesMaskAffectTrack(mask.trackOrder, task.trackOrder),
-      )
-      const shouldUseSeparateMask = task.type === 'item' && !taskHasCornerPin
-      let result: RenderedTaskResult | null = shouldUseSeparateMask
-        ? (results[i] ?? null)
-        : applyTrackScopedMasks(results[i] ?? null, task.trackOrder, taskHasCornerPin)
-      if (!result) continue
-
-      let maskInfo =
-        shouldUseSeparateMask && applicableMasks.length > 0
-          ? renderMasksToGpuTexture(applicableMasks)
-          : null
-      let fallbackMasks = shouldUseSeparateMask ? applicableMasks : []
-      if (shouldUseSeparateMask && applicableMasks.length > 0 && !maskInfo) {
-        const maskedResult = applyTrackScopedMasks(result, task.trackOrder, false)
-        if (!maskedResult) continue
-        result = maskedResult
-        fallbackMasks = []
-      }
-
-      const blendMode =
-        task.type === 'item'
-          ? (getEffectiveBlendMode(getCurrentItem(task.item)) ?? 'normal')
-          : 'normal'
-
-      // Upload item canvas to GPU texture (pooled — no per-frame alloc)
-      let tex = result.gpuTexture
-      if (!tex) {
-        if (!result.source) continue
-        tex = gpu.texturePool!.acquire(w, h)
-        device.queue.copyExternalImageToTexture(
-          { source: result.source, flipY: false },
-          { texture: tex },
-          { width: w, height: h },
+    try {
+      for (let i = 0; i < results.length; i++) {
+        const task = renderTasks[i]!
+        const taskHasCornerPin =
+          task.type === 'item'
+            ? hasCornerPin(getCurrentItem(task.item).cornerPin)
+            : hasCornerPin(getCurrentItem(task.transition.leftClip).cornerPin) ||
+              hasCornerPin(getCurrentItem(task.transition.rightClip).cornerPin)
+        const applicableMasks = activeMasks.filter((mask) =>
+          doesMaskAffectTrack(mask.trackOrder, task.trackOrder),
         )
-      }
-      layerTextures.push(tex)
+        const shouldUseSeparateMask = task.type === 'item' && !taskHasCornerPin
+        let result: RenderedTaskResult | null = shouldUseSeparateMask
+          ? (results[i] ?? null)
+          : applyTrackScopedMasks(results[i] ?? null, task.trackOrder, taskHasCornerPin)
+        if (!result) continue
 
-      if (maskInfo) {
-        layerMaskTextures.push(maskInfo.texture)
-      }
+        let maskInfo =
+          shouldUseSeparateMask && applicableMasks.length > 0
+            ? renderMasksToGpuTexture(applicableMasks)
+            : null
+        if (maskInfo) layerMaskTextures.push(maskInfo.texture)
+        let fallbackMasks = shouldUseSeparateMask ? applicableMasks : []
+        if (shouldUseSeparateMask && applicableMasks.length > 0 && !maskInfo) {
+          const maskedResult = applyTrackScopedMasks(result, task.trackOrder, false)
+          if (!maskedResult) continue
+          result = maskedResult
+          fallbackMasks = []
+        }
 
-      compositedResults.push({
-        task,
-        result,
-        fallbackMasks,
-      })
+        const blendMode =
+          task.type === 'item'
+            ? (getEffectiveBlendMode(getCurrentItem(task.item)) ?? 'normal')
+            : 'normal'
 
-      layers.push({
-        params: {
-          ...DEFAULT_LAYER_PARAMS,
-          blendMode,
-          sourceAspect: w / h,
-          outputAspect: w / h,
-          hasMask: Boolean(maskInfo),
-        },
-        textureView: tex.createView(),
-        maskView: maskInfo?.view ?? gpu.maskManager.getFallbackView(),
-      })
-    }
+        // Upload item canvas to GPU texture (pooled — no per-frame alloc)
+        let tex = result.gpuTexture
+        if (!tex) {
+          if (!result.source) continue
+          tex = gpu.texturePool!.acquire(w, h)
+          layerTextures.push(tex)
+          device.queue.copyExternalImageToTexture(
+            { source: result.source, flipY: false },
+            { texture: tex },
+            { width: w, height: h },
+          )
+        } else {
+          layerTextures.push(tex)
+        }
 
-    let compositedToGpuCanvas = false
-    if (layers.length > 0) {
-      try {
-        compositedToGpuCanvas = gpu.compositor.compositeToCanvas(
-          layers,
-          w,
-          h,
-          gpuCompositeOutput.ctx,
-        )
-      } catch (error) {
-        getLog().warn('GPU compositor failed - using Canvas2D blend fallback', {
-          error,
+        compositedResults.push({
+          task,
+          result,
+          fallbackMasks,
+        })
+
+        layers.push({
+          params: {
+            ...DEFAULT_LAYER_PARAMS,
+            blendMode,
+            sourceAspect: w / h,
+            outputAspect: w / h,
+            hasMask: Boolean(maskInfo),
+          },
+          textureView: tex.createView(),
+          maskView: maskInfo?.view ?? gpu.maskManager.getFallbackView(),
         })
       }
-    }
 
-    if (compositedToGpuCanvas) {
-      await itemRenderContext.gpuPipeline?.waitForSubmittedWork()
-      finalCompositeSource = gpuCompositeOutput.canvas
-    } else {
-      // Fall back to the established Canvas2D compositor if the GPU target
-      // isn't available for this frame. This preserves feature parity and
-      // avoids dropping content when WebGPU canvas presentation fails.
-      for (const { task, result, fallbackMasks } of compositedResults) {
-        let fallbackResult = result
-        if (!fallbackResult.source && task.type === 'transition') {
-          fallbackResult = await renderTransitionFallbackCanvas(task)
-        }
-        if (!fallbackResult.source && task.type === 'item') {
-          const rerenderedFallback = await renderItemWithEffects(
-            task.item,
-            task.trackOrder,
-            true,
-            contentCtx,
-            true,
-            false,
-            false,
+      let compositedToGpuCanvas = false
+      if (layers.length > 0) {
+        try {
+          compositedToGpuCanvas = gpu.compositor.compositeToCanvas(
+            layers,
+            w,
+            h,
+            gpuCompositeOutput.ctx,
           )
-          if (!rerenderedFallback) continue
-          fallbackResult = rerenderedFallback
-        }
-        let fallbackSource = fallbackResult.source
-        if (!fallbackSource) continue
-        if (fallbackMasks.length > 0) {
-          const { canvas: fallbackMaskedCanvas, ctx: fallbackMaskedCtx } = canvasPool.acquire()
-          applyMasks(fallbackMaskedCtx, fallbackSource, fallbackMasks, maskSettings)
-          // Carry prior pool canvases forward only when `fallbackResult` is a
-          // re-render (≠ `result`): those canvases are invisible to the outer
-          // cleanup loop. When it's still the original `result`, the outer loop
-          // already releases `result.poolCanvases`, so spreading them here would
-          // double-release the same backing buffer.
-          const carriedPoolCanvases = fallbackResult === result ? [] : fallbackResult.poolCanvases
-          fallbackResult = {
-            source: fallbackMaskedCanvas,
-            poolCanvases: [...carriedPoolCanvases, fallbackMaskedCanvas],
-          }
-          fallbackSource = fallbackMaskedCanvas
-        }
-        const blendMode =
-          task.type === 'item' ? getEffectiveBlendMode(getCurrentItem(task.item)) : undefined
-        if (blendMode && blendMode !== 'normal') {
-          contentCtx.globalCompositeOperation = getCompositeOperation(blendMode)
-        }
-
-        contentCtx.drawImage(fallbackSource, 0, 0)
-
-        if (blendMode && blendMode !== 'normal') {
-          contentCtx.globalCompositeOperation = 'source-over'
-        }
-        if (fallbackResult !== result) {
-          for (const c of fallbackResult.poolCanvases) canvasPool.release(c)
+        } catch (error) {
+          getLog().warn('GPU compositor failed - using Canvas2D blend fallback', {
+            error,
+          })
         }
       }
-    }
 
-    for (const { result } of compositedResults) {
-      for (const c of result.poolCanvases) canvasPool.release(c)
-    }
+      if (compositedToGpuCanvas) {
+        await itemRenderContext.gpuPipeline?.waitForSubmittedWork()
+        finalCompositeSource = gpuCompositeOutput.canvas
+      } else {
+        // Fall back to the established Canvas2D compositor if the GPU target
+        // isn't available for this frame. This preserves feature parity and
+        // avoids dropping content when WebGPU canvas presentation fails.
+        for (const { task, result, fallbackMasks } of compositedResults) {
+          let fallbackResult = result
+          if (!fallbackResult.source && task.type === 'transition') {
+            fallbackResult = await renderTransitionFallbackCanvas(task)
+          }
+          if (!fallbackResult.source && task.type === 'item') {
+            const rerenderedFallback = await renderItemWithEffects(
+              task.item,
+              task.trackOrder,
+              true,
+              contentCtx,
+              true,
+              false,
+              false,
+            )
+            if (!rerenderedFallback) continue
+            fallbackResult = rerenderedFallback
+          }
+          let fallbackSource = fallbackResult.source
+          if (!fallbackSource) continue
+          if (fallbackMasks.length > 0) {
+            const { canvas: fallbackMaskedCanvas, ctx: fallbackMaskedCtx } = canvasPool.acquire()
+            applyMasks(fallbackMaskedCtx, fallbackSource, fallbackMasks, maskSettings)
+            // Carry prior pool canvases forward only when `fallbackResult` is a
+            // re-render (≠ `result`): those canvases are invisible to the outer
+            // cleanup loop. When it's still the original `result`, the outer loop
+            // already releases `result.poolCanvases`, so spreading them here would
+            // double-release the same backing buffer.
+            const carriedPoolCanvases = fallbackResult === result ? [] : fallbackResult.poolCanvases
+            fallbackResult = {
+              source: fallbackMaskedCanvas,
+              poolCanvases: [...carriedPoolCanvases, fallbackMaskedCanvas],
+            }
+            fallbackSource = fallbackMaskedCanvas
+          }
+          const blendMode =
+            task.type === 'item' ? getEffectiveBlendMode(getCurrentItem(task.item)) : undefined
+          if (blendMode && blendMode !== 'normal') {
+            contentCtx.globalCompositeOperation = getCompositeOperation(blendMode)
+          }
 
-    // Release pooled textures (no GPU destroy — recycled next frame)
-    for (const tex of layerTextures) gpu.texturePool!.release(tex)
-    for (const tex of layerMaskTextures) gpu.texturePool!.release(tex)
+          contentCtx.drawImage(fallbackSource, 0, 0)
+
+          if (blendMode && blendMode !== 'normal') {
+            contentCtx.globalCompositeOperation = 'source-over'
+          }
+          if (fallbackResult !== result) {
+            for (const c of fallbackResult.poolCanvases) canvasPool.release(c)
+          }
+        }
+      }
+    } finally {
+      const releasedCanvases = new Set<OffscreenCanvas>()
+      for (const result of results) {
+        if (!result) continue
+        for (const canvas of result.poolCanvases) {
+          if (releasedCanvases.has(canvas)) continue
+          releasedCanvases.add(canvas)
+          canvasPool.release(canvas)
+        }
+      }
+      // Always return pooled resources, including when upload, compositing, or
+      // fallback rendering throws. Otherwise the pool permanently treats them
+      // as in-use and allocates replacements on every later frame.
+      for (const texture of new Set(layerTextures)) gpu.texturePool!.release(texture)
+      for (const texture of new Set(layerMaskTextures)) gpu.texturePool!.release(texture)
+    }
   } else {
     // Canvas2D compositing fallback
     for (let i = 0; i < results.length; i++) {

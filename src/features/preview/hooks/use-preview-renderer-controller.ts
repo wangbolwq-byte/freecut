@@ -42,8 +42,13 @@ import {
 } from '../utils/preview-display-canvas'
 import { setActivePreviewScrubbingCache } from '../utils/preview-scrubbing-cache-bridge'
 import { warmDecoderPrewarmWorkerPool } from '../utils/decoder-prewarm'
+import { disposeScrubProxyFallback, warmScrubProxyFallback } from '../utils/scrub-proxy-fallback'
 import { collectVisualInvalidationRanges } from '../utils/preview-frame-invalidation'
 import { resolvePreviewCaptureFrame } from '../utils/preview-capture-frame'
+import {
+  markPlaybackStartReadiness,
+  resetPlaybackStartReadiness,
+} from '../utils/playback-cold-start-event'
 import {
   isFrameInRanges,
   normalizeFrameRanges,
@@ -162,7 +167,6 @@ export function usePreviewRendererController({
   scrubOffscreenCtxRef,
   scrubRendererStructureKeyRef,
   scrubRenderInFlightRef,
-  scrubRenderGenerationRef,
   scrubRequestedFrameRef,
   bgTransitionRendererRef,
   bgTransitionInitPromiseRef,
@@ -203,7 +207,6 @@ export function usePreviewRendererController({
   setCaptureCanvasSource,
   setDisplayedFrame,
 }: UsePreviewRendererControllerParams) {
-  const useProxy = usePlaybackStore((state) => state.useProxy)
   const previousVisualStateRef = useRef<{
     tracks: CompositionInputProps['tracks']
     keyframes: CompositionInputProps['keyframes']
@@ -249,6 +252,7 @@ export function usePreviewRendererController({
   ])
 
   const disposeFastScrubRenderer = useCallback(() => {
+    resetPlaybackStartReadiness()
     scrubInitPromiseRef.current = null
     scrubPreloadPromiseRef.current = null
     scrubRequestedFrameRef.current = null
@@ -375,7 +379,7 @@ export function usePreviewRendererController({
           offscreenCtx,
           {
             mode: 'preview',
-            useProxyMedia: useProxy,
+            useProxyMedia: true,
             getPreviewTransformOverride,
             getPreviewEffectsOverride,
             getPreviewCornerPinOverride,
@@ -417,7 +421,6 @@ export function usePreviewRendererController({
     isResolving,
     renderSize.height,
     renderSize.width,
-    useProxy,
   ])
 
   const ensureBgTransitionRenderer =
@@ -441,7 +444,7 @@ export function usePreviewRendererController({
           const { createCompositionRenderer } = await importCompositionRenderer()
           const renderer = await createCompositionRenderer(fastScrubInputProps, canvas, ctx, {
             mode: 'preview',
-            useProxyMedia: useProxy,
+            useProxyMedia: true,
             getPreviewTransformOverride,
             getPreviewEffectsOverride,
             getPreviewCornerPinOverride,
@@ -478,7 +481,6 @@ export function usePreviewRendererController({
       isResolving,
       renderSize.height,
       renderSize.width,
-      useProxy,
     ])
 
   const ensureFastScrubRenderer =
@@ -495,6 +497,17 @@ export function usePreviewRendererController({
       if (scrubRendererRef.current) return scrubRendererRef.current
       if (scrubInitPromiseRef.current) return scrubInitPromiseRef.current
 
+      markPlaybackStartReadiness({
+        rendererInitStartedMs: performance.now(),
+        rendererReadyMs: null,
+        rendererInitFailedMs: null,
+        rendererPreloadStartedMs: null,
+        rendererPriorityMediaReadyMs: null,
+        rendererPreloadFinishedMs: null,
+        lookaheadFrame: null,
+        lookaheadOrigin: null,
+        lookaheadReadyMs: null,
+      })
       scrubInitPromiseRef.current = (async () => {
         try {
           const offscreen = new OffscreenCanvas(renderSize.width, renderSize.height)
@@ -508,7 +521,7 @@ export function usePreviewRendererController({
             offscreenCtx,
             {
               mode: 'preview',
-              useProxyMedia: useProxy,
+              useProxyMedia: true,
               getPreviewTransformOverride,
               getPreviewEffectsOverride,
               getPreviewCornerPinOverride,
@@ -522,6 +535,7 @@ export function usePreviewRendererController({
           scrubOffscreenRenderedFrameRef.current = null
           scrubRendererRef.current = renderer
           scrubRendererStructureKeyRef.current = fastScrubRendererStructureKey
+          markPlaybackStartReadiness({ rendererReadyMs: performance.now() })
           setActivePreviewScrubbingCache(
             'getScrubbingCache' in renderer ? renderer.getScrubbingCache() : null,
           )
@@ -555,16 +569,22 @@ export function usePreviewRendererController({
             void resumeScrubLoopRef.current()
           }
 
+          markPlaybackStartReadiness({ rendererPreloadStartedMs: performance.now() })
+          const onPriorityMediaReady = () => {
+            markPlaybackStartReadiness({ rendererPriorityMediaReadyMs: performance.now() })
+            kickRerender()
+          }
           const preloadPromise = renderer
             .preload({
               priorityFrame: preloadPriorityFrame,
               priorityWindowFrames: Math.max(12, Math.round(fps * 4)),
-              onPriorityMediaReady: kickRerender,
+              onPriorityMediaReady,
             })
             .catch((error) => {
               logger.warn('Renderer preload failed:', error)
             })
             .finally(() => {
+              markPlaybackStartReadiness({ rendererPreloadFinishedMs: performance.now() })
               if (scrubPreloadPromiseRef.current === preloadPromise) {
                 scrubPreloadPromiseRef.current = null
               }
@@ -579,6 +599,7 @@ export function usePreviewRendererController({
           ])
           return renderer
         } catch (error) {
+          markPlaybackStartReadiness({ rendererInitFailedMs: performance.now() })
           logger.warn('Failed to initialize renderer, falling back to Player seeks:', error)
           scrubRendererRef.current = null
           setActivePreviewScrubbingCache(null)
@@ -616,7 +637,6 @@ export function usePreviewRendererController({
       scrubRendererRef,
       scrubRendererStructureKeyRef,
       scrubRequestedFrameRef,
-      useProxy,
     ])
   ensureFastScrubRendererRef.current = ensureFastScrubRenderer
 
@@ -625,8 +645,8 @@ export function usePreviewRendererController({
   // scopes, and a second concurrent renderFrame call interleaves with the
   // pump's (single-mutex invariant — see render-loop concurrency notes in
   // CLAUDE.md). This helper briefly waits for the pump to go idle, runs `fn`
-  // while holding the pump's mutex, and releases it with the same generation
-  // discipline the pump uses; on timeout it returns null rather than race.
+  // while holding the pump's mutex through completion; on timeout it returns
+  // null rather than racing the visible render path.
   const withScrubRenderLock = useCallback(
     async <T>(fn: () => Promise<T | null> | T | null): Promise<T | null> => {
       const deadline = performance.now() + CAPTURE_RENDER_LOCK_WAIT_MS
@@ -637,23 +657,21 @@ export function usePreviewRendererController({
       // The idle check and acquisition run in the same synchronous step, so
       // no pump iteration can grab the lock in between.
       scrubRenderInFlightRef.current = true
-      const generation = scrubRenderGenerationRef.current
       try {
         return await fn()
       } finally {
-        if (scrubRenderGenerationRef.current === generation) {
-          scrubRenderInFlightRef.current = false
-          // A pump kick that arrived while we held the lock returned early —
-          // resume it so the overlay never sticks on a stale frame.
-          if (scrubRequestedFrameRef.current !== null) {
-            resumeScrubLoopRef.current()
-          }
+        // Playback invalidation never transfers this mutex early. The capture
+        // remains the sole owner until `fn` completes, even across a play or
+        // pause transition, so releasing here cannot race a second renderer.
+        scrubRenderInFlightRef.current = false
+        // A pump kick that arrived while we held the lock returned early —
+        // resume it so the overlay never sticks on a stale frame.
+        if (scrubRequestedFrameRef.current !== null) {
+          resumeScrubLoopRef.current()
         }
-        // Stale generation: a playback-start force-clear re-owned the lock;
-        // leave it for the new owner (mirrors the pump's release rules).
       }
     },
-    [resumeScrubLoopRef, scrubRenderGenerationRef, scrubRenderInFlightRef, scrubRequestedFrameRef],
+    [resumeScrubLoopRef, scrubRenderInFlightRef, scrubRequestedFrameRef],
   )
 
   const renderOffscreenFrame = useCallback(
@@ -1509,6 +1527,11 @@ export function usePreviewRendererController({
 
   useEffect(() => {
     if (!FAST_SCRUB_RENDERER_ENABLED) return
+    markPlaybackStartReadiness({
+      gpuWarmStartedMs: performance.now(),
+      gpuWarmFinishedMs: null,
+      gpuWarmAvailable: false,
+    })
     void (async () => {
       try {
         const { EffectsPipeline } = await import('@/infrastructure/gpu-effects')
@@ -1516,6 +1539,7 @@ export function usePreviewRendererController({
         if (device) {
           const warmPipeline = await EffectsPipeline.create()
           if (warmPipeline) {
+            markPlaybackStartReadiness({ gpuWarmAvailable: true })
             try {
               const { TransitionPipeline } = await import('@/infrastructure/gpu-transitions')
               TransitionPipeline.create(device)?.destroy()
@@ -1526,6 +1550,8 @@ export function usePreviewRendererController({
         }
       } catch {
         // GPU not available, the renderer will fall back to the CPU path.
+      } finally {
+        markPlaybackStartReadiness({ gpuWarmFinishedMs: performance.now() })
       }
     })()
   }, [])
@@ -1542,6 +1568,7 @@ export function usePreviewRendererController({
       // ensureFastScrubRenderer() is already in flight before this idle
       // callback fires, and the pool must still warm.
       warmDecoderPrewarmWorkerPool()
+      warmScrubProxyFallback()
       if (scrubRendererRef.current || scrubInitPromiseRef.current) return
       void ensureFastScrubRenderer()
     }
@@ -1576,6 +1603,7 @@ export function usePreviewRendererController({
     return () => {
       scrubMountedRef.current = false
       resetResolveRetryState()
+      disposeScrubProxyFallback()
       disposeFastScrubRenderer()
     }
   }, [disposeFastScrubRenderer, resetResolveRetryState, scrubMountedRef])

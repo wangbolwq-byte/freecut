@@ -83,6 +83,12 @@ export const HOTKEYS = {
   CLEAR_KEYFRAMES: 'shift+a',
   KEYFRAME_EDITOR_GRAPH: '1',
   KEYFRAME_EDITOR_DOPESHEET: '2',
+  KEYFRAME_EDITOR_SPLIT: '3',
+  KEYFRAME_TOGGLE: 'k',
+  KEYFRAME_PREVIOUS: 'alt+bracketleft',
+  KEYFRAME_NEXT: 'alt+bracketright',
+  KEYFRAME_TOGGLE_AUTO: 'a',
+  KEYFRAME_FIT: 'f',
 
   // Source Monitor
   MARK_IN: 'i',
@@ -233,9 +239,15 @@ const BROWSER_HOSTILE_HOTKEYS: readonly BrowserHostileHotkey[] = [
   { binding: 'mod+n', browserAction: 'New window' },
   { binding: 'mod+shift+n', browserAction: 'New private window' },
   { binding: 'mod+l', browserAction: 'Focus address bar' },
-  { binding: 'mod+shift+l', browserAction: 'Focus address bar or search in some browsers' },
+  {
+    binding: 'mod+shift+l',
+    browserAction: 'Focus address bar or search in some browsers',
+  },
   { binding: 'mod+d', browserAction: 'Bookmark page or focus address bar' },
-  { binding: 'mod+e', browserAction: 'Focus search or address bar in some browsers' },
+  {
+    binding: 'mod+e',
+    browserAction: 'Focus search or address bar in some browsers',
+  },
   { binding: 'mod+p', browserAction: 'Print page' },
   { binding: 'mod+f', browserAction: 'Find in page' },
   { binding: 'mod+equal', browserAction: 'Browser zoom in' },
@@ -347,6 +359,12 @@ export const HOTKEY_DESCRIPTIONS: Record<HotkeyKey, string> = {
   CLEAR_KEYFRAMES: 'Clear all keyframes from selected items',
   KEYFRAME_EDITOR_GRAPH: 'Switch keyframe editor to graph view',
   KEYFRAME_EDITOR_DOPESHEET: 'Switch keyframe editor to dopesheet view',
+  KEYFRAME_EDITOR_SPLIT: 'Switch keyframe editor to split view',
+  KEYFRAME_TOGGLE: 'Toggle keyframe at playhead',
+  KEYFRAME_PREVIOUS: 'Jump to previous property keyframe',
+  KEYFRAME_NEXT: 'Jump to next property keyframe',
+  KEYFRAME_TOGGLE_AUTO: 'Toggle auto-key for active property',
+  KEYFRAME_FIT: 'Fit selected keyframes in view',
 
   // Source Monitor
   MARK_IN: 'Mark In point',

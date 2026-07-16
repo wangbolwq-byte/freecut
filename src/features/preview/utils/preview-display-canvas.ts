@@ -1,5 +1,8 @@
 const MIN_PREVIEW_DISPLAY_EDGE_PADDING_PX = 1
-const MAX_PREVIEW_DISPLAY_EDGE_PADDING_PX = 16
+const MAX_PREVIEW_DISPLAY_EDGE_PADDING_PX = 256
+const MIN_PREVIEW_DISPLAY_EDGE_OVERSCAN_DEVICE_PX = 2
+const MAX_PREFERRED_ALIGNED_OVERSCAN_DEVICE_PX = 3
+const MAX_PIXEL_ALIGNMENT_SEARCH_STEPS = 16
 const PIXEL_ALIGNMENT_EPSILON = 1e-3
 
 type PreviewCanvasSize = {
@@ -14,17 +17,29 @@ export function getPreviewDisplayEdgePadding(
 ): number {
   const scaleX = renderSize.width > 0 ? playerSize.width / renderSize.width : 1
   const scaleY = renderSize.height > 0 ? playerSize.height / renderSize.height : 1
+  const smallestDeviceScale = Math.max(Number.EPSILON, Math.min(scaleX, scaleY) * devicePixelRatio)
+  const minimumPadding = Math.min(
+    MAX_PREVIEW_DISPLAY_EDGE_PADDING_PX,
+    Math.max(
+      MIN_PREVIEW_DISPLAY_EDGE_PADDING_PX,
+      Math.ceil(
+        MIN_PREVIEW_DISPLAY_EDGE_OVERSCAN_DEVICE_PX / smallestDeviceScale - PIXEL_ALIGNMENT_EPSILON,
+      ),
+    ),
+  )
+  const alignmentSearchEnd = Math.min(
+    MAX_PREVIEW_DISPLAY_EDGE_PADDING_PX,
+    minimumPadding + MAX_PIXEL_ALIGNMENT_SEARCH_STEPS,
+  )
 
-  for (
-    let padding = MIN_PREVIEW_DISPLAY_EDGE_PADDING_PX;
-    padding <= MAX_PREVIEW_DISPLAY_EDGE_PADDING_PX;
-    padding++
-  ) {
+  for (let padding = minimumPadding; padding <= alignmentSearchEnd; padding++) {
     const xDevicePixels = padding * scaleX * devicePixelRatio
     const yDevicePixels = padding * scaleY * devicePixelRatio
     if (
-      xDevicePixels >= MIN_PREVIEW_DISPLAY_EDGE_PADDING_PX &&
-      yDevicePixels >= MIN_PREVIEW_DISPLAY_EDGE_PADDING_PX &&
+      xDevicePixels >= MIN_PREVIEW_DISPLAY_EDGE_OVERSCAN_DEVICE_PX &&
+      yDevicePixels >= MIN_PREVIEW_DISPLAY_EDGE_OVERSCAN_DEVICE_PX &&
+      xDevicePixels <= MAX_PREFERRED_ALIGNED_OVERSCAN_DEVICE_PX &&
+      yDevicePixels <= MAX_PREFERRED_ALIGNED_OVERSCAN_DEVICE_PX &&
       Math.abs(xDevicePixels - Math.round(xDevicePixels)) < PIXEL_ALIGNMENT_EPSILON &&
       Math.abs(yDevicePixels - Math.round(yDevicePixels)) < PIXEL_ALIGNMENT_EPSILON
     ) {
@@ -32,7 +47,11 @@ export function getPreviewDisplayEdgePadding(
     }
   }
 
-  return MIN_PREVIEW_DISPLAY_EDGE_PADDING_PX
+  // Irrational/long-period fit scales often have no small source-pixel count
+  // that maps to an exact device-pixel boundary. In that case, thickness is
+  // more important than distant mathematical alignment: enough duplicated
+  // edge pixels keep bilinear sampling outside the clipped player surface.
+  return minimumPadding
 }
 
 export function getPreviewDisplayCanvasBackingSize(

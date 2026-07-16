@@ -2,8 +2,18 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 import {
+  activePreviewPreseek,
   backgroundPreseek,
+  cacheActivePreviewFallbackBitmap,
   disposePrewarmWorker,
+  getCachedActivePreviewFallbackBitmap,
+  getDecoderPrewarmMetricsSnapshot,
+  isActivePreviewFrameCurrent,
+  isActivePreviewFrameDecodeReady,
+  isActivePreviewSourceTarget,
+  replaceActivePreviewSourceTargets,
+  setActivePreviewRenderTarget,
+  settleActivePreviewRenderTarget,
   warmDecoderPrewarmWorkerPool,
 } from './decoder-prewarm'
 import {
@@ -15,6 +25,7 @@ type MockWorkerMessage = {
   type: string
   id?: string
   timestamp?: number
+  generation?: number
   blob?: Blob
   src?: string
   sourceMetadata?: {
@@ -30,7 +41,7 @@ class MockWorker {
   readonly addEventListener = vi.fn()
   readonly terminate = vi.fn()
   readonly postMessage = vi.fn((message: MockWorkerMessage) => {
-    if (message.type !== 'preseek' || !autoRespondPreseek) {
+    if ((message.type !== 'preseek' && message.type !== 'active_preseek') || !autoRespondPreseek) {
       return
     }
 
@@ -52,6 +63,10 @@ let createdWorkers: MockWorker[] = []
 let fetchMock: ReturnType<typeof vi.fn>
 let mockBitmap: ImageBitmap
 let autoRespondPreseek = true
+
+function getGeneralWorkers(): MockWorker[] {
+  return createdWorkers.slice(0, getDecoderPrewarmMetricsSnapshot().poolSize)
+}
 
 beforeEach(() => {
   createdWorkers = []
@@ -163,11 +178,149 @@ describe('decoder prewarm', () => {
     expect(createdWorkers.length).toBe(spawnedCount)
   })
 
+  it('isolates active preview decoding on a dedicated warm worker', async () => {
+    warmDecoderPrewarmWorkerPool()
+    const poolSize = getGeneralWorkers().length
+    const activeWorker = createdWorkers[poolSize]
+    expect(activeWorker).toBeDefined()
+
+    registerObjectUrl('blob:active', new Blob(['active']))
+    await expect(activePreviewPreseek({ src: 'blob:active', timestamp: 4 })).resolves.toBe(
+      mockBitmap,
+    )
+
+    expect(
+      getGeneralWorkers().some((worker) =>
+        worker.postMessage.mock.calls.some(
+          ([message]) => (message as MockWorkerMessage).type === 'active_preseek',
+        ),
+      ),
+    ).toBe(false)
+    expect(activeWorker!.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'active_preseek',
+        src: 'blob:active',
+        timestamp: 4,
+      }),
+    )
+  })
+
+  it('cancels active work and retains only the latest held-scrub target', async () => {
+    autoRespondPreseek = false
+    warmDecoderPrewarmWorkerPool()
+    const activeWorker = createdWorkers[getGeneralWorkers().length]!
+    registerObjectUrl('blob:drag', new Blob(['drag']))
+
+    const stale = activePreviewPreseek({ src: 'blob:drag', timestamp: 10 })
+    const middle = activePreviewPreseek({ src: 'blob:drag', timestamp: 20 })
+    const latest = activePreviewPreseek({ src: 'blob:drag', timestamp: 30 })
+
+    await expect(stale).resolves.toBeNull()
+    await expect(middle).resolves.toBeNull()
+    const initialActivePosts = activeWorker.postMessage.mock.calls
+      .map(([message]) => message as MockWorkerMessage)
+      .filter((message) => message.type === 'active_preseek')
+    expect(initialActivePosts.map((message) => message.timestamp)).toEqual([10])
+    expect(activeWorker.terminate).toHaveBeenCalledTimes(1)
+
+    await vi.waitFor(() => {
+      const posts = createdWorkers
+        .flatMap((worker) => worker.postMessage.mock.calls)
+        .map(([message]) => message as MockWorkerMessage)
+        .filter((message) => message.type === 'active_preseek')
+      expect(posts.map((message) => message.timestamp)).toEqual([10, 20, 30])
+    })
+    const latestWorker = createdWorkers.at(-1)!
+    const latestPost = latestWorker.postMessage.mock.calls
+      .map(([message]) => message as MockWorkerMessage)
+      .find((message) => message.type === 'active_preseek' && message.timestamp === 30)!
+    latestWorker.onmessage?.({
+      data: {
+        type: 'preseek_done',
+        id: latestPost.id,
+        success: true,
+        timestamp: 30,
+        bitmap: mockBitmap,
+      },
+    } as MessageEvent)
+
+    await expect(latest).resolves.toBe(mockBitmap)
+    expect(getDecoderPrewarmMetricsSnapshot()).toMatchObject({
+      activeCancellations: 2,
+      activeWorkerRestarts: 2,
+      activeSupersededRequests: 0,
+      cacheSources: 1,
+      cacheBitmaps: 1,
+    })
+  })
+
+  it('globally bounds decoded bitmap rings across recently active sources', async () => {
+    for (let index = 0; index < 6; index += 1) {
+      const src = `blob:bounded-${index}`
+      registerObjectUrl(src, new Blob([src]))
+      await backgroundPreseek(src, index)
+    }
+
+    expect(getDecoderPrewarmMetricsSnapshot()).toMatchObject({
+      cacheSources: 4,
+      cacheBitmaps: 4,
+      cacheSourceEvictions: 2,
+    })
+  })
+
+  it('presents a bounded fallback first and replaces it with the exact decoded frame', async () => {
+    const fallbackBitmap = { close: vi.fn() } as unknown as ImageBitmap
+    registerObjectUrl('blob:fallback', new Blob(['fallback']))
+    setActivePreviewRenderTarget(44)
+    replaceActivePreviewSourceTargets(new Map([['blob:fallback', [2]]]))
+
+    cacheActivePreviewFallbackBitmap('blob:fallback', 2, 2.2, fallbackBitmap)
+    expect(isActivePreviewFrameDecodeReady(44)).toBe(true)
+    expect(getCachedActivePreviewFallbackBitmap('blob:fallback', 2)).toBe(fallbackBitmap)
+
+    await activePreviewPreseek({ src: 'blob:fallback', timestamp: 2 })
+
+    expect(fallbackBitmap.close).toHaveBeenCalledOnce()
+    expect(getCachedActivePreviewFallbackBitmap('blob:fallback', 2)).toBeNull()
+    expect(getDecoderPrewarmMetricsSnapshot().exactFallbackReplacements).toBeGreaterThan(0)
+  })
+
+  it('keeps the active session alive after fallback presentation until exact settlement', async () => {
+    const fallbackBitmap = { close: vi.fn() } as unknown as ImageBitmap
+    registerObjectUrl('blob:settle', new Blob(['settle']))
+    setActivePreviewRenderTarget(45)
+    replaceActivePreviewSourceTargets(new Map([['blob:settle', [3]]]))
+    cacheActivePreviewFallbackBitmap('blob:settle', 3, 3, fallbackBitmap)
+
+    settleActivePreviewRenderTarget(45)
+    await new Promise((resolve) => setTimeout(resolve, 180))
+    expect(isActivePreviewFrameCurrent(45)).toBe(true)
+
+    await activePreviewPreseek({ src: 'blob:settle', timestamp: 3 })
+    settleActivePreviewRenderTarget(45)
+    await new Promise((resolve) => setTimeout(resolve, 180))
+    expect(isActivePreviewFrameCurrent(45)).toBe(false)
+    expect(getCachedActivePreviewFallbackBitmap('blob:settle', 3)).toBeNull()
+  })
+
+  it('gates an active composition until every exact source target is cached', async () => {
+    registerObjectUrl('blob:gate', new Blob(['gate']))
+    setActivePreviewRenderTarget(100)
+    replaceActivePreviewSourceTargets(new Map([['blob:gate', [3]]]))
+
+    expect(isActivePreviewFrameDecodeReady(100)).toBe(false)
+    expect(isActivePreviewSourceTarget('blob:gate', 3)).toBe(true)
+    expect(isActivePreviewSourceTarget('blob:gate', 4)).toBe(false)
+    await activePreviewPreseek({ src: 'blob:gate', timestamp: 3 })
+    expect(isActivePreviewFrameDecodeReady(100)).toBe(true)
+    expect(isActivePreviewFrameDecodeReady(101)).toBe(true)
+  })
+
   it('runs a queued speculative preseek when a saturated worker becomes free', async () => {
     autoRespondPreseek = false
     warmDecoderPrewarmWorkerPool()
 
-    const poolSize = createdWorkers.length
+    const poolSize = getGeneralWorkers().length
     expect(poolSize).toBeGreaterThan(0)
 
     const inflightPromises: ReturnType<typeof backgroundPreseek>[] = []
@@ -231,7 +384,7 @@ describe('decoder prewarm', () => {
     autoRespondPreseek = false
     warmDecoderPrewarmWorkerPool()
 
-    for (let index = 0; index < createdWorkers.length; index += 1) {
+    for (let index = 0; index < getGeneralWorkers().length; index += 1) {
       const src = `blob:busy-${index}`
       registerObjectUrl(src, new Blob([`video-${index}`]))
       void backgroundPreseek(src, index)
@@ -280,7 +433,7 @@ describe('decoder prewarm', () => {
     autoRespondPreseek = false
     warmDecoderPrewarmWorkerPool()
 
-    for (let index = 0; index < createdWorkers.length; index += 1) {
+    for (let index = 0; index < getGeneralWorkers().length; index += 1) {
       const src = `blob:busy-${index}`
       registerObjectUrl(src, new Blob([`video-${index}`]))
       void backgroundPreseek(src, index)
@@ -329,7 +482,7 @@ describe('decoder prewarm', () => {
     autoRespondPreseek = false
     warmDecoderPrewarmWorkerPool()
 
-    const poolSize = createdWorkers.length
+    const poolSize = getGeneralWorkers().length
     for (let index = 0; index < poolSize; index += 1) {
       const src = `blob:busy-${index}`
       registerObjectUrl(src, new Blob([`video-${index}`]))
@@ -374,7 +527,8 @@ describe('decoder prewarm', () => {
     autoRespondPreseek = false
     warmDecoderPrewarmWorkerPool()
 
-    const oldWorkers = [...createdWorkers]
+    const allOldWorkers = [...createdWorkers]
+    const oldWorkers = getGeneralWorkers()
     const active = oldWorkers.map((_, index) => {
       const src = `blob:busy-${index}`
       registerObjectUrl(src, new Blob([`video-${index}`]))
@@ -387,7 +541,7 @@ describe('decoder prewarm', () => {
 
     await expect(queued).resolves.toBeNull()
     await expect(Promise.all(active)).resolves.toEqual(oldWorkers.map(() => null))
-    for (const worker of oldWorkers) {
+    for (const worker of allOldWorkers) {
       expect(worker.terminate).toHaveBeenCalledOnce()
       expect(
         worker.postMessage.mock.calls.some(

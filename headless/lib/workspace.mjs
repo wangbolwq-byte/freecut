@@ -4,6 +4,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { assertSinglePathComponent, HttpError, resolveContained } from './http-security.mjs'
 
 // Files in media/{id}/ that are NOT the source blob (mirrors
 // NON_SOURCE_NAMES in workspace-fs/media-source.ts).
@@ -17,14 +18,7 @@ const NON_SOURCE_NAMES = new Set([
 
 const MEDIA_ITEM_TYPES = new Set(['video', 'audio', 'image'])
 
-/** Load + parse a project. Accepts a project id (under the workspace) or a direct project.json path. */
-export function loadProject(workspaceDir, projectIdOrFile) {
-  let projectJsonPath
-  if (projectIdOrFile.endsWith('.json')) {
-    projectJsonPath = path.resolve(projectIdOrFile)
-  } else {
-    projectJsonPath = path.join(workspaceDir, 'projects', projectIdOrFile, 'project.json')
-  }
+function readProject(projectJsonPath) {
   if (!fs.existsSync(projectJsonPath)) {
     throw new Error(`Project file not found: ${projectJsonPath}`)
   }
@@ -32,7 +26,29 @@ export function loadProject(workspaceDir, projectIdOrFile) {
   return { project, projectJsonPath }
 }
 
-/** List all projects in a workspace as { id, name, updatedAt }. */
+/** CLI-only direct file loader. Direct paths must never be accepted by the HTTP service. */
+export function loadProjectFile(projectFile) {
+  return readProject(path.resolve(projectFile))
+}
+
+/** Workspace-scoped loader for HTTP/API project ids. */
+export function loadProjectById(workspaceDir, projectId) {
+  assertSinglePathComponent(projectId, 'project id')
+  const projectsDir = path.join(workspaceDir, 'projects')
+  const projectJsonPath = resolveContained(projectsDir, path.join(projectId, 'project.json'))
+  if (!fs.existsSync(projectJsonPath))
+    throw new HttpError(404, 'PROJECT_NOT_FOUND', 'Project not found')
+  return readProject(projectJsonPath)
+}
+
+/** Backward-compatible CLI loader: id under workspace or an explicit JSON file. */
+export function loadProject(workspaceDir, projectIdOrFile) {
+  return projectIdOrFile.endsWith('.json')
+    ? loadProjectFile(projectIdOrFile)
+    : loadProjectById(workspaceDir, projectIdOrFile)
+}
+
+/** List projects using the actionable directory name as id; projectId is the JSON's internal id. */
 export function listProjects(workspaceDir) {
   const projectsDir = path.join(workspaceDir, 'projects')
   if (!fs.existsSync(projectsDir)) return []
@@ -43,7 +59,12 @@ export function listProjects(workspaceDir) {
     if (!fs.existsSync(jsonPath)) continue
     try {
       const p = JSON.parse(fs.readFileSync(jsonPath, 'utf8'))
-      out.push({ id: p.id ?? entry.name, name: p.name ?? '(unnamed)', updatedAt: p.updatedAt ?? 0 })
+      out.push({
+        id: entry.name,
+        projectId: p.id ?? entry.name,
+        name: p.name ?? '(unnamed)',
+        updatedAt: p.updatedAt ?? 0,
+      })
     } catch {
       // skip unreadable project
     }
@@ -100,7 +121,11 @@ export function collectMediaIds(project, range = null) {
 
 /** Read a media's MediaMetadata (media/{id}/metadata.json), or null if absent/unreadable. */
 export function readMediaMetadata(workspaceDir, mediaId) {
-  const metaPath = path.join(workspaceDir, 'media', mediaId, 'metadata.json')
+  assertSinglePathComponent(mediaId, 'media id')
+  const metaPath = resolveContained(
+    path.join(workspaceDir, 'media'),
+    path.join(mediaId, 'metadata.json'),
+  )
   if (!fs.existsSync(metaPath)) return null
   try {
     return JSON.parse(fs.readFileSync(metaPath, 'utf8'))
@@ -112,17 +137,22 @@ export function readMediaMetadata(workspaceDir, mediaId) {
 /** Collect `{ mediaId, metadata }` for media referenced by addClip ops (deduped). */
 export function collectAddClipMedia(workspaceDir, ops) {
   const ids = [...new Set(ops.filter((o) => o.op === 'addClip' && o.mediaId).map((o) => o.mediaId))]
-  return ids.map((mediaId) => ({ mediaId, metadata: readMediaMetadata(workspaceDir, mediaId) ?? undefined }))
+  return ids.map((mediaId) => ({
+    mediaId,
+    metadata: readMediaMetadata(workspaceDir, mediaId) ?? undefined,
+  }))
 }
 
 /** Resolve a media id to its source file path under media/{id}/ (first non-reserved file). */
 export function resolveMediaFile(workspaceDir, mediaId) {
-  const mediaDir = path.join(workspaceDir, 'media', mediaId)
+  assertSinglePathComponent(mediaId, 'media id')
+  const mediaRoot = path.join(workspaceDir, 'media')
+  const mediaDir = resolveContained(mediaRoot, mediaId)
   if (!fs.existsSync(mediaDir)) return null
   for (const entry of fs.readdirSync(mediaDir, { withFileTypes: true })) {
     if (!entry.isFile()) continue
     if (NON_SOURCE_NAMES.has(entry.name)) continue
-    return path.join(mediaDir, entry.name)
+    return resolveContained(mediaRoot, path.join(mediaId, entry.name))
   }
   return null
 }
@@ -143,7 +173,7 @@ export function resolveMediaFiles(workspaceDir, mediaIds) {
 }
 
 /** Atomically replace a JSON file using a sibling temporary file. */
-export function writeJsonAtomic(filePath, value) {
+function writeJsonAtomic(filePath, value) {
   const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   try {
@@ -175,12 +205,16 @@ function collectTimelineMediaIds(project) {
 }
 
 function mediaLinksPath(workspaceDir, projectId) {
-  return path.join(workspaceDir, 'projects', projectId, 'media-links.json')
+  assertSinglePathComponent(projectId, 'project id')
+  return resolveContained(
+    path.join(workspaceDir, 'projects'),
+    path.join(projectId, 'media-links.json'),
+  )
 }
 
 /** Ensure media referenced by the timeline also appears in media-links.json. */
-export function reconcileProjectMediaLinks(workspaceDir, project) {
-  const linksPath = mediaLinksPath(workspaceDir, project.id)
+export function reconcileProjectMediaLinks(workspaceDir, project, projectDirectoryId = project.id) {
+  const linksPath = mediaLinksPath(workspaceDir, projectDirectoryId)
   const links = readJsonOr(linksPath, { version: '1.0', mediaIds: [] })
   const existing = new Set(
     Array.isArray(links.mediaIds) ? links.mediaIds.map((entry) => entry?.id).filter(Boolean) : [],
@@ -197,13 +231,18 @@ export function reconcileProjectMediaLinks(workspaceDir, project) {
 }
 
 /** Upsert the lightweight project entry used by FreeCut's project list. */
-export function upsertWorkspaceIndex(workspaceDir, project) {
+function upsertWorkspaceIndex(workspaceDir, project, projectDirectoryId = project.id) {
   const indexPath = path.join(workspaceDir, 'index.json')
   const index = readJsonOr(indexPath, { version: '1.0', updatedAt: 0, projects: [] })
-  const entry = { id: project.id, name: project.name ?? '(unnamed)', updatedAt: project.updatedAt }
+  const entry = {
+    id: projectDirectoryId,
+    projectId: project.id,
+    name: project.name ?? '(unnamed)',
+    updatedAt: project.updatedAt,
+  }
   const projects = Array.isArray(index.projects) ? index.projects : []
-  const next = projects.some((candidate) => candidate?.id === project.id)
-    ? projects.map((candidate) => (candidate?.id === project.id ? entry : candidate))
+  const next = projects.some((candidate) => candidate?.id === projectDirectoryId)
+    ? projects.map((candidate) => (candidate?.id === projectDirectoryId ? entry : candidate))
     : [...projects, entry]
   next.sort((left, right) => (right?.updatedAt ?? 0) - (left?.updatedAt ?? 0))
   writeJsonAtomic(indexPath, {
@@ -217,8 +256,18 @@ export function upsertWorkspaceIndex(workspaceDir, project) {
 export function persistEditedProject(workspaceDir, projectJsonPath, editedProject) {
   const project = { ...editedProject, updatedAt: Date.now() }
   writeJsonAtomic(projectJsonPath, project)
-  reconcileProjectMediaLinks(workspaceDir, project)
-  upsertWorkspaceIndex(workspaceDir, project)
+  const projectsRoot = path.resolve(workspaceDir, 'projects')
+  const projectDirectory = path.dirname(path.resolve(projectJsonPath))
+  const relativeDirectory = path.relative(projectsRoot, projectDirectory)
+  const isWorkspaceProject =
+    relativeDirectory !== '' &&
+    !relativeDirectory.startsWith('..') &&
+    !path.isAbsolute(relativeDirectory) &&
+    !relativeDirectory.includes(path.sep)
+  if (isWorkspaceProject) {
+    reconcileProjectMediaLinks(workspaceDir, project, relativeDirectory)
+    upsertWorkspaceIndex(workspaceDir, project, relativeDirectory)
+  }
   return project
 }
 
@@ -231,8 +280,8 @@ function statFingerprint(filePath) {
   }
 }
 
-function readProjectMediaIds(workspaceDir, project) {
-  const links = readJsonOr(mediaLinksPath(workspaceDir, project.id), { mediaIds: [] })
+function readProjectMediaIds(workspaceDir, project, projectDirectoryId = project.id) {
+  const links = readJsonOr(mediaLinksPath(workspaceDir, projectDirectoryId), { mediaIds: [] })
   const ids = new Set(
     Array.isArray(links.mediaIds) ? links.mediaIds.map((entry) => entry?.id).filter(Boolean) : [],
   )
@@ -241,20 +290,27 @@ function readProjectMediaIds(workspaceDir, project) {
 }
 
 function findMediaThumbnail(workspaceDir, mediaId) {
-  const thumbnail = path.join(workspaceDir, 'media', mediaId, 'thumbnail.jpg')
+  assertSinglePathComponent(mediaId, 'media id')
+  const thumbnail = resolveContained(
+    path.join(workspaceDir, 'media'),
+    path.join(mediaId, 'thumbnail.jpg'),
+  )
   return fs.existsSync(thumbnail) ? thumbnail : null
 }
 
 /** Build the coherent project+media snapshot consumed by a live editor. */
 export function buildProjectSnapshot(workspaceDir, projectId) {
-  const { project, projectJsonPath } = loadProject(workspaceDir, projectId)
-  const mediaIds = readProjectMediaIds(workspaceDir, project)
+  const { project, projectJsonPath } = loadProjectById(workspaceDir, projectId)
+  const mediaIds = readProjectMediaIds(workspaceDir, project, projectId)
   const media = []
   const missingMediaIds = []
   const fingerprints = []
 
   for (const mediaId of mediaIds) {
-    const metadataPath = path.join(workspaceDir, 'media', mediaId, 'metadata.json')
+    const metadataPath = resolveContained(
+      path.join(workspaceDir, 'media'),
+      path.join(mediaId, 'metadata.json'),
+    )
     const metadata = readMediaMetadata(workspaceDir, mediaId)
     if (!metadata) {
       missingMediaIds.push(mediaId)
@@ -268,11 +324,7 @@ export function buildProjectSnapshot(workspaceDir, projectId) {
     const thumbnailFingerprint = thumbnailPath
       ? statFingerprint(thumbnailPath)
       : 'missing-thumbnail'
-    const fingerprint = [
-      metadataFingerprint,
-      sourceFingerprint,
-      thumbnailFingerprint,
-    ].join('|')
+    const fingerprint = [metadataFingerprint, sourceFingerprint, thumbnailFingerprint].join('|')
     media.push({
       metadata,
       fingerprint,
@@ -286,14 +338,14 @@ export function buildProjectSnapshot(workspaceDir, projectId) {
   const projectText = fs.readFileSync(projectJsonPath, 'utf8')
   const linksPath = mediaLinksPath(workspaceDir, projectId)
   const linksText = fs.existsSync(linksPath) ? fs.readFileSync(linksPath, 'utf8') : ''
-  const revision = crypto
+  const revision = `sha256:${crypto
     .createHash('sha256')
     .update(projectText)
     .update('\0')
     .update(linksText)
     .update('\0')
     .update(fingerprints.sort().join('\n'))
-    .digest('hex')
+    .digest('hex')}`
 
   return { revision, project, media, missingMediaIds }
 }
@@ -303,8 +355,8 @@ export function listProjectIdsUsingMedia(workspaceDir, mediaId) {
     .map((project) => project.id)
     .filter((projectId) => {
       try {
-        const { project } = loadProject(workspaceDir, projectId)
-        return readProjectMediaIds(workspaceDir, project).includes(mediaId)
+        const { project } = loadProjectById(workspaceDir, projectId)
+        return readProjectMediaIds(workspaceDir, project, projectId).includes(mediaId)
       } catch {
         return false
       }

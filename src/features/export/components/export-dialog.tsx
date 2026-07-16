@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Select,
   SelectContent,
@@ -70,13 +71,17 @@ import { assessExportPreflight, summarizePreflightSeverity } from '../utils/expo
 import {
   getCompatibleVideoCodecs,
   getDefaultVideoCodec,
+  estimateFileSize,
+  mapToClientSettings,
   mapExportCodecToClientCodec,
   type ClientCodec,
   type ClientVideoContainer,
   type ClientAudioContainer,
 } from '../utils/client-renderer'
 import { ExportPreviewPlayer } from './export-preview-player'
-import { useBrokenMediaIds } from '../deps/media-library'
+import { useBrokenMediaIds, useMediaMetadataById } from '../deps/media-library'
+import { assessSmartCopyEligibility } from '../utils/smart-copy'
+import { resolveVideoBitrate } from '../utils/video-bitrate'
 
 export interface ExportDialogProps {
   open: boolean
@@ -125,6 +130,7 @@ function formatTime(seconds: number): string {
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
 }
 
@@ -171,7 +177,7 @@ const EXPORT_PRESETS: ExportPreset[] = [
     labelKey: 'export.settings.presetRecommended',
     container: 'mp4',
     codec: 'h264',
-    quality: 'high',
+    quality: 'medium',
     scale: 1,
   },
   {
@@ -258,9 +264,11 @@ function ExportPreflightPanel({ preflight }: { preflight: ExportPreflightResult 
           <span className="text-sm font-medium">{t('export.preflight.title')}</span>
         </div>
         <span className="text-xs text-muted-foreground">
-          {preflight.predictedRenderPath === 'worker'
-            ? t('export.preflight.workerPath')
-            : t('export.preflight.fallback')}
+          {preflight.predictedRenderPath === 'smart-copy'
+            ? t('export.preflight.smartCopyPath')
+            : preflight.predictedRenderPath === 'worker'
+              ? t('export.preflight.workerPath')
+              : t('export.preflight.fallback')}
         </span>
       </div>
       <div className="space-y-1.5">
@@ -333,8 +341,10 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
 
   const [settings, setSettings] = useState<ExportSettings>({
     codec: getDefaultCodecForFormat('mp4'),
-    quality: 'high',
+    quality: 'medium',
     resolution: { width: projectWidth, height: projectHeight },
+    rateControl: 'auto',
+    smartCopy: true,
   })
 
   const [exportMode, setExportMode] = useState<ExportMode>('video')
@@ -352,6 +362,31 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
     if (items.length === 0) return 0
     return Math.max(...items.map((item) => item.from + item.durationInFrames))
   }, [items])
+
+  const dominantVideoMediaId = useMemo(() => {
+    let mediaId: string | undefined
+    let longestDuration = -1
+    for (const item of items) {
+      if (item.type !== 'video' || !item.mediaId) continue
+      if (item.durationInFrames > longestDuration) {
+        mediaId = item.mediaId
+        longestDuration = item.durationInFrames
+      }
+    }
+    return mediaId
+  }, [items])
+  const sourceMedia = useMediaMetadataById(dominantVideoMediaId)
+  const sourceVideo = useMemo(
+    () =>
+      sourceMedia && sourceMedia.bitrate > 0
+        ? {
+            bitrate: sourceMedia.bitrate,
+            fps: sourceMedia.fps,
+            codec: sourceMedia.codec,
+          }
+        : undefined,
+    [sourceMedia],
+  )
 
   // Check if in/out points are set
   const hasInOutPoints = inPoint !== null && outPoint !== null && outPoint > inPoint
@@ -388,6 +423,77 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
     return { start: inPoint, end: outPoint, duration: outPoint - inPoint }
   }, [hasInOutPoints, inPoint, outPoint, renderWholeProject, timelineDurationFrames])
 
+  const resolvedVideoBitrate = useMemo(
+    () =>
+      resolveVideoBitrate({
+        codec: settings.codec,
+        quality: settings.quality,
+        width: settings.resolution.width,
+        height: settings.resolution.height,
+        fps,
+        rateControl: settings.rateControl,
+        customBitrate: settings.videoBitrate,
+        sourceVideo,
+      }),
+    [
+      fps,
+      settings.codec,
+      settings.quality,
+      settings.rateControl,
+      settings.resolution.height,
+      settings.resolution.width,
+      settings.videoBitrate,
+      sourceVideo,
+    ],
+  )
+
+  const previewClientSettings = useMemo(() => {
+    const mapped = mapToClientSettings({ ...settings, sourceVideo }, fps)
+    mapped.container = videoContainer
+    return mapped
+  }, [fps, settings, sourceVideo, videoContainer])
+
+  const smartCopyAssessment = useMemo(
+    () =>
+      assessSmartCopyEligibility({
+        settings: previewClientSettings,
+        tracks,
+        items,
+        transitions,
+        keyframes,
+        fps,
+        width: projectWidth,
+        height: projectHeight,
+        inPoint: renderWholeProject || !hasInOutPoints ? null : inPoint,
+        outPoint: renderWholeProject || !hasInOutPoints ? null : outPoint,
+        source: sourceMedia,
+      }),
+    [
+      fps,
+      hasInOutPoints,
+      inPoint,
+      items,
+      keyframes,
+      outPoint,
+      previewClientSettings,
+      projectHeight,
+      projectWidth,
+      renderWholeProject,
+      sourceMedia,
+      tracks,
+      transitions,
+    ],
+  )
+
+  const smartCopyWillRun = settings.smartCopy !== false && smartCopyAssessment.eligible
+  const estimatedFileSizeBytes = useMemo(
+    () =>
+      smartCopyWillRun && sourceMedia
+        ? sourceMedia.fileSize
+        : estimateFileSize(previewClientSettings, framesToSeconds(exportRange.duration, fps)),
+    [exportRange.duration, fps, previewClientSettings, smartCopyWillRun, sourceMedia],
+  )
+
   const preflightComposition = useMemo<CompositionInputProps>(
     () => ({
       fps,
@@ -414,6 +520,7 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
         videoContainer === preset.container &&
         settings.codec === preset.codec &&
         settings.quality === preset.quality &&
+        (settings.rateControl ?? 'auto') === 'auto' &&
         settings.resolution.width === res.width &&
         settings.resolution.height === res.height
       )
@@ -423,6 +530,7 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
     videoContainer,
     settings.codec,
     settings.quality,
+    settings.rateControl,
     settings.resolution.width,
     settings.resolution.height,
     projectWidth,
@@ -435,6 +543,9 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
       ...prev,
       codec: preset.codec,
       quality: preset.quality,
+      rateControl: 'auto',
+      videoBitrate: undefined,
+      smartCopy: true,
       resolution: scaledResolution(projectWidth, projectHeight, preset.scale),
     }))
   }
@@ -452,6 +563,7 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
 
   const {
     progress,
+    progressMessage,
     renderedFrames,
     totalFrames,
     status,
@@ -512,6 +624,7 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
   // state. Shared by "Export now" and the "Add to queue" actions.
   const buildExtendedSettings = (): ExtendedExportSettings => ({
     ...settings,
+    sourceVideo,
     mode: exportMode,
     videoContainer: exportMode === 'video' ? videoContainer : undefined,
     audioContainer: exportMode === 'audio' ? audioContainer : undefined,
@@ -627,8 +740,10 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
       setRenderWholeProject(false)
       setSettings({
         codec: getDefaultCodecForFormat('mp4'),
-        quality: 'high',
+        quality: 'medium',
         resolution: { width: projectWidth, height: projectHeight },
+        rateControl: 'auto',
+        smartCopy: true,
       })
       resetState()
       setPreflight(null)
@@ -663,7 +778,7 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
 
     void getSupportedCodecs({
       resolution: settings.resolution,
-      quality: settings.quality,
+      bitrate: resolvedVideoBitrate,
     })
       .then((codecs) => {
         if (cancelled) return
@@ -683,7 +798,7 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
     return () => {
       cancelled = true
     }
-  }, [exportMode, getSupportedCodecs, open, settings.resolution, settings.quality, view, t])
+  }, [exportMode, getSupportedCodecs, open, resolvedVideoBitrate, settings.resolution, view, t])
 
   const videoContainerOptions = useMemo<VideoContainerOption[]>(() => {
     const allContainers: ClientVideoContainer[] = ['mp4', 'mov', 'webm', 'mkv']
@@ -731,6 +846,7 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
   }, [exportMode, hasCapabilityData, videoContainer, videoContainerOptions])
 
   useEffect(() => {
+    if (smartCopyWillRun) return
     const validCodecs = codecOptions
       .filter((option) => option.supported)
       .map((option) => option.value)
@@ -740,7 +856,7 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
       if (!fallbackCodec) return
       setSettings((prev) => ({ ...prev, codec: fallbackCodec as ExportSettings['codec'] }))
     }
-  }, [codecOptions, settings.codec])
+  }, [codecOptions, settings.codec, smartCopyWillRun])
 
   useEffect(() => {
     if (!open || view !== 'settings') {
@@ -756,6 +872,7 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
     let cancelled = false
     const settingsForPreflight: ExtendedExportSettings = {
       ...settings,
+      sourceVideo,
       mode: exportMode,
       videoContainer: exportMode === 'video' ? videoContainer : undefined,
       audioContainer: exportMode === 'audio' ? audioContainer : undefined,
@@ -770,6 +887,7 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
       durationFrames: exportRange.duration,
       supportedVideoCodecs: supportedVideoCodecs ?? [],
       brokenMediaIds,
+      smartCopyAssessment,
     }).then((result) => {
       if (!cancelled) setPreflight(result)
     })
@@ -789,6 +907,8 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
     preflightComposition,
     renderWholeProject,
     settings,
+    smartCopyAssessment,
+    sourceVideo,
     supportedVideoCodecs,
     videoContainer,
     videoSupportError,
@@ -798,7 +918,9 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
   const preflightBlocksExport =
     preflight?.checks.some((check) => check.severity === 'error') ?? false
   const exportActionsDisabled =
-    (exportMode === 'video' && (!hasSupportedVideoPath || isCheckingVideoSupport)) ||
+    (exportMode === 'video' &&
+      !smartCopyWillRun &&
+      (!hasSupportedVideoPath || isCheckingVideoSupport)) ||
     preflightBlocksExport
 
   const preventClose = view === 'progress' || view === 'complete'
@@ -1170,6 +1292,132 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
                         </div>
                       </div>
 
+                      <div className="space-y-3 rounded-lg border border-border bg-muted/20 p-3">
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div className="space-y-2">
+                            <Label htmlFor="rate-control">{t('export.settings.rateControl')}</Label>
+                            <Select
+                              value={settings.rateControl ?? 'auto'}
+                              onValueChange={(value) =>
+                                setSettings((previous) => ({
+                                  ...previous,
+                                  rateControl: value as NonNullable<ExportSettings['rateControl']>,
+                                  videoBitrate:
+                                    value === 'auto'
+                                      ? undefined
+                                      : (previous.videoBitrate ?? resolvedVideoBitrate),
+                                }))
+                              }
+                            >
+                              <SelectTrigger id="rate-control">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="auto">
+                                  {t('export.settings.rateControlAuto')}
+                                </SelectItem>
+                                <SelectItem value="variable">
+                                  {t('export.settings.rateControlVbr')}
+                                </SelectItem>
+                                <SelectItem value="constant">
+                                  {t('export.settings.rateControlCbr')}
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <Label htmlFor="target-bitrate">
+                                {t('export.settings.targetBitrate')}
+                              </Label>
+                              {sourceVideo && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 px-2 text-xs"
+                                  onClick={() =>
+                                    setSettings((previous) => ({
+                                      ...previous,
+                                      rateControl: 'variable',
+                                      videoBitrate: sourceVideo.bitrate,
+                                    }))
+                                  }
+                                >
+                                  {t('export.settings.useSourceBitrate')}
+                                </Button>
+                              )}
+                            </div>
+                            <div className="relative">
+                              <Input
+                                id="target-bitrate"
+                                type="number"
+                                min="0.1"
+                                max="500"
+                                step="0.1"
+                                disabled={(settings.rateControl ?? 'auto') === 'auto'}
+                                value={(
+                                  (settings.videoBitrate ?? resolvedVideoBitrate) / 1_000_000
+                                ).toFixed(2)}
+                                onChange={(event) => {
+                                  const mbps = Number(event.target.value)
+                                  if (!Number.isFinite(mbps) || mbps <= 0) return
+                                  setSettings((previous) => ({
+                                    ...previous,
+                                    videoBitrate: Math.round(mbps * 1_000_000),
+                                  }))
+                                }}
+                                className="pr-14"
+                              />
+                              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                                Mbps
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-start justify-between gap-4 border-t border-border pt-3">
+                          <div className="space-y-1">
+                            <Label htmlFor="smart-copy" className="text-sm font-medium">
+                              {t('export.settings.smartCopy')}
+                            </Label>
+                            <p className="text-xs text-muted-foreground">
+                              {t(`export.settings.smartCopyStatus.${smartCopyAssessment.reason}`)}
+                            </p>
+                          </div>
+                          <Switch
+                            id="smart-copy"
+                            checked={settings.smartCopy !== false}
+                            onCheckedChange={(checked) =>
+                              setSettings((previous) => ({ ...previous, smartCopy: checked }))
+                            }
+                          />
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md bg-background/60 px-3 py-2 text-xs">
+                          <span className="font-medium text-foreground">
+                            {smartCopyWillRun
+                              ? t('export.settings.smartCopyPath')
+                              : `${(resolvedVideoBitrate / 1_000_000).toFixed(2)} Mbps ${
+                                  (settings.rateControl ?? 'auto') === 'constant' ? 'CBR' : 'VBR'
+                                }`}
+                          </span>
+                          <span className="text-muted-foreground">
+                            {t('export.settings.estimatedSize', {
+                              size: formatFileSize(estimatedFileSizeBytes),
+                            })}
+                          </span>
+                          {sourceVideo && (
+                            <span className="text-muted-foreground">
+                              {t('export.settings.sourceBitrate', {
+                                bitrate: (sourceVideo.bitrate / 1_000_000).toFixed(2),
+                              })}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
                       <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/20 p-3">
                         <div className="flex items-center justify-between gap-3">
                           <Label htmlFor="subtitle-mode" className="text-sm font-medium">
@@ -1317,7 +1565,7 @@ export function ExportDialog({ open, onClose, onOpenRenderQueue }: ExportDialogP
                 </div>
                 <div className="flex items-center justify-between text-sm gap-2">
                   <span className="text-muted-foreground truncate">
-                    {status === 'preparing' && t('export.progress.preparing')}
+                    {status === 'preparing' && (progressMessage ?? t('export.progress.preparing'))}
                     {status === 'rendering' && t('export.progress.rendering')}
                     {status === 'encoding' && t('export.progress.encoding')}
                     {status === 'finalizing' && t('export.progress.finalizing')}

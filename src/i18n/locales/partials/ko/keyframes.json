@@ -5,6 +5,8 @@
       "graph": "그래프",
       "sheet": "시트",
       "split": "분할",
+      "enterFocusMode": "키프레임 편집기에 집중",
+      "exitFocusMode": "키프레임 집중 모드 종료",
       "selectItem": "키프레임을 편집할 항목을 선택하세요",
       "parameters": "매개변수",
       "parameterDisplayOptions": "매개변수 표시 옵션",

@@ -47,6 +47,11 @@ describe('getProceduralBands', () => {
     expect(bands.get('x')?.kind).toBe('noise')
   })
 
+  it('offsets bands into an absolute composition timeline', () => {
+    const bands = getProceduralBands([drift()], 30, 45)
+    expect(bands.get('x')).toMatchObject({ fromFrame: 45, toFrame: 74 })
+  })
+
   it('ignores disabled / zero-amplitude modifiers', () => {
     expect(getProceduralBands([drift({ enabled: false })], 90).size).toBe(0)
     expect(getProceduralBands([drift({ amplitude: 0 })], 90).size).toBe(0)

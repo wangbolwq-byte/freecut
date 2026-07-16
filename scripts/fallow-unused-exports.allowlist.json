@@ -1,6 +1,56 @@
 {
   "unusedExports": [
     {
+      "path": "src/features/editor/deps/preview-contract.ts",
+      "exportName": "ColorVideoPreview",
+      "reason": "deps-contract: consumed through the editor preview adapter and lazy component selection; Fallow does not trace this re-export path reliably."
+    },
+    {
+      "path": "src/features/editor/deps/preview-contract.ts",
+      "exportName": "usePowerWindowEditorStore",
+      "reason": "deps-contract: preview editor state is shared with effect panels through feature boundary adapters."
+    },
+    {
+      "path": "src/features/editor/deps/preview-contract.ts",
+      "exportName": "useSpatialEffectEditorStore",
+      "reason": "deps-contract: preview editor state is shared with effect panels through feature boundary adapters."
+    },
+    {
+      "path": "src/features/editor/deps/timeline-keyframe-ui-contract.ts",
+      "exportName": "TranscriptEditorPanel",
+      "reason": "deps-contract: lazy-loaded by the editor media sidebar through the timeline UI contract."
+    },
+    {
+      "path": "src/features/editor/deps/timeline-keyframe-ui-contract.ts",
+      "exportName": "CompactNavigator",
+      "reason": "deps-contract: consumed by the compositing timeline through the timeline keyframe UI adapter."
+    },
+    {
+      "path": "src/features/editor/deps/timeline-keyframe-ui-contract.ts",
+      "exportName": "DopesheetEditor",
+      "reason": "deps-contract: consumed by the compositing timeline through the timeline keyframe UI adapter."
+    },
+    {
+      "path": "src/features/editor/deps/timeline-keyframe-ui-contract.ts",
+      "exportName": "KEYFRAME_EDGE_INSET",
+      "reason": "deps-contract: consumed by compositing timeline layout through the timeline keyframe UI adapter."
+    },
+    {
+      "path": "src/features/preview/components/video-preview.tsx",
+      "exportName": "ColorVideoPreview",
+      "reason": "Component is re-exported by the editor preview dependency contract for workspace-specific preview selection."
+    },
+    {
+      "path": "src/features/timeline/components/transcript-editor/transcript-editor-panel.tsx",
+      "exportName": "TranscriptEditorPanel",
+      "reason": "Component is lazy-loaded by the editor media sidebar through timeline contracts."
+    },
+    {
+      "path": "src/features/timeline/components/timeline.tsx",
+      "exportName": "Timeline",
+      "reason": "Component is exported through the timeline editor contract and consumed by the editor workspace."
+    },
+    {
       "path": "src/components/ui/popover.tsx",
       "exportName": "PopoverAnchor",
       "reason": "unreviewed: carried over by the 2026-07-09 re-baseline; trace individually before deleting."
@@ -176,11 +226,6 @@
       "reason": "deps-contract: cross-feature adapter surface mandated by the boundary rules; check:deps-wrapper-health --fail-on-unused passes it."
     },
     {
-      "path": "src/features/editor/deps/timeline-contract.ts",
-      "exportName": "setEffectAudioPulse",
-      "reason": "deps-contract: cross-feature adapter surface mandated by the boundary rules; check:deps-wrapper-health --fail-on-unused passes it."
-    },
-    {
       "path": "src/features/export/components/exports-dialog.tsx",
       "exportName": "ExportsDialog",
       "reason": "Lazy-loaded from the editor export deps contract."
@@ -341,11 +386,6 @@
       "reason": "Lazy-loaded through the editor timeline import helper."
     },
     {
-      "path": "src/features/timeline/contracts/editor.ts",
-      "exportName": "setEffectAudioPulse",
-      "reason": "unreviewed: carried over by the 2026-07-09 re-baseline; trace individually before deleting."
-    },
-    {
       "path": "src/features/timeline/deps/keyframes-contract.ts",
       "exportName": "areBezierPointsEqual",
       "reason": "deps-contract: cross-feature adapter surface mandated by the boundary rules; check:deps-wrapper-health --fail-on-unused passes it."
@@ -369,11 +409,6 @@
       "path": "src/features/timeline/deps/keyframes-contract.ts",
       "exportName": "findMatchingBezierPreset",
       "reason": "deps-contract: cross-feature adapter surface mandated by the boundary rules; check:deps-wrapper-health --fail-on-unused passes it."
-    },
-    {
-      "path": "src/features/timeline/stores/actions/motion-modifier-actions.ts",
-      "exportName": "setEffectAudioPulse",
-      "reason": "unreviewed: carried over by the 2026-07-09 re-baseline; trace individually before deleting."
     },
     {
       "path": "src/features/timeline/utils/collision-utils.ts",

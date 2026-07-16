@@ -159,8 +159,8 @@ async function renderItemContent(
       : item
 
   switch (effectiveItem.type) {
-    case 'video':
-      await renderVideoItem(
+    case 'video': {
+      const videoFrameDrawn = await renderVideoItem(
         ctx,
         effectiveItem as VideoItem,
         transform,
@@ -169,7 +169,14 @@ async function renderItemContent(
         sourceFrameOffset,
         renderSpan,
       )
+      if (!videoFrameDrawn) {
+        // Preview canvases are cleared before item rendering. A video item is
+        // complete only after one of its real frame sources was drawn; every
+        // other outcome must preserve the previous front buffer.
+        if (rctx.renderMode === 'preview') rctx.markActivePreviewFramePending?.()
+      }
       break
+    }
     case 'image':
       renderImageItem(ctx, effectiveItem as ImageItem, transform, rctx, frame)
       break

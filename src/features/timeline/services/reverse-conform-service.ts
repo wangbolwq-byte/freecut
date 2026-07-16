@@ -22,6 +22,9 @@ export interface ReverseConformResult {
   key: string
   quality: ReverseConformQuality
   usesProxy: boolean
+  isSourceLevel: boolean
+  sourceDuration?: number
+  conformFps?: number
 }
 
 type ReverseConformQuality = 'preview' | 'full'
@@ -51,6 +54,7 @@ function emitSharedProgress(job: SharedReverseConformJob, value: number): void {
 }
 
 const inFlightByKey = new Map<string, SharedReverseConformJob>()
+const objectUrlByPath = new Map<string, string>()
 
 function toSafeKey(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 180)
@@ -73,7 +77,9 @@ function getSourceDuration(item: VideoItem, timelineFps: number): number | undef
   }
 
   const media = item.mediaId ? useMediaLibraryStore.getState().mediaById[item.mediaId] : undefined
-  if (!media || media.duration <= 0) return undefined
+  if (!media || media.duration <= 0) {
+    return item.sourceEnd !== undefined && item.sourceEnd > 0 ? item.sourceEnd : undefined
+  }
 
   const sourceFps = item.sourceFps ?? (media.fps || timelineFps)
   return Math.round(media.duration * sourceFps)
@@ -125,7 +131,7 @@ function getSourceEnd(item: VideoItem, timelineFps: number, durationInFrames: nu
     : derivedSourceEnd
 }
 
-function getReverseConformKey(
+function getSegmentReverseConformKey(
   item: VideoItem,
   timelineFps: number,
   quality: ReverseConformQuality,
@@ -149,8 +155,46 @@ function getReverseConformKey(
   )
 }
 
-function createObjectUrl(blob: Blob): string {
-  return URL.createObjectURL(new Blob([blob], { type: blob.type || 'video/mp4' }))
+function getMediaFingerprint(item: VideoItem): string {
+  const media = item.mediaId ? useMediaLibraryStore.getState().mediaById[item.mediaId] : undefined
+  if (media?.contentHash) return `hash-${media.contentHash}`
+  if (media) {
+    return [
+      'file',
+      media.fileSize,
+      media.fileLastModified ?? 0,
+      media.duration,
+      media.width,
+      media.height,
+      media.fps,
+    ].join('-')
+  }
+  return `legacy-${item.src ?? item.id}-${item.sourceDuration ?? 0}`
+}
+
+function getSourcePreviewKey(item: VideoItem, useProxy: boolean): string {
+  const sourceFps = resolveSourceFps(item, 30)
+  const sourceDuration = getSourceDuration(item, sourceFps) ?? 0
+  const { width, height } = getConformDimensions(item, 'preview')
+  return toSafeKey(
+    [
+      'v3-source',
+      useProxy ? 'proxy' : 'source',
+      item.mediaId ?? item.id,
+      `${width}x${height}`,
+      sourceDuration,
+      sourceFps,
+      getMediaFingerprint(item),
+    ].join('__'),
+  )
+}
+
+function getSharedObjectUrl(path: string, blob: Blob): string {
+  const existing = objectUrlByPath.get(path)
+  if (existing) return existing
+  const url = URL.createObjectURL(new Blob([blob], { type: blob.type || 'video/mp4' }))
+  objectUrlByPath.set(path, url)
+  return url
 }
 
 async function saveBlobToOpfs(path: string, blob: Blob): Promise<void> {
@@ -191,9 +235,14 @@ function buildConformComposition(
   item: VideoItem,
   timelineFps: number,
   quality: ReverseConformQuality,
+  sourceLevel: boolean,
 ): CompositionInputProps {
   const { width, height } = getConformDimensions(item, quality)
-  const durationInFrames = getConformDurationInFrames(item, timelineFps)
+  const conformFps = sourceLevel ? resolveSourceFps(item, timelineFps) : timelineFps
+  const sourceDuration = getSourceDuration(item, conformFps)
+  const durationInFrames = sourceLevel
+    ? Math.max(1, Math.round(sourceDuration ?? 0))
+    : getConformDurationInFrames(item, timelineFps)
   const track: TimelineTrack = {
     id: 'reverse-conform-track',
     name: 'Reverse conform',
@@ -217,9 +266,11 @@ function buildConformComposition(
     reverseConformPreviewSrc: undefined,
     reverseConformPreviewPath: undefined,
     reverseConformStatus: undefined,
-    sourceStart: getSourceStart(item),
-    sourceEnd: getSourceEnd(item, timelineFps, durationInFrames),
-    sourceFps: item.sourceFps ?? timelineFps,
+    sourceStart: sourceLevel ? 0 : getSourceStart(item),
+    sourceEnd: sourceLevel ? durationInFrames : getSourceEnd(item, timelineFps, durationInFrames),
+    sourceDuration: sourceLevel ? durationInFrames : item.sourceDuration,
+    sourceFps: sourceLevel ? conformFps : (item.sourceFps ?? timelineFps),
+    speed: sourceLevel ? 1 : item.speed,
     transform: {
       x: 0,
       y: 0,
@@ -236,7 +287,7 @@ function buildConformComposition(
   track.items = [conformItem]
 
   return {
-    fps: timelineFps,
+    fps: conformFps,
     width,
     height,
     durationInFrames,
@@ -250,6 +301,7 @@ function buildConformSettings(
   item: VideoItem,
   timelineFps: number,
   quality: ReverseConformQuality,
+  fps: number = timelineFps,
 ): ClientExportSettings {
   const { width, height } = getConformDimensions(item, quality)
   return {
@@ -258,11 +310,11 @@ function buildConformSettings(
     container: 'mp4',
     quality: quality === 'preview' ? 'medium' : 'high',
     resolution: { width, height },
-    fps: timelineFps,
+    fps,
     videoBitrate:
       quality === 'preview'
-        ? Math.max(2_500_000, width * height * timelineFps * 0.08)
-        : Math.max(12_000_000, width * height * timelineFps * 0.16),
+        ? Math.max(2_500_000, width * height * fps * 0.08)
+        : Math.max(12_000_000, width * height * fps * 0.16),
     audioBitrate: quality === 'preview' ? 128_000 : 192_000,
   }
 }
@@ -291,28 +343,18 @@ export const reverseConformService = {
     const next = { ...item }
 
     if (item.type === 'video' && item.reverseConformPreviewPath) {
-      const blob = await loadCachedBlob(
-        item.reverseConformPreviewPath.split('/').filter(Boolean),
-        item.reverseConformPreviewPath,
-      )
-      if (next.reverseConformPreviewSrc?.startsWith('blob:')) {
-        URL.revokeObjectURL(next.reverseConformPreviewSrc)
-      }
-      next.reverseConformPreviewSrc = blob ? createObjectUrl(blob) : undefined
+      const path = item.reverseConformPreviewPath
+      const blob = await loadCachedBlob(path.split('/').filter(Boolean), path)
+      next.reverseConformPreviewSrc = blob ? getSharedObjectUrl(path, blob) : undefined
     } else if (item.type === 'video' && item.reverseConformPreviewSrc?.startsWith('blob:')) {
       URL.revokeObjectURL(item.reverseConformPreviewSrc)
       next.reverseConformPreviewSrc = undefined
     }
 
     if (item.reverseConformPath) {
-      const blob = await loadCachedBlob(
-        item.reverseConformPath.split('/').filter(Boolean),
-        item.reverseConformPath,
-      )
-      if (next.reverseConformSrc?.startsWith('blob:')) {
-        URL.revokeObjectURL(next.reverseConformSrc)
-      }
-      next.reverseConformSrc = blob ? createObjectUrl(blob) : undefined
+      const path = item.reverseConformPath
+      const blob = await loadCachedBlob(path.split('/').filter(Boolean), path)
+      next.reverseConformSrc = blob ? getSharedObjectUrl(path, blob) : undefined
     } else if (item.reverseConformSrc?.startsWith('blob:')) {
       URL.revokeObjectURL(item.reverseConformSrc)
       next.reverseConformSrc = undefined
@@ -336,11 +378,19 @@ export const reverseConformService = {
   ): Promise<ReverseConformResult> {
     const quality = options.quality ?? 'preview'
     const useProxy = quality === 'preview' && options.useProxy !== false
+    const isSourceLevel = quality === 'preview'
+    const sourceFps = resolveSourceFps(item, timelineFps)
+    const sourceDuration = getSourceDuration(item, sourceFps)
     throwIfAborted(options.signal)
-    if ((!item.src && !item.mediaId) || getConformDurationInFrames(item, timelineFps) <= 0) {
+    const renderDuration = isSourceLevel
+      ? sourceDuration
+      : getConformDurationInFrames(item, timelineFps)
+    if ((!item.src && !item.mediaId) || !renderDuration || renderDuration <= 0) {
       throw new Error('Cannot reverse an empty video clip')
     }
-    const key = getReverseConformKey(item, timelineFps, quality, useProxy)
+    const key = isSourceLevel
+      ? getSourcePreviewKey(item, useProxy)
+      : getSegmentReverseConformKey(item, timelineFps, quality, useProxy)
     const mediaId = item.mediaId ?? item.id
     const pathSegments = reverseConformFilePath(mediaId, key)
     const opfsPath = pathSegments.join('/')
@@ -367,7 +417,7 @@ export const reverseConformService = {
           emitSharedProgress(job, 1)
           return { blob: cached, opfsPath }
         }
-        const composition = buildConformComposition(item, timelineFps, quality)
+        const composition = buildConformComposition(item, timelineFps, quality, isSourceLevel)
         composition.tracks = await resolveMediaUrls(composition.tracks, { useProxy })
         const resolvedItem = composition.tracks[0]?.items[0]
         if (!resolvedItem || resolvedItem.type !== 'video' || !resolvedItem.src) {
@@ -376,7 +426,12 @@ export const reverseConformService = {
         const { renderComposition } = await importCanvasRenderOrchestrator()
         const result = await renderComposition({
           composition,
-          settings: buildConformSettings(item, timelineFps, quality),
+          settings: buildConformSettings(
+            item,
+            timelineFps,
+            quality,
+            isSourceLevel ? sourceFps : timelineFps,
+          ),
           signal: job.controller.signal,
           onProgress: (progress: RenderProgress) => {
             emitSharedProgress(job, Math.max(0, Math.min(0.99, scaleRenderProgress(progress))))
@@ -436,11 +491,14 @@ export const reverseConformService = {
           cleanup()
           resolve({
             itemId: item.id,
-            src: createObjectUrl(blob),
+            src: getSharedObjectUrl(path, blob),
             path,
             key,
             quality,
             usesProxy: useProxy,
+            isSourceLevel,
+            sourceDuration: isSourceLevel ? sourceDuration : undefined,
+            conformFps: isSourceLevel ? sourceFps : undefined,
           })
         },
         (error) => {

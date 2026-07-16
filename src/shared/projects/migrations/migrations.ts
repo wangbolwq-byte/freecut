@@ -935,6 +935,30 @@ const migrations: Record<number, Migration> = {
     description: 'Add topLevelSequenceIds for standalone timeline tabs (multi-timeline)',
     migrate: (project: Project): Project => project,
   },
+  /**
+   * Version 14: Persist the composition editing surface.
+   *
+   * Every composition created before the dedicated compositing workspace is a
+   * classic sequence/compound timeline. Mark those explicitly so opening a
+   * legacy project can never silently route it into the new layer editor.
+   */
+  14: {
+    version: 14,
+    description: 'Add sequence vs composite-2d composition editor kind',
+    migrate: (project: Project): Project => {
+      if (!project.timeline?.compositions) return project
+      return {
+        ...project,
+        timeline: {
+          ...project.timeline,
+          compositions: project.timeline.compositions.map((composition) => ({
+            ...composition,
+            editorKind: composition.editorKind === 'composite-2d' ? 'composite-2d' : 'sequence',
+          })),
+        },
+      }
+    },
+  },
 }
 
 /**

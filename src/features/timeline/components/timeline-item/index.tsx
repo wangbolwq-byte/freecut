@@ -95,6 +95,7 @@ interface TimelineItemProps {
   timelineDuration?: number
   trackLocked?: boolean
   trackHidden?: boolean
+  onHoverChange?: (itemId: string, hovered: boolean) => void
 }
 
 /**
@@ -115,6 +116,7 @@ export const TimelineItem = memo(function TimelineItem({
   timelineDuration = 30,
   trackLocked = false,
   trackHidden = false,
+  onHoverChange,
 }: TimelineItemProps) {
   perfMarkRender('TimelineItem')
   // Granular selector: only re-render when THIS item's selection state changes
@@ -198,7 +200,6 @@ export const TimelineItem = memo(function TimelineItem({
 
   // Use refs for actions to avoid selector re-renders - read from store in callbacks
   const activeTool = useSelectionStore((s) => s.activeTool)
-  const isAnyGestureActive = useSelectionStore((s) => !!s.dragState?.isDragging)
 
   // Use ref for activeTool to avoid callback recreation on mode changes (prevents playback lag)
   const activeToolRef = useRef(activeTool)
@@ -916,6 +917,7 @@ export const TimelineItem = memo(function TimelineItem({
         <div
           ref={transformRef}
           data-item-id={item.id}
+          data-selected={isSelected ? 'true' : undefined}
           data-compact-clip={useCompactClipShell ? 'true' : undefined}
           className={cn(
             'absolute inset-y-px rounded overflow-visible group/timeline-item',
@@ -963,17 +965,21 @@ export const TimelineItem = memo(function TimelineItem({
           onClick={handleClick}
           onDoubleClick={handleDoubleClick}
           onMouseDown={handleMouseDown}
+          onMouseEnter={() => onHoverChange?.(item.id, true)}
           onMouseMove={handleMouseMove}
-          onMouseLeave={handleMouseLeave}
+          onMouseLeave={() => {
+            handleMouseLeave()
+            onHoverChange?.(item.id, false)
+          }}
           onContextMenu={handleContextMenu}
           onDragEnter={handleEffectDragEnter}
           onDragOver={handleEffectDragOver}
           onDragLeave={handleEffectDragLeave}
           onDrop={handleEffectDrop}
         >
-          {/* Selection indicator - hidden during active gestures to reduce clutter */}
-          {isSelected && !trackLocked && !isAnyGestureActive && (
-            <div className="absolute inset-0 rounded pointer-events-none z-20 border border-primary" />
+          {/* Keep selection visible throughout drag so the moving cohort stays legible. */}
+          {isSelected && !trackLocked && (
+            <div className="timeline-selection-indicator absolute inset-0 rounded pointer-events-none z-20 border border-primary" />
           )}
 
           {isEffectDropTarget && (
@@ -1266,8 +1272,6 @@ export const TimelineItem = memo(function TimelineItem({
         toolOperationOverlay={toolOperationOverlay}
         activeEdges={activeEdges}
         transitionDropGhost={transitionDropGhost}
-        isAltDrag={isAltDrag}
-        isDragging={isDragging}
         left={left}
         width={width}
         pointerHint={pointerHint}

@@ -10,6 +10,14 @@ export type ExportMode = 'video' | 'audio'
 export type VideoContainer = 'mp4' | 'mov' | 'webm' | 'mkv'
 export type AudioContainer = 'mp3' | 'aac' | 'wav'
 
+export type VideoRateControl = 'auto' | 'variable' | 'constant'
+
+export interface SourceVideoEncodingInfo {
+  bitrate: number
+  fps: number
+  codec: string
+}
+
 /**
  * How timeline transcript subtitles are handled on export:
  * - `off`: no captions in the output.
@@ -25,7 +33,14 @@ export interface ExportSettings {
   codec: 'h264' | 'h265' | 'vp8' | 'vp9' | 'av1' | 'prores'
   quality: 'low' | 'medium' | 'high' | 'ultra'
   resolution: { width: number; height: number }
-  bitrate?: string
+  /** Auto uses codec/resolution/FPS and, when available, source encoding metadata. */
+  rateControl?: VideoRateControl
+  /** Target video bitrate in bits per second for custom VBR/CBR exports. */
+  videoBitrate?: number
+  /** Dominant source encoding metadata used by source-aware Auto mode. */
+  sourceVideo?: SourceVideoEncodingInfo
+  /** Copy the original bytes when the timeline is provably passthrough-safe. */
+  smartCopy?: boolean
   audioBitrate?: string
   proResProfile?: 'proxy' | 'light' | 'standard' | 'hq' | '4444' | '4444-xq'
 }

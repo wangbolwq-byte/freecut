@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vite-plus/test'
+import { describe, expect, it, vi } from 'vite-plus/test'
 import {
   GPU_EFFECT_REGISTRY,
   getGpuCategoriesWithEffects,
@@ -33,6 +33,55 @@ describe('GPU effect registry', () => {
         expect(Array.from(uniforms!).every(Number.isFinite)).toBe(true)
       }
     }
+  })
+
+  it('packs missing parameters with the same values as declared defaults', () => {
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(1234)
+    try {
+      for (const [id, effect] of GPU_EFFECT_REGISTRY) {
+        const defaults = getGpuEffectDefaultParams(id)
+        expect(Array.from(effect.packUniforms({}, 1920, 1080) ?? []), id).toEqual(
+          Array.from(effect.packUniforms(defaults, 1920, 1080) ?? []),
+        )
+      }
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it('exposes every color parameter to the shared keyframe pipeline', () => {
+    const colorParams = [...GPU_EFFECT_REGISTRY.values()].flatMap((effect) =>
+      Object.entries(effect.params)
+        .filter(([, param]) => param.type === 'color')
+        .map(([paramKey, param]) => ({ effectId: effect.id, paramKey, param })),
+    )
+
+    expect(colorParams.length).toBeGreaterThan(0)
+    expect(
+      colorParams
+        .filter(({ param }) => param.animatable !== true)
+        .map(({ effectId, paramKey }) => ({
+          effectId,
+          paramKey,
+        })),
+    ).toEqual([])
+  })
+
+  it('packs interpolated eight-digit colors into RGBA uniforms', () => {
+    const effect = getGpuEffect('gpu-fluted-glass')!
+    const uniforms = effect.packUniforms(
+      {
+        ...getGpuEffectDefaultParams(effect.id),
+        colorBack: '#12345680',
+      },
+      1920,
+      1080,
+    )!
+
+    expect(uniforms[0]).toBeCloseTo(0x12 / 255, 6)
+    expect(uniforms[1]).toBeCloseTo(0x34 / 255, 6)
+    expect(uniforms[2]).toBeCloseTo(0x56 / 255, 6)
+    expect(uniforms[3]).toBeCloseTo(0x80 / 255, 6)
   })
 
   it('registers the dither effect with stable default uniforms', () => {
@@ -249,10 +298,10 @@ describe('GPU effect registry', () => {
       sizeX: 0.5,
       sizeY: 0.5,
       rotation: 0,
-      feather: 0.15,
+      feather: 0.3,
       invertMask: false,
       showMask: false,
-      exposure: 0,
+      exposure: 0.3,
       saturation: 0,
       temperature: 0,
       tint: 0,
@@ -261,7 +310,7 @@ describe('GPU effect registry', () => {
 
     expect(Array.from(effect!.packUniforms(defaults, 1920, 1080)!)).toEqual(
       Array.from(
-        new Float32Array([0, 0.5, 0.5, 0.5, 0.5, 0, 0.15, 0, 0, 0, 0, 0, 0, 1, 1920, 1080]),
+        new Float32Array([0, 0.5, 0.5, 0.5, 0.5, 0, 0.3, 0, 0, 0.3, 0, 0, 0, 1, 1920, 1080]),
       ),
     )
 

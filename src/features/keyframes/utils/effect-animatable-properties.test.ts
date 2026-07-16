@@ -128,7 +128,7 @@ describe('effect animatable properties', () => {
     expect(getAnimatableEffectPropertiesForItem(item)).toContain(property)
     expect(getEffectPropertyBaseValue(item, property)).toBe(0xff0000)
     expect(getResolvedAnimatedEffectParamValue(effectEntry, itemKeyframes, 5, 'glowColor')).toBe(
-      '#800080',
+      '#ba00c2',
     )
 
     const resolved = resolveAnimatedGpuEffects([effectEntry], itemKeyframes, 5)
@@ -136,6 +136,6 @@ describe('effect animatable properties', () => {
     if (resolved?.[0]?.effect.type !== 'gpu-effect') {
       throw new Error('Expected gpu effect')
     }
-    expect(resolved[0].effect.params.glowColor).toBe('#800080')
+    expect(resolved[0].effect.params.glowColor).toBe('#ba00c2')
   })
 })

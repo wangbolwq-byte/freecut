@@ -15,7 +15,7 @@ import {
   Lock,
   Sparkles,
   Timer,
-  X,
+  RotateCcw,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/shared/ui/cn'
@@ -28,6 +28,7 @@ import type {
   Keyframe,
   KeyframeRef,
 } from '@/types/keyframe'
+import { isEffectAnimatableProperty } from '@/types/keyframe'
 import type { BlockedFrameRange } from '../../utils/transition-region'
 import { HOTKEY_OPTIONS } from '@/config/hotkeys'
 import { getFrameAxisX, getFrameFromAxisX, getVisibleKeyframeX } from './layout'
@@ -72,7 +73,6 @@ import {
   PROPERTY_COLUMN_WIDTH,
   SPACIOUS_PROPERTY_COLUMN_WIDTH,
   ROW_HEIGHT,
-  RULER_HEIGHT,
   SNAP_THRESHOLD_PX,
   ZOOM_IN_FACTOR,
   ZOOM_OUT_FACTOR,
@@ -119,8 +119,10 @@ import {
 import {
   getKeyframeGroupLabel,
   getKeyframePropertyLabel,
+  getKeyframePropertyShortLabel,
 } from '@/features/keyframes/utils/property-i18n'
 import { useCoalescedScrub } from '../use-coalesced-scrub'
+import { getScrubbedPropertyValue } from './property-value-scrub'
 
 interface DopesheetEditorProps {
   /** Shared time viewport when split mode needs synchronized frame zoom/pan */
@@ -163,6 +165,8 @@ interface DopesheetEditorProps {
   onSelectionChange?: (keyframeIds: Set<string>) => void
   /** Callback when property selection changes */
   onPropertyChange?: (property: AnimatableProperty | null) => void
+  /** Notify an embedding surface when a property's inline curve is shown or hidden. */
+  onCurveVisibilityChange?: (property: AnimatableProperty, visible: boolean) => void
   /** Callback when a property row becomes the active interaction target */
   onActivePropertyChange?: (property: AnimatableProperty) => void
   /** Callback when playhead is scrubbed (frame is clip-relative) */
@@ -191,6 +195,10 @@ interface DopesheetEditorProps {
     value: number,
     options?: { allowCreate?: boolean },
   ) => void
+  /** Live no-undo value updates used while horizontally scrubbing an input. */
+  onPropertyValuePreview?: (property: AnimatableProperty, value: number) => void
+  /** Reset effect parameters to their definition defaults and clear their keyframes. */
+  onResetPropertiesToDefault?: (properties: AnimatableProperty[]) => void
   /** Callback to remove selected keyframes */
   onRemoveKeyframes?: (refs: KeyframeRef[]) => void
   /** Copy selected keyframes */
@@ -230,6 +238,37 @@ interface DopesheetEditorProps {
   /** Use the wider property column + value inputs (Animate workspace, where
    *  there is room). Defaults to the compact sidebar sizing. */
   spacious?: boolean
+  /** Render selected property groups as direct rows in the graph property column. */
+  inlinePropertyGroupIds?: readonly string[]
+  /** Render only property/keyframe rows for embedding beneath another surface's header. */
+  presentation?: 'editor' | 'lanes'
+  /** Override the property column width when embedding lane rows. */
+  propertyColumnWidth?: number
+  /** Show one selected property curve at a time instead of layered graph curves. */
+  singleCurveMode?: boolean
+  /** Keep the selected curve toggle visually active when its graph is rendered
+   *  by an external pane rather than this editor's own right side. */
+  selectedCurveVisibleExternally?: boolean
+  /** Optional controlled property filter for embedded lane presentations. */
+  propertyFilter?: 'all' | 'keyframed'
+  /** Absolute frame where a generated procedural band begins. */
+  proceduralFrameOffset?: number
+  /** Duration used for generated procedural bands. Defaults to the editor range. */
+  proceduralDurationInFrames?: number
+  /** Parameter groups visible when this editor instance first opens. */
+  initialVisibleGroupIds?: readonly string[]
+  /** Render the playhead. Disable it when the parent owns one shared overlay. */
+  showPlayhead?: boolean
+  /** Activate editor-only shortcuts when this surface owns pointer or keyboard focus. */
+  shortcutsEnabled?: boolean
+  /** User-configurable bindings for high-frequency keyframe actions. */
+  shortcuts?: {
+    toggleKeyframe: string
+    previousKeyframe: string
+    nextKeyframe: string
+    toggleAutoKey: string
+    fitKeyframes: string
+  }
   /** Additional class name */
   className?: string
 }
@@ -239,6 +278,7 @@ type StructureRow = { property: AnimatableProperty; keyframes: Keyframe[] }
 // Stable empty fallbacks so memoized timeline cells don't see fresh `[]` refs.
 const EMPTY_KEYFRAMES: Keyframe[] = []
 const EMPTY_STRUCTURE_ROWS: StructureRow[] = []
+const EMPTY_PROPERTY_GROUP_IDS: readonly string[] = []
 const EMPTY_FRAME_GROUPS: DopesheetPropertyGroupStructure<StructureRow>['frameGroups'] = []
 
 export const DopesheetEditor = memo(function DopesheetEditor({
@@ -260,6 +300,7 @@ export const DopesheetEditor = memo(function DopesheetEditor({
   onSegmentEasingChange,
   onSelectionChange,
   onPropertyChange,
+  onCurveVisibilityChange,
   onActivePropertyChange,
   onScrub,
   onScrubStart,
@@ -271,6 +312,8 @@ export const DopesheetEditor = memo(function DopesheetEditor({
   onDuplicateKeyframes,
   propertyValues = {},
   onPropertyValueCommit,
+  onPropertyValuePreview,
+  onResetPropertiesToDefault,
   onRemoveKeyframes,
   onCopyKeyframes,
   onCutKeyframes,
@@ -289,6 +332,18 @@ export const DopesheetEditor = memo(function DopesheetEditor({
   disabled = false,
   visualizationMode = 'dopesheet',
   spacious = false,
+  inlinePropertyGroupIds = EMPTY_PROPERTY_GROUP_IDS,
+  presentation = 'editor',
+  propertyColumnWidth,
+  singleCurveMode = false,
+  selectedCurveVisibleExternally = false,
+  propertyFilter,
+  proceduralFrameOffset = 0,
+  proceduralDurationInFrames = totalFrames,
+  initialVisibleGroupIds,
+  showPlayhead = true,
+  shortcutsEnabled = false,
+  shortcuts,
   className,
 }: DopesheetEditorProps) {
   const { t } = useTranslation()
@@ -299,7 +354,8 @@ export const DopesheetEditor = memo(function DopesheetEditor({
   const showGraphPane = visualizationMode !== 'dopesheet'
   const isSplitView = visualizationMode === 'split'
   // Wider property column + value inputs when there is room (Animate workspace).
-  const columnWidth = spacious ? SPACIOUS_PROPERTY_COLUMN_WIDTH : PROPERTY_COLUMN_WIDTH
+  const columnWidth =
+    propertyColumnWidth ?? (spacious ? SPACIOUS_PROPERTY_COLUMN_WIDTH : PROPERTY_COLUMN_WIDTH)
   const timelineRef = useRef<HTMLDivElement>(null)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const graphPaneRef = useRef<HTMLDivElement>(null)
@@ -316,6 +372,16 @@ export const DopesheetEditor = memo(function DopesheetEditor({
   const setAutoKeyframeEnabled = useAutoKeyframeStore((state) => state.setAutoKeyframeEnabled)
   const toggleAutoKeyframeEnabled = useAutoKeyframeStore((state) => state.toggleAutoKeyframeEnabled)
   const skipNextBlurCommitPropertyRef = useRef<AnimatableProperty | null>(null)
+  const valueDraftAtFocusRef = useRef<Partial<Record<AnimatableProperty, string>>>({})
+  const valueScrubRef = useRef<{
+    property: AnimatableProperty
+    pointerId: number
+    startX: number
+    startValue: number
+    lastValue: number
+    lastDisplay: string
+    didDrag: boolean
+  } | null>(null)
   const appliedDragPreviewFramesRef = useRef<Record<string, number> | null>(null)
   const [sheetPreviewFrames, setSheetPreviewFrames] = useState<Record<string, number> | null>(null)
   const [sheetPreviewDuplicateKeyframeIds, setSheetPreviewDuplicateKeyframeIds] = useState<
@@ -343,7 +409,9 @@ export const DopesheetEditor = memo(function DopesheetEditor({
       onFrameViewportChange,
     })
 
-  const { width: timelineWidth } = useElementSize(timelineRef, { deps: [visualizationMode] })
+  const { width: timelineWidth } = useElementSize(timelineRef, {
+    deps: [visualizationMode],
+  })
 
   const availableProperties = useMemo(
     () => Object.keys(keyframesByProperty) as AnimatableProperty[],
@@ -354,12 +422,19 @@ export const DopesheetEditor = memo(function DopesheetEditor({
   // has a single keyframe.
   const graphableProperties = useMemo(
     () =>
-      availableProperties.filter((property) => (keyframesByProperty[property]?.length ?? 0) >= 2),
+      availableProperties.filter(
+        (property) =>
+          !isColorAnimatableProperty(property) && (keyframesByProperty[property]?.length ?? 0) >= 2,
+      ),
     [availableProperties, keyframesByProperty],
   )
   const allPropertyGroups = useMemo(
     () => getPropertyAccordionGroups(availableProperties),
     [availableProperties],
+  )
+  const inlinePropertyGroupIdSet = useMemo(
+    () => new Set(inlinePropertyGroupIds),
+    [inlinePropertyGroupIds],
   )
   const propertyGroupIdByProperty = useMemo(() => {
     const map = new Map<AnimatableProperty, string>()
@@ -377,8 +452,15 @@ export const DopesheetEditor = memo(function DopesheetEditor({
       ),
     [availableProperties, keyframesByProperty],
   )
+  const itemMotionModifiers = useItemsStore((s) => s.itemById[itemId]?.motionModifiers)
+  const proceduralBandByProperty = useMemo(
+    () =>
+      getProceduralBands(itemMotionModifiers, proceduralDurationInFrames, proceduralFrameOffset),
+    [itemMotionModifiers, proceduralDurationInFrames, proceduralFrameOffset],
+  )
   const {
     graphVisibleProperties,
+    setGraphVisibleProperties,
     graphRulerUnit,
     setGraphRulerUnit,
     showAllGraphHandles,
@@ -407,7 +489,13 @@ export const DopesheetEditor = memo(function DopesheetEditor({
     isPropertyLocked,
     toggleLockedProperty,
     setGroupLocked,
-  } = usePropertyFilters({ allPropertyGroups, availableProperties })
+  } = usePropertyFilters({
+    allPropertyGroups,
+    availableProperties,
+    initialVisibleGroupIds,
+  })
+  const filterKeyframedOnly =
+    propertyFilter === undefined ? showKeyframedOnly : propertyFilter === 'keyframed'
 
   const filteredProperties = useMemo(
     () =>
@@ -415,14 +503,21 @@ export const DopesheetEditor = memo(function DopesheetEditor({
         const groupId = propertyGroupIdByProperty.get(property)
         const groupVisible = groupId ? (visibleGroups[groupId] ?? true) : true
         if (!groupVisible) return false
-        if (showKeyframedOnly && !keyframedPropertyIds.has(property)) return false
+        if (
+          filterKeyframedOnly &&
+          !keyframedPropertyIds.has(property) &&
+          !(propertyFilter === 'keyframed' && proceduralBandByProperty.has(property))
+        )
+          return false
         return true
       }),
     [
       availableProperties,
       keyframedPropertyIds,
+      proceduralBandByProperty,
       propertyGroupIdByProperty,
-      showKeyframedOnly,
+      propertyFilter,
+      filterKeyframedOnly,
       visibleGroups,
     ],
   )
@@ -431,7 +526,7 @@ export const DopesheetEditor = memo(function DopesheetEditor({
   const visibleProperties = filteredProperties
   const propertyColumnProperties = filteredProperties
   const hasPropertyFilters =
-    showKeyframedOnly || allPropertyGroups.some((group) => visibleGroups[group.id] === false)
+    filterKeyframedOnly || allPropertyGroups.some((group) => visibleGroups[group.id] === false)
 
   // Frame-independent keyframe data. These references only change when the
   // properties or keyframes change — NOT when the playhead moves — so the
@@ -767,15 +862,18 @@ export const DopesheetEditor = memo(function DopesheetEditor({
     let top = 0
 
     for (const group of groupedSheetRows) {
-      entries.push({ type: 'group', group, top })
-      top += GROUP_HEADER_HEIGHT
+      const inline = inlinePropertyGroupIdSet.has(group.id)
+      if (!inline) {
+        entries.push({ type: 'group', group, top })
+        top += GROUP_HEADER_HEIGHT
+      }
 
-      if (!(expandedGroups[group.id] ?? true)) {
+      if (!inline && !(expandedGroups[group.id] ?? true)) {
         continue
       }
 
       for (const row of group.rows) {
-        entries.push({ type: 'row', row, top })
+        entries.push({ type: 'row', row, top, indented: !inline })
         top += ROW_HEIGHT
       }
     }
@@ -784,7 +882,7 @@ export const DopesheetEditor = memo(function DopesheetEditor({
       entries,
       contentHeight: top,
     }
-  }, [expandedGroups, groupedSheetRows])
+  }, [expandedGroups, groupedSheetRows, inlinePropertyGroupIdSet])
   const keyframePoints = useMemo(
     () =>
       renderedSheetEntries.entries.flatMap((entry) => {
@@ -899,14 +997,6 @@ export const DopesheetEditor = memo(function DopesheetEditor({
         (range) => currentFrame >= range.start && currentFrame < range.end,
       ),
     [transitionBlockedRanges, currentFrame],
-  )
-
-  // Procedural motion (drift / breath / shake) isn't keyed, so show it as a band
-  // per driven property instead of diamonds, until baked.
-  const itemMotionModifiers = useItemsStore((s) => s.itemById[itemId]?.motionModifiers)
-  const proceduralBandByProperty = useMemo(
-    () => getProceduralBands(itemMotionModifiers, totalFrames),
-    [itemMotionModifiers, totalFrames],
   )
 
   // Adds inside a transition region are rejected by the action layer; surface
@@ -1037,6 +1127,41 @@ export const DopesheetEditor = memo(function DopesheetEditor({
     updateViewport({ startFrame: 0, endFrame: contentFrameMax })
   }, [contentFrameMax, updateViewport])
 
+  const fitKeyframesInView = useCallback(() => {
+    const selectedFrames = Array.from(selectedKeyframeIds, (keyframeId) =>
+      keyframeMetaById.get(keyframeId),
+    )
+      .filter((meta): meta is KeyframeMeta => Boolean(meta))
+      .map((meta) => meta.keyframe.frame)
+
+    if (selectedFrames.length === 0) {
+      resetViewport()
+      return
+    }
+
+    const minFrame = Math.min(...selectedFrames)
+    const maxFrame = Math.max(...selectedFrames)
+    const selectionRange = Math.max(1, maxFrame - minFrame)
+    const paddedRange = Math.max(
+      minViewportFrames,
+      selectionRange + Math.max(4, selectionRange * 0.2),
+    )
+    const centerFrame = (minFrame + maxFrame) / 2
+    updateViewport(
+      normalizeViewport({
+        startFrame: Math.round(centerFrame - paddedRange / 2),
+        endFrame: Math.round(centerFrame + paddedRange / 2),
+      }),
+    )
+  }, [
+    keyframeMetaById,
+    minViewportFrames,
+    normalizeViewport,
+    resetViewport,
+    selectedKeyframeIds,
+    updateViewport,
+  ])
+
   const handleRemoveKeyframes = useCallback(() => {
     if (!onRemoveKeyframes || selectedRefs.length === 0) return
     onRemoveKeyframes(selectedRefs)
@@ -1161,11 +1286,32 @@ export const DopesheetEditor = memo(function DopesheetEditor({
   const activateProperty = useCallback(
     (property: AnimatableProperty) => {
       if (showGraphPane) {
+        if (singleCurveMode) {
+          setGraphVisibleProperties(new Set([property]))
+          onCurveVisibilityChange?.(property, true)
+        }
         onPropertyChange?.(property)
       }
       onActivePropertyChange?.(property)
     },
-    [onActivePropertyChange, onPropertyChange, showGraphPane],
+    [
+      onActivePropertyChange,
+      onCurveVisibilityChange,
+      onPropertyChange,
+      setGraphVisibleProperties,
+      showGraphPane,
+      singleCurveMode,
+    ],
+  )
+
+  const showSinglePropertyCurve = useCallback(
+    (property: AnimatableProperty) => {
+      setGraphVisibleProperties(new Set([property]))
+      onPropertyChange?.(property)
+      onActivePropertyChange?.(property)
+      onCurveVisibilityChange?.(property, true)
+    },
+    [onActivePropertyChange, onCurveVisibilityChange, onPropertyChange, setGraphVisibleProperties],
   )
 
   const removeKeyframesForRows = useCallback(
@@ -1386,11 +1532,167 @@ export const DopesheetEditor = memo(function DopesheetEditor({
     [formatPropertyValue, isPropertyLocked, onPropertyValueCommit, propertyValues, valueDrafts],
   )
 
+  const handleValueScrubStart = useCallback(
+    (event: React.PointerEvent<HTMLInputElement>, property: AnimatableProperty) => {
+      if (event.button !== 0 || isColorAnimatableProperty(property)) return
+      const startValue = Number(valueDrafts[property] ?? propertyValues[property])
+      if (!Number.isFinite(startValue)) return
+
+      valueScrubRef.current = {
+        property,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startValue,
+        lastValue: startValue,
+        lastDisplay: String(startValue),
+        didDrag: false,
+      }
+      setPointerCaptureSafely(event.currentTarget, event.pointerId)
+    },
+    [propertyValues, valueDrafts],
+  )
+
+  const handleValueScrubMove = useCallback(
+    (event: React.PointerEvent<HTMLInputElement>, property: AnimatableProperty) => {
+      const scrub = valueScrubRef.current
+      if (!scrub || scrub.pointerId !== event.pointerId || scrub.property !== property) return
+      const deltaX = event.clientX - scrub.startX
+      if (!scrub.didDrag && Math.abs(deltaX) < DRAG_THRESHOLD) return
+
+      if (!scrub.didDrag) {
+        scrub.didDrag = true
+        activateProperty(property)
+        onDragStart?.()
+      }
+
+      event.preventDefault()
+      const range = PROPERTY_VALUE_RANGES[property]
+      const next = getScrubbedPropertyValue({
+        startValue: scrub.startValue,
+        deltaX,
+        decimals: range?.decimals ?? 2,
+        min: range?.min,
+        max: range?.max,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+      })
+      scrub.lastValue = next.value
+      scrub.lastDisplay = next.display
+      setValueDrafts((previous) => ({ ...previous, [property]: next.display }))
+      onPropertyValuePreview?.(property, next.value)
+    },
+    [activateProperty, onDragStart, onPropertyValuePreview],
+  )
+
+  const handleValueScrubEnd = useCallback(
+    (event: React.PointerEvent<HTMLInputElement>, property: AnimatableProperty) => {
+      const scrub = valueScrubRef.current
+      if (!scrub || scrub.pointerId !== event.pointerId || scrub.property !== property) return
+      valueScrubRef.current = null
+      if (!scrub.didDrag) return
+
+      event.preventDefault()
+      valueDraftAtFocusRef.current[property] = scrub.lastDisplay
+      if (onPropertyValuePreview) {
+        onDragEnd?.()
+      } else {
+        onPropertyValueCommit?.(property, scrub.lastValue, { allowCreate: true })
+      }
+    },
+    [onDragEnd, onPropertyValueCommit, onPropertyValuePreview],
+  )
+
   const nudgeSelectedKeyframes = useCallback(
     (deltaFrames: number) => {
       moveSelectedKeyframesByDelta(deltaFrames)
     },
     [moveSelectedKeyframesByDelta],
+  )
+
+  const activePropertyRow = selectedProperty
+    ? propertyRowByProperty.get(selectedProperty)
+    : undefined
+
+  useHotkeys(
+    shortcuts?.toggleKeyframe ?? '',
+    (event) => {
+      event.preventDefault()
+      if (activePropertyRow) {
+        handleRowToggleKeyframe(
+          activePropertyRow.property,
+          activePropertyRow.controls.currentKeyframes,
+        )
+      }
+    },
+    {
+      ...HOTKEY_OPTIONS,
+      enabled:
+        shortcutsEnabled && !disabled && Boolean(shortcuts?.toggleKeyframe && activePropertyRow),
+    },
+    [activePropertyRow, disabled, handleRowToggleKeyframe, shortcutsEnabled],
+  )
+
+  useHotkeys(
+    shortcuts?.previousKeyframe ?? '',
+    (event) => {
+      event.preventDefault()
+      if (activePropertyRow) {
+        handleRowNavigate(activePropertyRow.property, activePropertyRow.controls.prevKeyframe)
+      }
+    },
+    {
+      ...HOTKEY_OPTIONS,
+      enabled:
+        shortcutsEnabled && !disabled && Boolean(shortcuts?.previousKeyframe && activePropertyRow),
+    },
+    [activePropertyRow, disabled, handleRowNavigate, shortcutsEnabled],
+  )
+
+  useHotkeys(
+    shortcuts?.nextKeyframe ?? '',
+    (event) => {
+      event.preventDefault()
+      if (activePropertyRow) {
+        handleRowNavigate(activePropertyRow.property, activePropertyRow.controls.nextKeyframe)
+      }
+    },
+    {
+      ...HOTKEY_OPTIONS,
+      enabled:
+        shortcutsEnabled && !disabled && Boolean(shortcuts?.nextKeyframe && activePropertyRow),
+    },
+    [activePropertyRow, disabled, handleRowNavigate, shortcutsEnabled],
+  )
+
+  useHotkeys(
+    shortcuts?.toggleAutoKey ?? '',
+    (event) => {
+      event.preventDefault()
+      if (activePropertyRow) {
+        handleRowAutoKeyToggle(activePropertyRow.property)
+      }
+    },
+    {
+      ...HOTKEY_OPTIONS,
+      enabled:
+        shortcutsEnabled &&
+        !disabled &&
+        Boolean(shortcuts?.toggleAutoKey && activePropertyRow && onPropertyValueCommit),
+    },
+    [activePropertyRow, disabled, handleRowAutoKeyToggle, onPropertyValueCommit, shortcutsEnabled],
+  )
+
+  useHotkeys(
+    shortcuts?.fitKeyframes ?? '',
+    (event) => {
+      event.preventDefault()
+      fitKeyframesInView()
+    },
+    {
+      ...HOTKEY_OPTIONS,
+      enabled: shortcutsEnabled && !disabled && Boolean(shortcuts?.fitKeyframes),
+    },
+    [disabled, fitKeyframesInView, shortcutsEnabled],
   )
 
   useHotkeys(
@@ -2018,10 +2320,16 @@ export const DopesheetEditor = memo(function DopesheetEditor({
   const renderPropertyRowContent = useCallback(
     (row: DopesheetPropertyRow, options?: { indented?: boolean }) => {
       const rowLocked = isPropertyLocked(row.property)
-      const curveVisible = graphVisibleProperties.has(row.property)
+      const curveVisible = singleCurveMode
+        ? (showGraphPane || selectedCurveVisibleExternally) && selectedProperty === row.property
+        : graphVisibleProperties.has(row.property)
       const rowLabel = getKeyframePropertyLabel(t, row.property)
-      const showLeftClusterAtRest =
-        (autoKeyEnabledByProperty[row.property] ?? false) || rowLocked || curveVisible
+      const rowDisplayLabel = getKeyframePropertyShortLabel(t, row.property)
+      const canResetEffectProperty =
+        isEffectAnimatableProperty(row.property) &&
+        !!onResetPropertiesToDefault &&
+        !disabled &&
+        !rowLocked
 
       return (
         <div
@@ -2031,20 +2339,16 @@ export const DopesheetEditor = memo(function DopesheetEditor({
             // faint vertical spine so the column reads as a tree.
             options?.indented &&
               "relative pl-6 before:absolute before:inset-y-0 before:left-3 before:w-px before:bg-border/40 before:content-['']",
-            row.controls.hasKeyframeAtCurrentFrame && 'bg-primary/10',
+            row.controls.hasKeyframeAtCurrentFrame &&
+              (presentation === 'lanes' ? 'bg-accent/70' : 'bg-primary/10'),
             showGraphPane && graphVisibleProperties.has(row.property) && 'bg-accent/40',
+            selectedProperty === row.property && 'bg-accent/55',
             showGraphPane && !rowLocked && 'cursor-pointer',
             rowLocked && 'opacity-70',
           )}
           onClick={showGraphPane && !rowLocked ? () => activateProperty(row.property) : undefined}
         >
-          <div
-            className={cn(
-              'flex items-center gap-px self-stretch',
-              !showLeftClusterAtRest &&
-                'opacity-0 transition-opacity duration-100 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto',
-            )}
-          >
+          <div className="flex items-center gap-px self-stretch">
             <Button
               type="button"
               variant="ghost"
@@ -2058,6 +2362,14 @@ export const DopesheetEditor = memo(function DopesheetEditor({
               )}
               onClick={(event) => {
                 event.stopPropagation()
+                if (singleCurveMode) {
+                  if (curveVisible) {
+                    onCurveVisibilityChange?.(row.property, false)
+                  } else {
+                    showSinglePropertyCurve(row.property)
+                  }
+                  return
+                }
                 togglePropertyCurve(row.property)
               }}
               title={t('timeline.keyframeEditor.showPropertyCurve', {
@@ -2150,22 +2462,33 @@ export const DopesheetEditor = memo(function DopesheetEditor({
               <Timer className={MINI_ICON_CLASS} />
             </Button>
           </div>
-          <div className="flex h-full min-w-0 flex-1 items-center truncate pl-[10px] pr-1 text-[9px] font-medium leading-none text-foreground/90">
-            {rowLabel}
+          <div
+            className="flex h-full min-w-0 flex-1 items-center truncate pl-[10px] pr-1 text-[9px] font-medium leading-none text-foreground/90"
+            title={rowLabel}
+          >
+            {rowDisplayLabel}
           </div>
           <div className="ml-auto flex items-center gap-0">
             <Input
               type={isColorAnimatableProperty(row.property) ? 'text' : 'number'}
               value={valueDrafts[row.property] ?? ''}
               onChange={(event) => handleRowValueChange(row.property, event.target.value)}
+              onPointerDown={(event) => handleValueScrubStart(event, row.property)}
+              onPointerMove={(event) => handleValueScrubMove(event, row.property)}
+              onPointerUp={(event) => handleValueScrubEnd(event, row.property)}
+              onPointerCancel={(event) => handleValueScrubEnd(event, row.property)}
               onFocus={() => {
                 activateProperty(row.property)
                 setEditingValueProperty(row.property)
+                valueDraftAtFocusRef.current[row.property] = valueDrafts[row.property] ?? ''
               }}
               onBlur={() => {
+                const draftChanged =
+                  valueDraftAtFocusRef.current[row.property] !== (valueDrafts[row.property] ?? '')
+                delete valueDraftAtFocusRef.current[row.property]
                 if (skipNextBlurCommitPropertyRef.current === row.property) {
                   skipNextBlurCommitPropertyRef.current = null
-                } else {
+                } else if (draftChanged) {
                   handleRowValueCommit(row.property, {
                     allowCreate: autoKeyEnabledByProperty[row.property] ?? false,
                   })
@@ -2209,13 +2532,14 @@ export const DopesheetEditor = memo(function DopesheetEditor({
               }
               inputMode={isColorAnimatableProperty(row.property) ? 'text' : 'decimal'}
               className={cn(
-                'h-[18px] border-border/70 bg-background/85 px-1 py-0 text-right text-[9px] leading-none tabular-nums md:text-[9px]',
+                'h-5 border-border/70 bg-background/85 px-1.5 py-0 text-right text-[10px] leading-none tabular-nums md:text-[10px]',
                 '[appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none',
                 isColorAnimatableProperty(row.property)
                   ? 'w-[68px]'
                   : spacious
-                    ? 'w-[64px]'
+                    ? 'w-[80px]'
                     : 'w-[44px]',
+                !isColorAnimatableProperty(row.property) && 'cursor-ew-resize select-none',
               )}
               disabled={
                 disabled ||
@@ -2227,13 +2551,17 @@ export const DopesheetEditor = memo(function DopesheetEditor({
                 property: rowLabel,
                 defaultValue: `${rowLabel} value at playhead`,
               })}
+              title={t('timeline.keyframeEditor.scrubPropertyValue', {
+                property: rowLabel,
+                defaultValue: `Drag horizontally to adjust ${rowLabel}. Hold Shift for fine or Alt for ultra-fine control.`,
+              })}
             />
             <div className="flex items-center gap-0 rounded-sm border border-border/70 bg-background/85 px-0">
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="h-4 w-4 p-0 text-muted-foreground hover:text-foreground opacity-0 transition-opacity duration-100 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto"
+                className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
                 onClick={() => handleRowNavigate(row.property, row.controls.prevKeyframe)}
                 disabled={disabled || row.controls.prevKeyframe === null || !onNavigateToKeyframe}
                 title={t('timeline.keyframeEditor.previousPropertyKeyframe', {
@@ -2252,7 +2580,7 @@ export const DopesheetEditor = memo(function DopesheetEditor({
                 variant="ghost"
                 size="sm"
                 className={cn(
-                  'h-4 w-4 p-0 hover:bg-transparent',
+                  'h-5 w-5 p-0 hover:bg-transparent',
                   row.controls.hasKeyframeAtCurrentFrame
                     ? 'text-neutral-200 hover:text-neutral-200'
                     : 'text-muted-foreground hover:text-foreground',
@@ -2307,7 +2635,7 @@ export const DopesheetEditor = memo(function DopesheetEditor({
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="h-4 w-4 p-0 text-muted-foreground hover:text-foreground opacity-0 transition-opacity duration-100 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto"
+                className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
                 onClick={() => handleRowNavigate(row.property, row.controls.nextKeyframe)}
                 disabled={disabled || row.controls.nextKeyframe === null || !onNavigateToKeyframe}
                 title={t('timeline.keyframeEditor.nextPropertyKeyframe', {
@@ -2326,22 +2654,40 @@ export const DopesheetEditor = memo(function DopesheetEditor({
               type="button"
               variant="ghost"
               size="sm"
-              className="h-4 w-4 p-0 text-muted-foreground hover:text-foreground opacity-0 transition-opacity duration-100 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto"
+              className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
               onClick={(event) => {
                 event.stopPropagation()
-                handleClearProperty(row.property)
+                if (canResetEffectProperty) {
+                  onResetPropertiesToDefault?.([row.property])
+                } else {
+                  handleClearProperty(row.property)
+                }
               }}
-              disabled={!canClearRow(row)}
-              title={t('timeline.keyframeEditor.clearPropertyKeyframes', {
-                property: rowLabel,
-                defaultValue: `Clear ${rowLabel} keyframes`,
-              })}
-              aria-label={t('timeline.keyframeEditor.clearPropertyKeyframes', {
-                property: rowLabel,
-                defaultValue: `Clear ${rowLabel} keyframes`,
-              })}
+              disabled={!canResetEffectProperty && !canClearRow(row)}
+              title={t(
+                canResetEffectProperty
+                  ? 'timeline.keyframeEditor.resetEffectPropertyDefault'
+                  : 'timeline.keyframeEditor.resetPropertyAnimation',
+                {
+                  property: rowLabel,
+                  defaultValue: canResetEffectProperty
+                    ? `Reset ${rowLabel} to its default value`
+                    : `Reset ${rowLabel} animation to its base value`,
+                },
+              )}
+              aria-label={t(
+                canResetEffectProperty
+                  ? 'timeline.keyframeEditor.resetEffectPropertyDefault'
+                  : 'timeline.keyframeEditor.resetPropertyAnimation',
+                {
+                  property: rowLabel,
+                  defaultValue: canResetEffectProperty
+                    ? `Reset ${rowLabel} to its default value`
+                    : `Reset ${rowLabel} animation to its base value`,
+                },
+              )}
             >
-              <X className="h-[9px] w-[9px]" />
+              <RotateCcw className="h-[9px] w-[9px]" />
             </Button>
           </div>
         </div>
@@ -2360,17 +2706,27 @@ export const DopesheetEditor = memo(function DopesheetEditor({
       handleRowToggleKeyframe,
       handleRowValueChange,
       handleRowValueCommit,
+      handleValueScrubEnd,
+      handleValueScrubMove,
+      handleValueScrubStart,
       isPropertyLocked,
       isCurrentFrameBlocked,
       onAddKeyframe,
       onNavigateToKeyframe,
+      onCurveVisibilityChange,
       onPropertyValueCommit,
+      onResetPropertiesToDefault,
       propertyValues,
+      presentation,
+      selectedProperty,
+      selectedCurveVisibleExternally,
       t,
       togglePropertyCurve,
       toggleLockedProperty,
       valueDrafts,
       showGraphPane,
+      showSinglePropertyCurve,
+      singleCurveMode,
       spacious,
     ],
   )
@@ -2387,6 +2743,12 @@ export const DopesheetEditor = memo(function DopesheetEditor({
         unlockedRows.every((row) => autoKeyEnabledByProperty[row.property] ?? false)
       const canAddAny = group.rows.some((row) => canAddKeyframeForRow(row))
       const canClearAny = group.rows.some((row) => canClearRow(row))
+      const isEffectGroup = group.rows.every((row) => isEffectAnimatableProperty(row.property))
+      const canResetEffectGroup =
+        isEffectGroup &&
+        !!onResetPropertiesToDefault &&
+        !disabled &&
+        group.rows.some((row) => !isPropertyLocked(row.property))
       const isOpen = expandedGroups[group.id] ?? true
       const unlockedCurrentKeyframes = group.currentKeyframes.filter(
         ({ property }) => !isPropertyLocked(property),
@@ -2664,26 +3026,40 @@ export const DopesheetEditor = memo(function DopesheetEditor({
               type="button"
               variant="ghost"
               size="sm"
-              className={cn(
-                MINI_ICON_BUTTON_CLASS,
-                'text-muted-foreground hover:text-foreground',
-                'opacity-0 transition-opacity duration-100 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto',
-              )}
+              className={cn(MINI_ICON_BUTTON_CLASS, 'text-muted-foreground hover:text-foreground')}
               onClick={(event) => {
                 event.stopPropagation()
-                handleClearGroup(group)
+                if (canResetEffectGroup) {
+                  onResetPropertiesToDefault?.(groupProperties)
+                } else {
+                  handleClearGroup(group)
+                }
               }}
-              disabled={!canClearAny}
-              title={t('timeline.keyframeEditor.clearAllGroupKeyframes', {
-                group: groupLabel,
-                defaultValue: `Clear all ${groupLabel} keyframes`,
-              })}
-              aria-label={t('timeline.keyframeEditor.clearAllGroupKeyframes', {
-                group: groupLabel,
-                defaultValue: `Clear all ${groupLabel} keyframes`,
-              })}
+              disabled={!canResetEffectGroup && !canClearAny}
+              title={t(
+                canResetEffectGroup
+                  ? 'timeline.keyframeEditor.resetEffectGroupDefault'
+                  : 'timeline.keyframeEditor.resetGroupAnimation',
+                {
+                  group: groupLabel,
+                  defaultValue: canResetEffectGroup
+                    ? `Reset all ${groupLabel} properties to their default values`
+                    : `Reset all ${groupLabel} animations to their base values`,
+                },
+              )}
+              aria-label={t(
+                canResetEffectGroup
+                  ? 'timeline.keyframeEditor.resetEffectGroupDefault'
+                  : 'timeline.keyframeEditor.resetGroupAnimation',
+                {
+                  group: groupLabel,
+                  defaultValue: canResetEffectGroup
+                    ? `Reset all ${groupLabel} properties to their default values`
+                    : `Reset all ${groupLabel} animations to their base values`,
+                },
+              )}
             >
-              <X className={MINI_ICON_CLASS} />
+              <RotateCcw className={MINI_ICON_CLASS} />
             </Button>
           </div>
         </div>
@@ -2705,6 +3081,7 @@ export const DopesheetEditor = memo(function DopesheetEditor({
       onRemoveKeyframes,
       onNavigateToKeyframe,
       onPropertyValueCommit,
+      onResetPropertiesToDefault,
       setGroupLocked,
       t,
       toggleGroupCurves,
@@ -2756,7 +3133,7 @@ export const DopesheetEditor = memo(function DopesheetEditor({
             className="grid border-b border-border/60"
             style={{ ...propertyGridStyle, height: ROW_HEIGHT }}
           >
-            {renderPropertyRowContent(row, { indented: true })}
+            {renderPropertyRowContent(row, { indented: entry.indented })}
             <PropertyTimelineCell
               itemId={itemId}
               property={row.property}
@@ -2815,7 +3192,21 @@ export const DopesheetEditor = memo(function DopesheetEditor({
   )
   const propertyColumnElements = useMemo(
     () =>
-      groupedPropertyRows.flatMap((group) => {
+      groupedPropertyRows.flatMap<React.ReactNode>((group): React.ReactNode[] => {
+        const inline = inlinePropertyGroupIdSet.has(group.id)
+        const propertyElements = group.rows.map((row) => (
+          <div
+            key={row.property}
+            className="border-b border-border/60"
+            style={{ height: ROW_HEIGHT }}
+          >
+            {renderPropertyRowContent(row, { indented: !inline })}
+          </div>
+        ))
+        if (inline) {
+          return propertyElements
+        }
+
         const groupOpen = expandedGroups[group.id] ?? true
         const elements: React.ReactNode[] = [
           <div key={group.id} className="h-6 border-b border-border/60">
@@ -2827,19 +3218,15 @@ export const DopesheetEditor = memo(function DopesheetEditor({
           return elements
         }
 
-        return elements.concat(
-          group.rows.map((row) => (
-            <div
-              key={row.property}
-              className="border-b border-border/60"
-              style={{ height: ROW_HEIGHT }}
-            >
-              {renderPropertyRowContent(row, { indented: true })}
-            </div>
-          )),
-        )
+        return elements.concat(propertyElements)
       }),
-    [expandedGroups, groupedPropertyRows, renderGroupHeaderContent, renderPropertyRowContent],
+    [
+      expandedGroups,
+      groupedPropertyRows,
+      inlinePropertyGroupIdSet,
+      renderGroupHeaderContent,
+      renderPropertyRowContent,
+    ],
   )
   const emptyStateMessage = hasPropertyFilters
     ? t('timeline.keyframeEditor.noParametersMatch')
@@ -2870,17 +3257,6 @@ export const DopesheetEditor = memo(function DopesheetEditor({
       onRulerPointerMove={handleRulerPointerMove}
       onRulerPointerUp={handleRulerPointerUp}
       rulerTickElements={rulerTickElements}
-      playheadFlag={
-        <DopesheetPlayheadLine
-          variant="flag"
-          relativeFrame={currentFrame}
-          itemFrom={itemFrom}
-          totalFrames={totalFrames}
-          frameToX={frameToX}
-          maxLeft={effectiveTimelineWidth - 1}
-          className="absolute top-0 bottom-0 pointer-events-none z-10"
-        />
-      }
     />
   )
   // The timeline cells (ruler, rows, graph) all sit behind a 1px `border-l`, so
@@ -2888,7 +3264,7 @@ export const DopesheetEditor = memo(function DopesheetEditor({
   // those cells, so it must add that 1px to line up with ticks, keyframes and the
   // ruler flag.
   const timelineContentLeft = columnWidth + 1
-  const playheadOverlayElement = (
+  const playheadOverlayElement = showPlayhead ? (
     <div
       data-testid="dopesheet-playhead-clip"
       className="absolute top-0 bottom-0 right-0 overflow-hidden pointer-events-none z-20"
@@ -2903,15 +3279,14 @@ export const DopesheetEditor = memo(function DopesheetEditor({
         className="absolute top-0 bottom-0"
       />
     </div>
-  )
-  // Split view: one shared playhead line spanning the sheet + graph panes (the
-  // graph's own line is hidden via `hidePlayhead`). A single element guarantees
-  // the two panes can't drift in position or appearance.
-  const splitPlayheadOverlayElement = (
+  ) : null
+  // Split view: one playhead element spans the ruler, sheet, and graph panes.
+  // The graph's own line is hidden via `hidePlayhead`.
+  const splitPlayheadOverlayElement = showPlayhead ? (
     <div
       data-testid="dopesheet-playhead-clip"
-      className="absolute right-0 bottom-0 overflow-hidden pointer-events-none z-30"
-      style={{ left: timelineContentLeft, top: RULER_HEIGHT }}
+      className="absolute top-0 right-0 bottom-0 overflow-hidden pointer-events-none z-30"
+      style={{ left: timelineContentLeft }}
     >
       <DopesheetPlayheadLine
         relativeFrame={currentFrame}
@@ -2922,7 +3297,7 @@ export const DopesheetEditor = memo(function DopesheetEditor({
         className="absolute top-0 bottom-0"
       />
     </div>
-  )
+  ) : null
   const sheetBodyElement = (
     <DopesheetSheetBody
       scrollAreaRef={scrollAreaRef}
@@ -2934,6 +3309,7 @@ export const DopesheetEditor = memo(function DopesheetEditor({
       marqueeRect={marqueeRect}
       marqueeJustEnded={marqueeJustEndedRef.current}
       propertyColumnWidth={columnWidth}
+      subtractRulerHeight={presentation !== 'lanes'}
       onTimelineBackgroundPointerDown={handleTimelineBackgroundPointerDown}
     />
   )
@@ -2957,7 +3333,11 @@ export const DopesheetEditor = memo(function DopesheetEditor({
       itemId={itemId}
       keyframesByProperty={keyframesByProperty}
       graphDisplayProperty={graphDisplayProperty}
-      graphVisibleProperties={[...graphVisibleProperties]}
+      graphVisibleProperties={
+        singleCurveMode && graphDisplayProperty
+          ? [graphDisplayProperty]
+          : [...graphVisibleProperties]
+      }
       selectedKeyframeIds={selectedKeyframeIds}
       currentFrame={currentFrame}
       itemFrom={itemFrom}
@@ -2984,9 +3364,33 @@ export const DopesheetEditor = memo(function DopesheetEditor({
       graphRulerUnit={graphRulerUnit}
       autoZoomGraphHeight={autoZoomGraphHeight}
       graphVerticalZoomValue={graphVerticalZoomValue}
-      hidePlayhead={isSplitView}
+      hidePlayhead={!showPlayhead || isSplitView}
+      subtractRulerHeight={presentation !== 'lanes'}
     />
   )
+
+  if (presentation === 'lanes') {
+    return (
+      <div
+        className={cn(
+          'relative overflow-hidden',
+          disabled && 'opacity-60 pointer-events-none',
+          className,
+        )}
+        style={{ height, width }}
+        onWheel={handleWheel}
+        onKeyDown={handleGraphPaneKeyDown}
+      >
+        <div
+          ref={timelineRef}
+          className="pointer-events-none absolute inset-y-0 right-0"
+          style={{ left: columnWidth }}
+        />
+        {showGraphPane ? graphPaneElement : sheetBodyElement}
+        {showSheetPane ? playheadOverlayElement : null}
+      </div>
+    )
+  }
 
   return (
     <div
@@ -3002,7 +3406,7 @@ export const DopesheetEditor = memo(function DopesheetEditor({
             <DopesheetParameterMenu
               disabled={disabled}
               hasAvailableProperties={availableProperties.length > 0}
-              parameterFilter={showKeyframedOnly ? 'keyframed' : 'all'}
+              parameterFilter={filterKeyframedOnly ? 'keyframed' : 'all'}
               onToggleKeyframedOnly={() => setShowKeyframedOnly((prev) => !prev)}
               allPropertyGroups={allPropertyGroups}
               visibleGroups={visibleGroups}
@@ -3028,7 +3432,9 @@ export const DopesheetEditor = memo(function DopesheetEditor({
           )}
 
           <span className="text-xs text-muted-foreground">
-            {t('timeline.keyframeEditor.keyframes', { count: visibleKeyframes.length })}
+            {t('timeline.keyframeEditor.keyframes', {
+              count: visibleKeyframes.length,
+            })}
           </span>
 
           {isCurrentFrameBlocked && (
@@ -3132,10 +3538,19 @@ export const DopesheetEditor = memo(function DopesheetEditor({
             {/* Sheet on top, curve/graph below, with ONE shared playhead line
                 ({splitPlayheadOverlayElement}) drawn over both panes so they
                 stay identical in position and appearance. */}
-            <div className="relative min-h-0 flex-1 overflow-hidden" onWheel={handleWheel}>
+            <div
+              className="relative min-h-0 flex-1 overflow-hidden"
+              role="region"
+              aria-label={t('timeline.keyframeEditor.sheet')}
+              onWheel={handleWheel}
+            >
               {sheetBodyElement}
             </div>
-            <div className="min-h-0 flex-1 overflow-hidden border-t border-border/60">
+            <div
+              className="min-h-0 flex-1 overflow-hidden border-t border-border/60"
+              role="region"
+              aria-label={t('timeline.keyframeEditor.graph')}
+            >
               {graphPaneElement}
             </div>
             {splitPlayheadOverlayElement}

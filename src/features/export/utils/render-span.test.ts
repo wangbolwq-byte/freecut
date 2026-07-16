@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vite-plus/test'
-import type { VideoItem } from '@/types/timeline'
+import type { CompositionItem, VideoItem } from '@/types/timeline'
 import type { ActiveTransition } from './canvas-transitions'
 import {
   getItemRenderTimelineSpan,
@@ -7,6 +7,7 @@ import {
   getSourceFrameRampOffset,
   isAAContinuousSplit,
   resolveAATransitionRamps,
+  resolveCompositionSourceFrame,
   resolveTransitionRenderTimelineSpan,
 } from './render-span'
 
@@ -69,6 +70,24 @@ describe('render-span', () => {
       durationInFrames: 50,
       sourceStart: 8,
     })
+  })
+
+  it('maps retimed mixed-FPS compounds to the same source frame as the DOM player', () => {
+    const compound = {
+      id: 'compound-1',
+      type: 'composition',
+      trackId: 'track-1',
+      compositionId: 'nested-1',
+      compositionWidth: 1920,
+      compositionHeight: 1080,
+      from: 100,
+      durationInFrames: 90,
+      sourceStart: 10,
+      sourceFps: 60,
+      speed: 2,
+    } as CompositionItem
+
+    expect(resolveCompositionSourceFrame(compound, 115, 30, 60)).toBe(70)
   })
 
   describe('A-A continuous-split ramps', () => {

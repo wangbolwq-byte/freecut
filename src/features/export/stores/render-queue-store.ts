@@ -40,6 +40,7 @@ export interface RenderJob {
   status: RenderJobStatus
   progress: number
   phase?: RenderProgress['phase']
+  progressMessage?: string
   renderedFrames?: number
   totalFrames?: number
   /** Render range in project frames; null = whole project. */
@@ -145,6 +146,7 @@ export const useRenderQueueStore = create<RenderQueueState & RenderQueueActions>
               status: 'queued',
               progress: 0,
               phase: undefined,
+              progressMessage: undefined,
               renderedFrames: undefined,
               totalFrames: undefined,
               error: undefined,
@@ -203,6 +205,7 @@ export const useRenderQueueStore = create<RenderQueueState & RenderQueueActions>
               ...job,
               progress: progress.progress,
               phase: progress.phase,
+              progressMessage: progress.message,
               renderedFrames: progress.currentFrame,
               totalFrames: progress.totalFrames,
             }
