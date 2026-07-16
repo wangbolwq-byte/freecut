@@ -53,12 +53,30 @@ function contentType(filePath) {
 }
 
 /**
- * @param {{ distDir: string, resolveMedia?: (mediaId: string) => string | null, port?: number }} opts
+ * @param {{
+ *   distDir: string,
+ *   resolveMedia?: (mediaId: string) => string | null,
+ *   port?: number,
+ *   rootDocument?: string,
+ *   health?: Record<string, unknown>
+ * }} opts
  *   resolveMedia maps a media id to an absolute source-file path (or null). Omit
  *   to serve no media (e.g. edit-only).
- * @returns {Promise<{ base: string, harnessUrl: string, mediaUrl: (id: string) => string, close: () => Promise<void> }>}
+ * @returns {Promise<{
+ *   base: string,
+ *   port: number,
+ *   harnessUrl: string,
+ *   mediaUrl: (id: string) => string,
+ *   close: () => Promise<void>
+ * }>}
  */
-export async function createHarnessServer({ distDir, resolveMedia = () => null, port = 0 }) {
+export async function createHarnessServer({
+  distDir,
+  resolveMedia = () => null,
+  port = 0,
+  rootDocument = 'headless.html',
+  health,
+}) {
   const resolvedDist = path.resolve(distDir)
 
   const server = http.createServer(async (req, res) => {
@@ -74,6 +92,17 @@ export async function createHarnessServer({ distDir, resolveMedia = () => null, 
       if (pathname === '/favicon.ico') {
         res.writeHead(204)
         res.end()
+        return
+      }
+
+      if (pathname === '/health' && health) {
+        const body = JSON.stringify(health)
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Length': Buffer.byteLength(body),
+          'Cache-Control': 'no-store',
+        })
+        res.end(req.method === 'HEAD' ? undefined : body)
         return
       }
 
@@ -94,7 +123,7 @@ export async function createHarnessServer({ distDir, resolveMedia = () => null, 
       }
 
       let rel = pathname
-      if (rel === '/') rel = '/headless.html'
+      if (rel === '/') rel = `/${rootDocument}`
       rel = rel.replace(/^[/\\]+/, '')
       const filePath = resolveContained(resolvedDist, rel)
       await serveFile(req, res, filePath, { contentType: contentType(filePath), allowRange: false })
@@ -105,10 +134,12 @@ export async function createHarnessServer({ distDir, resolveMedia = () => null, 
   setHttpTimeouts(server)
 
   await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve))
-  const base = `http://127.0.0.1:${server.address().port}`
+  const listeningPort = server.address().port
+  const base = `http://127.0.0.1:${listeningPort}`
 
   return {
     base,
+    port: listeningPort,
     harnessUrl: `${base}/headless.html`,
     mediaUrl: (mediaId) => `${base}/media/${encodeURIComponent(mediaId)}`,
     close: () => new Promise((resolve) => server.close(() => resolve())),

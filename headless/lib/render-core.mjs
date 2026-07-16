@@ -287,7 +287,7 @@ export async function renderJob(
   setProgressLabel?.(path.basename(job.outPath))
   const downloadPromise = page.waitForEvent('download', { timeout: downloadTimeoutMs })
   downloadPromise.catch(() => {})
-  const summary = await page.evaluate((payload) => window.freecut.renderProject(payload), {
+  const summary = await page.evaluate((payload) => window.autocut.renderProject(payload), {
     project: job.project,
     settings: job.settings,
     media: job.media,

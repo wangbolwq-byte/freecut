@@ -48,6 +48,7 @@ function isStorageProtectedPath(pathname: string): boolean {
 
 const logger = createLogger('WorkspaceGate')
 const ELECTRON_GRANT_STORAGE_KEY = 'freecut:electron-directory-grant'
+const AUTOCUT_PROJECT_TOKEN_PARAM = 'autocutProjectToken'
 
 type GateStatus =
   | { kind: 'initializing' }
@@ -112,9 +113,12 @@ export function WorkspaceGate({ children }: { children: React.ReactNode }) {
         if (!cancelled) setStatus({ kind: 'unavailable' })
         return
       }
+      const projectToken = consumeAutoCutProjectToken()
+      const claimedGrant = projectToken ? await claimAutoCutProject(projectToken) : null
       const savedGrantId = localStorage.getItem(ELECTRON_GRANT_STORAGE_KEY)
-      const restored = savedGrantId ? await bridge.restoreGrant(savedGrantId) : null
-      const grant = restored ?? (await bridge.listGrants())[0] ?? null
+      const restored =
+        claimedGrant || !savedGrantId ? null : await bridge.restoreGrant(savedGrantId)
+      const grant = claimedGrant ?? restored ?? (await bridge.listGrants())[0] ?? null
       if (cancelled) return
       if (!grant) {
         setStatus({ kind: 'pick' })
@@ -248,4 +252,21 @@ export function WorkspaceGate({ children }: { children: React.ReactNode }) {
       onReconnect={handleReconnect}
     />
   )
+}
+
+async function claimAutoCutProject(token: string) {
+  const bridge = window.electronAutoCut
+  if (bridge?.runtime !== 'electron' || bridge.version !== 1) {
+    throw new Error('AutoCut project bridge is unavailable')
+  }
+  return await bridge.claimProject(token)
+}
+
+function consumeAutoCutProjectToken(): string | null {
+  const url = new URL(window.location.href)
+  const token = url.searchParams.get(AUTOCUT_PROJECT_TOKEN_PARAM)?.trim() ?? ''
+  if (!token) return null
+  url.searchParams.delete(AUTOCUT_PROJECT_TOKEN_PARAM)
+  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+  return token
 }

@@ -2,7 +2,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { parseArgs, chromeLaunchArgs } from './lib/cli.mjs'
+import { parseArgs } from './lib/cli.mjs'
+import {
+  assertAutoCutWorkspace,
+  withAutoCutBrowserSession,
+} from './lib/autocut-browser-session.mjs'
 import {
   capabilities,
   HEADLESS_API_VERSION,
@@ -13,8 +17,7 @@ import {
   mediaProbeRequestSchema,
   validate,
 } from './lib/contract.mjs'
-import { prepareJob, renderJob, startHarness } from './lib/render-core.mjs'
-import { PageSession } from './lib/page-session.mjs'
+import { prepareJob, renderJob } from './lib/render-core.mjs'
 import { collectAddClipMedia, resolveMediaFile } from './lib/workspace.mjs'
 import {
   acquireWriterLock,
@@ -67,25 +70,6 @@ const envelope = (value) => ({ ok: true, apiVersion: HEADLESS_API_VERSION, ...va
 const number = (value) => (value === undefined ? undefined : Number(value))
 const readJson = (file) => JSON.parse(fs.readFileSync(path.resolve(file), 'utf8'))
 
-async function withBrowser(workspace, args, operation) {
-  const { chromium } = await import('playwright')
-  const harness = await startHarness({ workspace, devUrl: args['harness-url'], build: args.build })
-  const browser = await chromium.launch({
-    channel: 'chrome',
-    headless: !args.head,
-    args: chromeLaunchArgs(),
-  })
-  const session = new PageSession({ browser, harnessUrl: harness.harnessUrl })
-  try {
-    await session.open()
-    return await operation(session.page, harness.mediaUrlOf)
-  } finally {
-    await session.close().catch(() => {})
-    await browser.close().catch(() => {})
-    await harness.closeServers().catch(() => {})
-  }
-}
-
 async function withWriter(workspace, args, operation) {
   if (args['break-lock'])
     console.error('Attempting explicit recovery of a confirmed-dead workspace writer lock')
@@ -101,9 +85,11 @@ async function withWriter(workspace, args, operation) {
 async function run(argv = process.argv.slice(2)) {
   const args = parseArgs(argv, { allowed: OPTIONS })
   const [group, action] = args._
-  const workspace = path.resolve(args.workspace ?? '.')
+  const workspace = path.resolve(args.workspace ?? process.env.AUTOCUT_WORKSPACE ?? '.')
   if (!fs.existsSync(workspace)) throw new Error(`Workspace not found: ${workspace}`)
+  assertAutoCutWorkspace(workspace)
   if (group === 'capabilities') return envelope(capabilities())
+  if (group === 'editor-url') return envelope(createEditorUrl(args))
   if (!action && group !== 'render')
     throw new Error('Expected a command such as project list or media import')
 
@@ -117,12 +103,15 @@ async function run(argv = process.argv.slice(2)) {
     return envelope(await getMediaResource(workspace, args.id))
   if (group === 'render') {
     if (!args.project) throw new Error('--project is required')
-    return withBrowser(workspace, args, async (page, mediaUrlOf) => {
+    return withAutoCutBrowserSession({ workspace, args }, async (page, mediaUrlOf) => {
+      const outputPath = args.out
+        ? path.resolve(workspace, args.out)
+        : path.join(workspace, 'exports', `${args.project}-render`)
       const job = prepareJob(
         workspace,
         {
           project: args.project,
-          ...(args.out ? { out: args.out } : {}),
+          out: outputPath,
           ...(args.codec ? { codec: args.codec } : {}),
           ...(args.container ? { container: args.container } : {}),
           ...(args.resolution ? { resolution: args.resolution } : {}),
@@ -135,6 +124,7 @@ async function run(argv = process.argv.slice(2)) {
         },
         mediaUrlOf,
       )
+      assertContainedOutput(workspace, job.outPath)
       const summary = await renderJob(page, job, {
         allowMissingMedia: Boolean(args['allow-missing-media']),
         downloadTimeoutMs: 0,
@@ -154,8 +144,8 @@ async function run(argv = process.argv.slice(2)) {
         ...(args.fps ? { fps: number(args.fps) } : {}),
         ...(args['background-color'] ? { backgroundColor: args['background-color'] } : {}),
       })
-      const project = await withBrowser(workspace, args, (page) =>
-        page.evaluate((value) => window.freecut.createProject(value), input),
+      const project = await withAutoCutBrowserSession({ workspace, args }, (page) =>
+        page.evaluate((value) => window.autocut.createProject(value), input),
       )
       return envelope(await createProjectResource(workspace, project))
     }
@@ -168,8 +158,8 @@ async function run(argv = process.argv.slice(2)) {
       })
       if (body.project.id !== undefined && body.project.id !== args.id)
         throw new Error('Project body id must equal --id')
-      const project = await withBrowser(workspace, args, (page) =>
-        page.evaluate((value) => window.freecut.normalizeProject(value), {
+      const project = await withAutoCutBrowserSession({ workspace, args }, (page) =>
+        page.evaluate((value) => window.autocut.normalizeProject(value), {
           ...body.project,
           id: args.id,
         }),
@@ -207,8 +197,8 @@ async function run(argv = process.argv.slice(2)) {
       delete next.height
       delete next.fps
       delete next.backgroundColor
-      const project = await withBrowser(workspace, args, (page) =>
-        page.evaluate((value) => window.freecut.normalizeProject(value), next),
+      const project = await withAutoCutBrowserSession({ workspace, args }, (page) =>
+        page.evaluate((value) => window.autocut.normalizeProject(value), next),
       )
       return envelope(await saveProjectResource(workspace, args.id, project, body))
     }
@@ -221,8 +211,8 @@ async function run(argv = process.argv.slice(2)) {
         force: Boolean(args.force),
       })
       const current = await getProjectResource(workspace, args.id)
-      const result = await withBrowser(workspace, args, async (page) => {
-        const edited = await page.evaluate((payload) => window.freecut.editProject(payload), {
+      const result = await withAutoCutBrowserSession({ workspace, args }, async (page) => {
+        const edited = await page.evaluate((payload) => window.autocut.editProject(payload), {
           project: current.project,
           ops: body.ops,
           media: collectAddClipMedia(workspace, body.ops),
@@ -231,7 +221,7 @@ async function run(argv = process.argv.slice(2)) {
         return {
           ...edited,
           project: await page.evaluate(
-            (value) => window.freecut.normalizeProject(value),
+            (value) => window.autocut.normalizeProject(value),
             edited.project,
           ),
         }
@@ -256,8 +246,8 @@ async function run(argv = process.argv.slice(2)) {
       const current = await getMediaResource(workspace, args.id)
       const source = resolveMediaFile(workspace, args.id)
       if (!source) throw new Error('Media source file is missing')
-      const probe = await withBrowser(workspace, args, (page, mediaUrlOf) =>
-        page.evaluate((payload) => window.freecut.probeMedia(payload), {
+      const probe = await withAutoCutBrowserSession({ workspace, args }, (page, mediaUrlOf) =>
+        page.evaluate((payload) => window.autocut.probeMedia(payload), {
           url: mediaUrlOf(args.id),
           fileName: path.basename(source),
           mimeType: current.metadata.mimeType,
@@ -272,8 +262,8 @@ async function run(argv = process.argv.slice(2)) {
       let staged
       try {
         staged = await stageLocalMedia(workspace, args.file, args.id)
-        const probe = await withBrowser(workspace, args, (page, mediaUrlOf) =>
-          page.evaluate((payload) => window.freecut.probeMedia(payload), {
+        const probe = await withAutoCutBrowserSession({ workspace, args }, (page, mediaUrlOf) =>
+          page.evaluate((payload) => window.autocut.probeMedia(payload), {
             url: mediaUrlOf(staged.id),
             fileName: path.basename(staged.target),
             mimeType: staged.mimeType,
@@ -292,6 +282,23 @@ async function run(argv = process.argv.slice(2)) {
     }
     throw new Error(`Unknown command: ${group} ${action}`)
   })
+}
+
+function assertContainedOutput(workspace, outputPath) {
+  const relative = path.relative(path.resolve(workspace), path.resolve(outputPath))
+  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('AutoCut render output must stay inside the project autocut workspace')
+  }
+}
+
+function createEditorUrl(args, env = process.env) {
+  const editorUrl = env.AUTOCUT_EDITOR_URL?.trim()
+  const projectToken = env.AUTOCUT_PROJECT_TOKEN?.trim()
+  if (!editorUrl) throw new Error('AUTOCUT_EDITOR_URL is required')
+  if (!projectToken) throw new Error('AUTOCUT_PROJECT_TOKEN is required')
+  const url = new URL(args.id ? `/editor/${encodeURIComponent(args.id)}` : '/projects', editorUrl)
+  url.searchParams.set('autocutProjectToken', projectToken)
+  return { url: url.toString() }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
@@ -313,4 +320,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     })
 }
 
-export { run }
+export { createEditorUrl, run }

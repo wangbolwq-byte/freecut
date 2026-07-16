@@ -123,6 +123,7 @@ interface FileSystemDirectoryHandle {
 
 interface Window {
   electronLocalDirectory?: import('@/infrastructure/storage/local-directory/types').ElectronLocalDirectoryBridge
+  electronAutoCut?: import('@/infrastructure/storage/local-directory/types').ElectronAutoCutBridge
 }
 
 /**

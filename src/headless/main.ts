@@ -2,7 +2,7 @@
  * Headless render harness.
  *
  * This is a dedicated Vite entry (loaded by `headless.html`) that exposes a
- * small `window.freecut` API so a Node/Playwright driver can render projects to
+ * small `window.autocut` API so a Node/Playwright or Electron driver can render projects to
  * video inside a real (headless) Chrome — reusing the exact same render engine
  * the editor uses, with no React UI, router, or workspace gate mounted.
  *
@@ -491,11 +491,12 @@ async function probeMedia(input: { url: string; fileName: string; mimeType?: str
 
 declare global {
   interface Window {
+    autocut: FreecutHeadlessApi
     freecut: FreecutHeadlessApi
   }
 }
 
-window.freecut = {
+const autocutApi: FreecutHeadlessApi = {
   ready: true,
   renderTimeline,
   renderProject,
@@ -504,4 +505,6 @@ window.freecut = {
   probeMedia,
   createProject: createProjectForHeadless,
 }
+window.autocut = autocutApi
+window.freecut = autocutApi
 log.info('Headless harness ready')

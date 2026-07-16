@@ -2,6 +2,10 @@
   "name": "freecut",
   "version": "0.0.0",
   "private": true,
+  "bin": {
+    "autocut-agent": "headless/autocut-agent.mjs",
+    "autocut-server": "headless/autocut-server.mjs"
+  },
   "type": "module",
   "scripts": {
     "dev": "vp dev --host",
@@ -40,6 +44,9 @@
     "headless:edit": "node headless/edit.mjs",
     "headless:serve": "node headless/serve.mjs",
     "headless:agent": "node headless/agent.mjs",
+    "autocut:agent": "node headless/autocut-agent.mjs",
+    "autocut:serve": "node headless/autocut-server.mjs",
+    "autocut:package": "node scripts/package-autocut-runtime.mjs",
     "headless:test": "npm run build && npm run headless:test:portable",
     "headless:test:node": "node --test headless/*.test.mjs",
     "headless:test:chrome": "node headless/test.mjs --skip-build && node headless/edit-operations.mjs && node headless/lifecycle-e2e.mjs",

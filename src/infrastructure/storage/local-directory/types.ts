@@ -104,3 +104,9 @@ export interface ElectronLocalDirectoryBridge {
   }): Promise<ImportedLocalFile[]>
   onDidChange(listener: (event: LocalDirectoryChangeEvent) => void): () => void
 }
+
+export interface ElectronAutoCutBridge {
+  readonly runtime: 'electron'
+  readonly version: 1
+  claimProject(token: string): Promise<ElectronDirectoryGrant>
+}

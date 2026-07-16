@@ -84,7 +84,10 @@ test('canonical containment rejects traversal and sibling-prefix paths', () => {
       () => resolveContained(dist, '../dist-secret/secret.txt'),
       (error) => error.code === 'PATH_OUTSIDE_ROOT',
     )
-    assert.equal(resolveContained(dist, 'assets/asset.txt'), path.join(dist, 'assets', 'asset.txt'))
+    assert.equal(
+      resolveContained(dist, 'assets/asset.txt'),
+      fs.realpathSync(path.join(dist, 'assets', 'asset.txt')),
+    )
     const link = path.join(dist, 'outside-link')
     try {
       fs.symlinkSync(

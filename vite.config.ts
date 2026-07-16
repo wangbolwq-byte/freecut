@@ -128,7 +128,7 @@ export default defineConfig({
     chunkSizeWarningLimit: 1200,
     rollupOptions: {
       // Multi-entry: the editor app (index.html) plus the headless render
-      // harness (headless.html), a UI-less entry that exposes window.freecut
+      // harness (headless.html), a UI-less entry that exposes window.autocut
       // for the Node/Playwright headless render+edit CLI.
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
