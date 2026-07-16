@@ -31,7 +31,7 @@
 import { chromium } from 'playwright'
 import fs from 'node:fs'
 import path from 'node:path'
-import { loadProject, collectAddClipMedia } from './lib/workspace.mjs'
+import { loadProject, collectAddClipMedia, persistEditedProject } from './lib/workspace.mjs'
 import { parseArgs } from './lib/cli.mjs'
 import { startHarness } from './lib/render-core.mjs'
 
@@ -107,8 +107,11 @@ async function main() {
     return
   }
 
-  const toWrite = { ...edited, updatedAt: Date.now() }
-  fs.writeFileSync(outPath, JSON.stringify(toWrite, null, 2))
+  if (args['in-place']) {
+    persistEditedProject(args.workspace, projectJsonPath, edited)
+  } else {
+    fs.writeFileSync(outPath, `${JSON.stringify({ ...edited, updatedAt: Date.now() }, null, 2)}\n`)
+  }
   console.log(`\nWrote: ${outPath}`)
 }
 

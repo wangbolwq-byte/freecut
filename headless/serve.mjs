@@ -24,7 +24,14 @@ import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
 import { chromium } from 'playwright'
-import { loadProject, listProjects, collectAddClipMedia } from './lib/workspace.mjs'
+import {
+  buildProjectSnapshot,
+  collectAddClipMedia,
+  listProjectIdsUsingMedia,
+  listProjects,
+  loadProject,
+  persistEditedProject,
+} from './lib/workspace.mjs'
 import { parseArgs, chromeLaunchArgs } from './lib/cli.mjs'
 import { prepareJob, renderJob, startHarness } from './lib/render-core.mjs'
 
@@ -60,6 +67,25 @@ function sendJson(res, status, obj) {
   const body = JSON.stringify(obj)
   res.writeHead(status, { 'Content-Type': 'application/json' })
   res.end(body)
+}
+
+function applyCors(req, res) {
+  const origin = req.headers.origin
+  if (!origin) return
+  try {
+    const url = new URL(origin)
+    if (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1')
+    ) {
+      res.setHeader('Access-Control-Allow-Origin', origin)
+      res.setHeader('Access-Control-Allow-Headers', 'content-type,last-event-id')
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+      res.setHeader('Vary', 'Origin')
+    }
+  } catch {
+    // Invalid Origin is treated as untrusted: no CORS headers.
+  }
 }
 
 /** Inspect the WebGPU adapter so operators can confirm a real GPU vs software. */
@@ -139,6 +165,30 @@ async function main() {
   const tmpDir = path.join(os.tmpdir(), 'freecut-serve')
   fs.mkdirSync(tmpDir, { recursive: true })
   let counter = 0
+  let eventCounter = 0
+  const eventClients = new Map()
+  const lastPublishedRevision = new Map()
+
+  const writeSseEvent = (res, event) => {
+    res.write(`id: ${event.eventId}\n`)
+    res.write(`event: project.changed\n`)
+    res.write(`data: ${JSON.stringify(event)}\n\n`)
+  }
+
+  const publishProjectChange = (projectId, snapshot, source, changedPaths = []) => {
+    if (lastPublishedRevision.get(projectId) === snapshot.revision) return
+    lastPublishedRevision.set(projectId, snapshot.revision)
+    const event = {
+      eventId: `${Date.now()}-${++eventCounter}`,
+      type: 'project.changed',
+      projectId,
+      revision: snapshot.revision,
+      source,
+      changedPaths,
+      timestamp: Date.now(),
+    }
+    for (const res of eventClients.get(projectId) ?? []) writeSseEvent(res, event)
+  }
 
   const handleRender = async (req, res) => {
     const body = await readJsonBody(req)
@@ -182,11 +232,111 @@ async function main() {
     sendJson(res, 200, result)
   }
 
+  const handlePersistedEdit = async (req, res, projectId) => {
+    const body = await readJsonBody(req)
+    const loaded = loadProject(workspace, projectId)
+    const currentSnapshot = buildProjectSnapshot(workspace, projectId)
+    if (body.baseRevision && body.baseRevision !== currentSnapshot.revision) {
+      sendJson(res, 409, {
+        error: 'Project revision conflict',
+        projectId,
+        revision: currentSnapshot.revision,
+      })
+      return
+    }
+    const ops = Array.isArray(body.ops) ? body.ops : []
+    const media = collectAddClipMedia(workspace, ops)
+    const result = await enqueue(() =>
+      page.evaluate((payload) => window.freecut.editProject(payload), {
+        project: loaded.project,
+        ops,
+        media,
+      }),
+    )
+    const project = persistEditedProject(workspace, loaded.projectJsonPath, result.project)
+    const snapshot = buildProjectSnapshot(workspace, projectId)
+    publishProjectChange(projectId, snapshot, 'headless-api', [
+      ['projects', projectId, 'project.json'],
+      ['projects', projectId, 'media-links.json'],
+    ])
+    sendJson(res, 200, {
+      ok: true,
+      projectId,
+      revision: snapshot.revision,
+      project,
+      applied: result.applied,
+      results: result.results,
+    })
+  }
+
+  const handleSnapshot = async (res, projectId) => {
+    sendJson(res, 200, buildProjectSnapshot(workspace, projectId))
+  }
+
+  const handleEvents = async (req, res, projectId) => {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    })
+    res.write(': connected\n\n')
+    let clients = eventClients.get(projectId)
+    if (!clients) {
+      clients = new Set()
+      eventClients.set(projectId, clients)
+    }
+    clients.add(res)
+
+    try {
+      const snapshot = buildProjectSnapshot(workspace, projectId)
+      writeSseEvent(res, {
+        eventId: `${Date.now()}-${++eventCounter}`,
+        type: 'project.changed',
+        projectId,
+        revision: snapshot.revision,
+        source: 'initial-snapshot',
+        changedPaths: [],
+        timestamp: Date.now(),
+      })
+    } catch (error) {
+      res.write(`event: project.error\ndata: ${JSON.stringify({ error: error.message })}\n\n`)
+    }
+
+    const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 15_000)
+    req.on('close', () => {
+      clearInterval(heartbeat)
+      clients.delete(res)
+      if (clients.size === 0) eventClients.delete(projectId)
+    })
+  }
+
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
+    applyCors(req, res)
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204)
+      res.end()
+      return
+    }
     const route = `${req.method} ${url.pathname}`
+    const persistedEditMatch = /^\/v1\/projects\/([^/]+)\/edit$/u.exec(url.pathname)
+    const snapshotMatch = /^\/v1\/projects\/([^/]+)\/snapshot$/u.exec(url.pathname)
     const handler =
-      route === 'GET /health'
+      req.method === 'POST' && persistedEditMatch
+        ? () => handlePersistedEdit(req, res, decodeURIComponent(persistedEditMatch[1]))
+        : req.method === 'GET' && snapshotMatch
+          ? () => handleSnapshot(res, decodeURIComponent(snapshotMatch[1]))
+          : route === 'GET /v1/events'
+            ? () => {
+                const projectId = url.searchParams.get('projectId')
+                if (!projectId) {
+                  sendJson(res, 400, { error: 'Missing projectId' })
+                  return
+                }
+                return handleEvents(req, res, projectId)
+              }
+            : route === 'GET /health'
         ? async () => {
             const gpu = await probeGpu(page)
             sendJson(res, 200, { ok: true, gpu, software: isSoftwareGpu(gpu), harnessUrl })
@@ -213,10 +363,86 @@ async function main() {
   // on the network would let any LAN peer render/edit projects and read media.
   await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve))
   console.log(`FreeCut render service on http://localhost:${port}  (workspace: ${workspace})`)
-  console.log(`  GET /health  GET /projects  POST /render  POST /edit`)
+  console.log(
+    `  GET /health  GET /projects  POST /render  POST /edit  ` +
+      `POST /v1/projects/:id/edit  GET /v1/projects/:id/snapshot  GET /v1/events`,
+  )
+
+  const pendingProjectPaths = new Map()
+  let watchDebounce = null
+  const scheduleProjectChange = (projectId, changedPath) => {
+    let paths = pendingProjectPaths.get(projectId)
+    if (!paths) {
+      paths = new Set()
+      pendingProjectPaths.set(projectId, paths)
+    }
+    paths.add(changedPath)
+    clearTimeout(watchDebounce)
+    watchDebounce = setTimeout(() => {
+      const pending = [...pendingProjectPaths.entries()]
+      pendingProjectPaths.clear()
+      for (const [id, changed] of pending) {
+        try {
+          const snapshot = buildProjectSnapshot(workspace, id)
+          publishProjectChange(
+            id,
+            snapshot,
+            'external-filesystem',
+            [...changed].map((value) => value.split('/').filter(Boolean)),
+          )
+        } catch {
+          // Project may have been removed between the event and the debounce.
+        }
+      }
+    }, 250)
+  }
+
+  const handleWorkspaceChange = (fileName) => {
+    if (!fileName) return
+    const relative = String(fileName).replaceAll('\\', '/')
+    if (relative.includes('/cache/')) return
+    const parts = relative.split('/').filter(Boolean)
+    if (parts[0] === 'projects' && parts[1]) {
+      scheduleProjectChange(parts[1], relative)
+      return
+    }
+    if (parts[0] === 'media' && parts[1]) {
+      for (const projectId of listProjectIdsUsingMedia(workspace, parts[1])) {
+        scheduleProjectChange(projectId, relative)
+      }
+      return
+    }
+    if (relative === 'index.json') {
+      for (const project of listProjects(workspace)) scheduleProjectChange(project.id, relative)
+    }
+  }
+
+  let workspaceWatcher = null
+  let pollTimer = null
+  try {
+    workspaceWatcher = fs.watch(
+      workspace,
+      { recursive: true, persistent: false },
+      (_eventType, fileName) => handleWorkspaceChange(fileName),
+    )
+    workspaceWatcher.on('error', (error) => {
+      console.warn(`Workspace watcher failed: ${error.message}`)
+    })
+  } catch (error) {
+    console.warn(`Recursive workspace watcher unavailable; using revision polling: ${error.message}`)
+    pollTimer = setInterval(() => {
+      for (const project of listProjects(workspace)) scheduleProjectChange(project.id, 'poll')
+    }, 750)
+  }
 
   const shutdown = async () => {
     console.log('\nShutting down...')
+    clearTimeout(watchDebounce)
+    if (pollTimer) clearInterval(pollTimer)
+    workspaceWatcher?.close()
+    for (const clients of eventClients.values()) {
+      for (const client of clients) client.end()
+    }
     server.close()
     await browser.close()
     await closeServers()

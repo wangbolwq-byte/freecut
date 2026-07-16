@@ -5,14 +5,21 @@
 
 export type { TimelineState, TimelineActions, MotionPresetClear } from './timeline-contract'
 export {
+  importFilmstripCache,
   importWaveformCache,
+  buildTimelineFromStores,
   rateStretchItemWithoutHistory,
   setInOutPointsWithoutHistory,
   useTimelineStore,
   useTimelineSettingsStore,
+  useZoomStore,
+  hydrateTimelineStoresFromProject,
   useItemsStore,
   useKeyframesStore,
   useCompositionsStore,
+  useMarkersStore,
+  useTransitionsStore,
+  useCompositionNavigationStore,
   useTimelineCommandStore,
   executeTimelineCommand,
   captureSnapshot,
