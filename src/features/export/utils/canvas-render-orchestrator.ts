@@ -150,6 +150,7 @@ async function prepareAudioPacketCopy(params: {
   mediabunny: MediabunnyModule
   canvasAudio: CanvasAudioModule
   composition: CompositionInputProps
+  expectedCodec: string
   supportedCodecs: readonly string[]
 }): Promise<PreparedAudioPacketCopy | null> {
   const plan = params.canvasAudio.getAudioPacketPassthroughPlan(params.composition)
@@ -166,7 +167,12 @@ async function prepareAudioPacketCopy(params: {
     if (!track) return null
     const codec = await track.getCodec()
     const firstTimestamp = await track.getFirstTimestamp()
-    if (!codec || !params.supportedCodecs.includes(codec) || Math.abs(firstTimestamp) > 0.001) {
+    if (
+      !codec ||
+      codec !== params.expectedCodec ||
+      !params.supportedCodecs.includes(codec) ||
+      Math.abs(firstTimestamp) > 0.001
+    ) {
       return null
     }
     const prepared = {
@@ -630,6 +636,7 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
         mediabunny,
         canvasAudio,
         composition,
+        expectedCodec: getDefaultAudioCodec(settings.container),
         supportedCodecs: format.getSupportedAudioCodecs(),
       })
     : null
