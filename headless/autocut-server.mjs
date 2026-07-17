@@ -33,6 +33,8 @@ export async function createAutoCutServer({
     distDir,
     port: normalizedPort,
     rootDocument: 'index.html',
+    spaFallbackDocument: 'index.html',
+    spaFallbackPathPrefixes: ['/editor', '/projects'],
     health,
   })
 }

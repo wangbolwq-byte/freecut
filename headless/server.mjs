@@ -58,6 +58,8 @@ function contentType(filePath) {
  *   resolveMedia?: (mediaId: string) => string | null,
  *   port?: number,
  *   rootDocument?: string,
+ *   spaFallbackDocument?: string,
+ *   spaFallbackPathPrefixes?: string[],
  *   health?: Record<string, unknown>
  * }} opts
  *   resolveMedia maps a media id to an absolute source-file path (or null). Omit
@@ -75,6 +77,8 @@ export async function createHarnessServer({
   resolveMedia = () => null,
   port = 0,
   rootDocument = 'headless.html',
+  spaFallbackDocument,
+  spaFallbackPathPrefixes = [],
   health,
 }) {
   const resolvedDist = path.resolve(distDir)
@@ -122,7 +126,12 @@ export async function createHarnessServer({
         return
       }
 
-      let rel = pathname
+      const usesSpaFallback =
+        spaFallbackDocument &&
+        spaFallbackPathPrefixes.some(
+          (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+        )
+      let rel = usesSpaFallback ? `/${spaFallbackDocument}` : pathname
       if (rel === '/') rel = `/${rootDocument}`
       rel = rel.replace(/^[/\\]+/, '')
       const filePath = resolveContained(resolvedDist, rel)
