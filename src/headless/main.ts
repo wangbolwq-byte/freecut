@@ -39,7 +39,12 @@ import {
   renderComposition,
   renderAudioOnly,
 } from '@/features/export/utils/canvas-render-orchestrator'
-import type { ClientExportSettings, RenderProgress } from '@/features/export/utils/client-renderer'
+import { getAudioContentInfo } from '@/features/export/utils/canvas-audio'
+import type {
+  ClientExportSettings,
+  ClientRenderResult,
+  RenderProgress,
+} from '@/features/export/utils/client-renderer'
 import {
   getSupportedCodecs,
   selectFallbackVideoCodec,
@@ -62,6 +67,8 @@ interface HeadlessMediaSource {
   mediaId: string
   /** Same-origin (or CORS+CORP) URL the harness can fetch the full media bytes from. */
   url: string
+  /** File size + modification-time identity supplied by the Node driver. */
+  fingerprint?: string
   /**
    * The media's MediaMetadata (from the workspace `media/<id>/metadata.json`).
    * Seeded into the media-library store so codec lookups work — notably so
@@ -86,6 +93,7 @@ interface HeadlessTimelineInput {
   masterBusDb?: number
   compositions?: SubComposition[]
   media?: HeadlessMediaSource[]
+  mediaSessionId?: string
   settings: ClientExportSettings
   outputFileName?: string
 }
@@ -95,6 +103,7 @@ interface HeadlessProjectInput {
   project: Project
   settings: ClientExportSettings
   media?: HeadlessMediaSource[]
+  mediaSessionId?: string
   /** When true (default), ignore the project's in/out points and render everything. */
   renderWholeProject?: boolean
   /**
@@ -117,12 +126,97 @@ interface HeadlessRenderSummary {
   effectiveSettings: ClientExportSettings
   /** Non-fatal, machine-readable render degradations. */
   warnings: HeadlessRenderWarning[]
+  audio: {
+    expected: boolean
+    segmentsTotal: number
+    segmentsProcessed: number
+    failedSegments: number
+    outputTrackPresent: boolean
+  }
+  output: {
+    videoTracks: number
+    audioTracks: number
+    videoCodec: string | null
+    audioCodec: string | null
+    durationSeconds: number
+  }
+  timings: {
+    mediaRegistrationMs: number
+    preparationMs: number
+    audioProcessingMs: number
+    videoRenderMs: number
+    videoEncodeBackpressureMs: number
+    muxMs: number
+    outputValidationMs: number
+    totalMs: number
+    downloadMs?: number
+  }
+  encoder: {
+    preset?: 'draft' | 'balanced' | 'final'
+    hardwareAcceleration: 'no-preference' | 'prefer-hardware' | 'prefer-software'
+    latencyMode: 'quality' | 'realtime'
+    maxQueueDepth: number
+    peakQueueDepth: number
+  }
 }
 
 interface HeadlessRenderWarning {
-  code: 'CODEC_FALLBACK' | 'WEBGPU_TRANSITION_FALLBACK'
+  code: 'CODEC_FALLBACK' | 'WEBGPU_TRANSITION_FALLBACK' | 'HARDWARE_ACCELERATION_FALLBACK'
   message: string
   details?: Record<string, unknown>
+}
+
+class HeadlessRenderError extends Error {
+  readonly code: string
+  readonly details: Record<string, unknown>
+
+  constructor(code: string, message: string, details: Record<string, unknown> = {}) {
+    super(`[${code}] ${message}`)
+    this.name = 'HeadlessRenderError'
+    this.code = code
+    this.details = details
+  }
+}
+
+function normalizeHeadlessRenderError(error: unknown): Error {
+  if (error instanceof HeadlessRenderError) return error
+  const normalized = error instanceof Error ? error : new Error(String(error))
+  const code = Reflect.get(Object(error), 'code') as unknown
+  if (typeof code !== 'string') return normalized
+  return new HeadlessRenderError(code, normalized.message, errorDetails(error))
+}
+
+function errorDetails(error: unknown): Record<string, unknown> {
+  const details = Reflect.get(Object(error), 'details') as unknown
+  return typeof details === 'object' && details !== null ? (details as Record<string, unknown>) : {}
+}
+
+async function inspectRenderedOutput(blob: Blob): Promise<HeadlessRenderSummary['output']> {
+  const { Input, BlobSource, ALL_FORMATS } = await import('mediabunny')
+  const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(blob) })
+  try {
+    if (!(await input.canRead())) {
+      throw new HeadlessRenderError('OUTPUT_VALIDATION_FAILED', 'Rendered media is unreadable')
+    }
+    const [videoTracks, audioTracks, durationSeconds] = await Promise.all([
+      input.getVideoTracks(),
+      input.getAudioTracks(),
+      input.computeDuration(),
+    ])
+    const [videoCodec, audioCodec] = await Promise.all([
+      videoTracks[0]?.getCodec() ?? Promise.resolve(null),
+      audioTracks[0]?.getCodec() ?? Promise.resolve(null),
+    ])
+    return {
+      videoTracks: videoTracks.length,
+      audioTracks: audioTracks.length,
+      videoCodec,
+      audioCodec,
+      durationSeconds,
+    }
+  } finally {
+    input.dispose()
+  }
 }
 
 type ProgressSink = (progress: RenderProgress) => void
@@ -143,12 +237,34 @@ function reportProgress(progress: RenderProgress): void {
  * downloading the bytes: mediabunny then reads via UrlSource (HTTP Range),
  * so large clips stream instead of being held fully in memory.
  */
-function registerMediaUrls(media: HeadlessMediaSource[] | undefined): void {
-  if (!media?.length) return
-  for (const { mediaId, url } of media) {
-    if (blobUrlManager.get(mediaId)) continue
-    blobUrlManager.registerUrl(mediaId, url)
+interface RegisteredMediaSession {
+  id: string
+  entries: Array<{ mediaId: string; url: string }>
+}
+
+function registerMediaUrls(
+  media: HeadlessMediaSource[] | undefined,
+  requestedSessionId?: string,
+): RegisteredMediaSession {
+  const session: RegisteredMediaSession = {
+    id: requestedSessionId || crypto.randomUUID(),
+    entries: [],
   }
+  for (const { mediaId, url, fingerprint } of media ?? []) {
+    blobUrlManager.replaceUrl(mediaId, url, { fingerprint })
+    session.entries.push({ mediaId, url })
+  }
+  return session
+}
+
+function releaseMediaUrls(session: RegisteredMediaSession): void {
+  for (const { mediaId, url } of session.entries) {
+    if (blobUrlManager.get(mediaId) === url) blobUrlManager.invalidate(mediaId)
+  }
+  log.debug('Released headless media session', {
+    mediaSessionId: session.id,
+    mediaCount: session.entries.length,
+  })
 }
 
 function triggerDownload(blob: Blob, fileName: string): void {
@@ -236,6 +352,7 @@ async function adaptVideoSettings(
 ): Promise<{ settings: ClientExportSettings; warnings: HeadlessRenderWarning[] }> {
   const settings = structuredClone(requestedSettings)
   if (settings.mode === 'audio') return { settings, warnings: [] }
+  const warnings: HeadlessRenderWarning[] = []
   const testOverride = (
     globalThis as unknown as {
       __freecutSupportedCodecsOverride?: Awaited<ReturnType<typeof getSupportedCodecs>>
@@ -250,36 +367,188 @@ async function adaptVideoSettings(
     }))
   if (supported.includes(settings.codec)) {
     settings.audioCodec = getDefaultAudioCodec(settings.container)
-    return { settings, warnings: [] }
+  } else {
+    const container = settings.container as ClientVideoContainer
+    const fallback =
+      selectFallbackVideoCodec(supported, container) ?? selectFallbackVideoCodec(supported)
+    if (!fallback) {
+      throw new Error(
+        `No supported video codec available (requested ${settings.codec}; browser supports: ${supported.join(', ') || 'none'})`,
+      )
+    }
+    const requested = settings.codec
+    const effectiveContainer = getPreferredContainerForCodec(fallback)
+    const warning: HeadlessRenderWarning = {
+      code: 'CODEC_FALLBACK',
+      message: `Requested video codec ${requested} is unsupported; using ${fallback}/${effectiveContainer}`,
+      details: { requestedCodec: requested, effectiveCodec: fallback, effectiveContainer },
+    }
+    log.warn(warning.message, {
+      requested,
+      fallback,
+      container: effectiveContainer,
+    })
+    settings.codec = fallback
+    settings.container = effectiveContainer
+    settings.audioCodec = getDefaultAudioCodec(effectiveContainer)
+    warnings.push(warning)
   }
 
-  const container = settings.container as ClientVideoContainer
-  const fallback =
-    selectFallbackVideoCodec(supported, container) ?? selectFallbackVideoCodec(supported)
-  if (!fallback) {
-    throw new Error(
-      `No supported video codec available (requested ${settings.codec}; browser supports: ${supported.join(', ') || 'none'})`,
-    )
+  if (settings.hardwareAcceleration === 'prefer-hardware') {
+    let hardwareSupported = false
+    try {
+      const { canEncodeVideo } = await import('mediabunny')
+      hardwareSupported = await canEncodeVideo(settings.codec, {
+        width: settings.resolution.width,
+        height: settings.resolution.height,
+        bitrate: settings.videoBitrate,
+        latencyMode: settings.latencyMode ?? 'quality',
+        hardwareAcceleration: 'prefer-hardware',
+      })
+    } catch (error) {
+      log.warn('Hardware encoder capability probe failed', { error })
+    }
+    if (!hardwareSupported) {
+      settings.hardwareAcceleration = 'no-preference'
+      warnings.push({
+        code: 'HARDWARE_ACCELERATION_FALLBACK',
+        message: 'Preferred hardware video encoding is unavailable; using the browser default',
+        details: { requested: 'prefer-hardware', effective: 'no-preference' },
+      })
+    }
   }
-  const requested = settings.codec
-  const effectiveContainer = getPreferredContainerForCodec(fallback)
-  const warning: HeadlessRenderWarning = {
-    code: 'CODEC_FALLBACK',
-    message: `Requested video codec ${requested} is unsupported; using ${fallback}/${effectiveContainer}`,
-    details: { requestedCodec: requested, effectiveCodec: fallback, effectiveContainer },
+
+  return { settings, warnings }
+}
+
+type AudioContentInfo = Awaited<ReturnType<typeof getAudioContentInfo>>
+
+async function renderCompositionForSettings(
+  settings: ClientExportSettings,
+  composition: CompositionInputProps,
+): Promise<ClientRenderResult> {
+  return settings.mode === 'audio'
+    ? await renderAudioOnly({ settings, composition, onProgress: reportProgress })
+    : await renderComposition({ settings, composition, onProgress: reportProgress })
+}
+
+function validateRenderedTracks(
+  settings: ClientExportSettings,
+  audioContent: AudioContentInfo,
+  output: HeadlessRenderSummary['output'],
+): void {
+  validateRenderedVideoTrack(settings, output)
+  validateRenderedAudioTrack(audioContent, output)
+}
+
+function validateRenderedVideoTrack(
+  settings: ClientExportSettings,
+  output: HeadlessRenderSummary['output'],
+): void {
+  if (settings.mode !== 'video') return
+  if (output.videoTracks > 0) return
+  throw new HeadlessRenderError(
+    'OUTPUT_VIDEO_TRACK_MISSING',
+    'Rendered video does not contain a video track',
+  )
+}
+
+function validateRenderedAudioTrack(
+  audioContent: AudioContentInfo,
+  output: HeadlessRenderSummary['output'],
+): void {
+  if (!audioContent.expected) return
+  if (output.audioTracks > 0) return
+  throw new HeadlessRenderError(
+    'OUTPUT_AUDIO_TRACK_MISSING',
+    'Active audio exists but the rendered output does not contain an audio track',
+    { segmentsTotal: audioContent.segmentsTotal },
+  )
+}
+
+function optionalPreset(
+  preset: ClientExportSettings['preset'],
+): Pick<HeadlessRenderSummary['encoder'], 'preset'> | Record<never, never> {
+  return preset ? { preset } : {}
+}
+
+function defaultEncoderDiagnostics(
+  settings: ClientExportSettings,
+): HeadlessRenderSummary['encoder'] {
+  const queueDepth = defaultQueueDepth(settings)
+  return {
+    ...optionalPreset(settings.preset),
+    hardwareAcceleration: settings.hardwareAcceleration ?? 'no-preference',
+    latencyMode: settings.latencyMode ?? 'quality',
+    maxQueueDepth: queueDepth,
+    peakQueueDepth: queueDepth === 0 ? 0 : 1,
   }
-  log.warn(warning.message, {
-    requested,
-    fallback,
-    container: effectiveContainer,
-  })
-  settings.codec = fallback
-  settings.container = effectiveContainer
-  settings.audioCodec = getDefaultAudioCodec(effectiveContainer)
-  return { settings, warnings: [warning] }
+}
+
+function defaultQueueDepth(settings: ClientExportSettings): number {
+  if (settings.mode === 'audio') return 0
+  return settings.maxEncoderQueue ?? 1
+}
+
+function createHeadlessRenderSummary(input: {
+  result: ClientRenderResult
+  settings: ClientExportSettings
+  warnings: HeadlessRenderWarning[]
+  audioContent: AudioContentInfo
+  output: HeadlessRenderSummary['output']
+  fileName: string
+  mediaRegistrationMs: number
+  outputValidationMs: number
+  renderStartedAt: number
+}): HeadlessRenderSummary {
+  const diagnostics = input.result.diagnostics
+  const timings = diagnostics ? diagnostics.timings : EMPTY_RENDER_TIMINGS
+  const encoder = diagnostics ? diagnostics.encoder : defaultEncoderDiagnostics(input.settings)
+  return {
+    ok: true,
+    mimeType: input.result.mimeType,
+    fileSize: input.result.fileSize,
+    durationSeconds: input.result.duration,
+    fileName: input.fileName,
+    effectiveSettings: input.settings,
+    warnings: input.warnings,
+    audio: {
+      expected: input.audioContent.expected,
+      segmentsTotal: input.audioContent.segmentsTotal,
+      segmentsProcessed: input.audioContent.segmentsTotal,
+      failedSegments: 0,
+      outputTrackPresent: input.output.audioTracks > 0,
+    },
+    output: input.output,
+    timings: {
+      mediaRegistrationMs: input.mediaRegistrationMs,
+      preparationMs: timings.preparationMs,
+      audioProcessingMs: timings.audioProcessingMs,
+      videoRenderMs: timings.videoRenderMs,
+      videoEncodeBackpressureMs: timings.videoEncodeBackpressureMs,
+      muxMs: timings.muxMs,
+      outputValidationMs: input.outputValidationMs,
+      totalMs: performance.now() - input.renderStartedAt,
+    },
+    encoder,
+  }
+}
+
+const EMPTY_RENDER_TIMINGS = {
+  preparationMs: 0,
+  audioProcessingMs: 0,
+  videoRenderMs: 0,
+  videoEncodeBackpressureMs: 0,
+  muxMs: 0,
+  totalMs: 0,
+} as const
+
+function mediaSourceCount(media: HeadlessMediaSource[] | undefined): number {
+  return media ? media.length : 0
 }
 
 async function renderTimeline(input: HeadlessTimelineInput): Promise<HeadlessRenderSummary> {
+  const renderStartedAt = performance.now()
   const {
     tracks,
     items,
@@ -295,6 +564,7 @@ async function renderTimeline(input: HeadlessTimelineInput): Promise<HeadlessRen
     masterBusDb,
     compositions = [],
     media,
+    mediaSessionId,
     settings: requestedSettings,
   } = input
 
@@ -307,69 +577,88 @@ async function renderTimeline(input: HeadlessTimelineInput): Promise<HeadlessRen
     tracks: tracks.length,
     items: items.length,
     compositions: compositions.length,
-    media: media?.length ?? 0,
+    media: mediaSourceCount(media),
   })
 
-  // Seed sub-compositions so the engine can resolve compound clips.
-  useCompositionsStore.getState().setCompositions(compositions)
+  const mediaRegistrationStartedAt = performance.now()
+  const registeredMedia = registerMediaUrls(media, mediaSessionId)
+  const mediaRegistrationMs = performance.now() - mediaRegistrationStartedAt
+  try {
+    // Seed sub-compositions so the engine can resolve compound clips.
+    useCompositionsStore.getState().setCompositions(compositions)
 
-  // Register media URLs (range-streamed by mediabunny) so resolveMediaUrls()
-  // and the engine's sub-comp media lookup resolve without the storage layer.
-  registerMediaUrls(media)
-  // Seed media metadata so codec lookups resolve (enables AC-3/E-AC-3 audio).
-  seedMediaLibrary(media)
+    // Seed media metadata so codec lookups resolve (enables AC-3/E-AC-3 audio).
+    seedMediaLibrary(media)
 
-  const { settings, warnings } = await adaptVideoSettings(requestedSettings)
+    const { settings, warnings } = await adaptVideoSettings(requestedSettings)
 
-  const composition: CompositionInputProps = convertTimelineToComposition(
-    tracks,
-    items,
-    transitions,
-    fps,
-    width,
-    height,
-    inPoint,
-    outPoint,
-    keyframes,
-    backgroundColor,
-    busAudioEq,
-    masterBusDb,
-  )
+    const composition: CompositionInputProps = convertTimelineToComposition(
+      tracks,
+      items,
+      transitions,
+      fps,
+      width,
+      height,
+      inPoint,
+      outPoint,
+      keyframes,
+      backgroundColor,
+      busAudioEq,
+      masterBusDb,
+    )
 
-  // Fail loudly if the project needs WebGPU (effects) but it isn't available.
-  warnings.push(...(await assertGpuForComposition(composition, compositions)))
+    // Fail loudly if the project needs WebGPU (effects) but it isn't available.
+    warnings.push(...(await assertGpuForComposition(composition, compositions)))
 
-  // Resolve top-level media (mediaId -> seeded blob URL). Export never uses proxies.
-  composition.tracks = await resolveMediaUrls(composition.tracks, { useProxy: false })
+    // Resolve top-level media (mediaId -> seeded blob URL). Export never uses proxies.
+    composition.tracks = await resolveMediaUrls(composition.tracks, { useProxy: false })
 
-  const result =
-    settings.mode === 'audio'
-      ? await renderAudioOnly({ settings, composition, onProgress: reportProgress })
-      : await renderComposition({ settings, composition, onProgress: reportProgress })
+    const audioContent = await getAudioContentInfo(composition)
+    const result = await renderCompositionForSettings(settings, composition)
 
-  const fileName = effectiveFileName(input.outputFileName, settings)
-  triggerDownload(result.blob, fileName)
+    const outputValidationStartedAt = performance.now()
+    const output = await inspectRenderedOutput(result.blob)
+    const outputValidationMs = performance.now() - outputValidationStartedAt
+    validateRenderedTracks(settings, audioContent, output)
 
-  log.info('Headless render complete', {
-    mimeType: result.mimeType,
-    fileSize: result.fileSize,
-    durationSeconds: result.duration,
-    fileName,
-  })
+    const fileName = effectiveFileName(input.outputFileName, settings)
+    triggerDownload(result.blob, fileName)
 
-  return {
-    ok: true,
-    mimeType: result.mimeType,
-    fileSize: result.fileSize,
-    durationSeconds: result.duration,
-    fileName,
-    effectiveSettings: settings,
-    warnings,
+    log.info('Headless render complete', {
+      mimeType: result.mimeType,
+      fileSize: result.fileSize,
+      durationSeconds: result.duration,
+      fileName,
+      mediaSessionId: registeredMedia.id,
+    })
+
+    return createHeadlessRenderSummary({
+      result,
+      settings,
+      warnings,
+      audioContent,
+      output,
+      fileName,
+      mediaRegistrationMs,
+      outputValidationMs,
+      renderStartedAt,
+    })
+  } catch (error) {
+    throw normalizeHeadlessRenderError(error)
+  } finally {
+    releaseMediaUrls(registeredMedia)
   }
 }
 
 async function renderProject(input: HeadlessProjectInput): Promise<HeadlessRenderSummary> {
-  const { project: rawProject, settings, media, renderWholeProject = true, outputFileName } = input
+  const {
+    project: rawProject,
+    settings,
+    media,
+    mediaSessionId,
+    renderWholeProject = true,
+    outputFileName,
+  } = input
   const { project } = migrateProject(rawProject)
   const timeline = project.timeline
   if (!timeline) {
@@ -404,6 +693,7 @@ async function renderProject(input: HeadlessProjectInput): Promise<HeadlessRende
     masterBusDb: timeline.masterBusDb,
     compositions: (timeline.compositions ?? []) as unknown as SubComposition[],
     media,
+    mediaSessionId,
     settings,
     outputFileName,
   })

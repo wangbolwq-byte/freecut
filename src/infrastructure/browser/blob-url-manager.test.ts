@@ -39,6 +39,39 @@ describe('BlobUrlManager', () => {
       ).toBe('http://localhost/new')
       now.mockRestore()
     })
+
+    it('replaces an external URL when its address changes', () => {
+      blobUrlManager.registerUrl('media-1', 'http://127.0.0.1:41001/media/clip')
+
+      expect(blobUrlManager.registerUrl('media-1', 'http://127.0.0.1:41002/media/clip')).toBe(
+        'http://127.0.0.1:41002/media/clip',
+      )
+      expect(blobUrlManager.get('media-1')).toBe('http://127.0.0.1:41002/media/clip')
+      expect(blobUrlManager.size).toBe(1)
+    })
+
+    it('replaces a stable URL when its source fingerprint changes', () => {
+      blobUrlManager.registerUrl('media-1', 'http://127.0.0.1/media/clip', {
+        fingerprint: '10:1000',
+      })
+
+      blobUrlManager.registerUrl('media-1', 'http://127.0.0.1/media/clip', {
+        fingerprint: '11:2000',
+      })
+
+      blobUrlManager.release('media-1')
+      expect(blobUrlManager.get('media-1')).toBeNull()
+    })
+
+    it('force-replaces references retained by an earlier headless job', () => {
+      blobUrlManager.registerUrl('media-1', 'http://127.0.0.1:41001/media/clip')
+      blobUrlManager.registerUrl('media-1', 'http://127.0.0.1:41001/media/clip')
+
+      blobUrlManager.replaceUrl('media-1', 'http://127.0.0.1:41002/media/clip')
+      blobUrlManager.release('media-1')
+
+      expect(blobUrlManager.get('media-1')).toBeNull()
+    })
   })
 
   describe('acquire', () => {

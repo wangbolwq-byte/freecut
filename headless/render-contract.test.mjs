@@ -4,10 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import {
+  AudioDecodeError,
   MissingMediaError,
   outputPathForContainer,
   renderJob,
-  warningsHeaderValue,
 } from './lib/render-core.mjs'
 
 const requestedSettings = {
@@ -63,9 +63,14 @@ function summary(overrides = {}) {
   }
 }
 
-test('supported settings remain requested settings without fallback warning', async (t) => {
+function temporaryDirectory(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'freecut-render-contract-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  return dir
+}
+
+test('supported settings remain requested settings without fallback warning', async (t) => {
+  const dir = temporaryDirectory(t)
   const result = await renderJob(fakePage(summary()), job(dir), { onWarn: () => {} })
   assert.equal(result.effectiveSettings.codec, 'avc')
   assert.equal(result.effectiveSettings.container, 'mp4')
@@ -74,8 +79,7 @@ test('supported settings remain requested settings without fallback warning', as
 })
 
 test('software WebGPU rejects GPU-effect projects before browser rendering', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'freecut-render-contract-'))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const dir = temporaryDirectory(t)
   const page = fakePage(summary())
   const effectProject = {
     id: 'project-1',
@@ -93,8 +97,7 @@ test('software WebGPU rejects GPU-effect projects before browser rendering', asy
 })
 
 test('fallback metadata controls extension, MIME, summary, and output signature', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'freecut-render-contract-'))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const dir = temporaryDirectory(t)
   const fallbackWarning = {
     code: 'CODEC_FALLBACK',
     message: 'Requested video codec avc is unsupported; using vp9/webm',
@@ -124,8 +127,7 @@ test('fallback metadata controls extension, MIME, summary, and output signature'
 })
 
 test('strict missing media rejects before browser rendering and writes no output', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'freecut-render-contract-'))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const dir = temporaryDirectory(t)
   const page = fakePage(summary())
   await assert.rejects(
     renderJob(page, job(dir, { missing: ['media-404'] }), { onWarn: () => {} }),
@@ -136,8 +138,7 @@ test('strict missing media rejects before browser rendering and writes no output
 })
 
 test('permissive missing media succeeds with a structured warning', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'freecut-render-contract-'))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const dir = temporaryDirectory(t)
   const result = await renderJob(fakePage(summary()), job(dir, { missing: ['media-404'] }), {
     allowMissingMedia: true,
     onWarn: () => {},
@@ -147,9 +148,8 @@ test('permissive missing media succeeds with a structured warning', async (t) =>
   assert.deepEqual(result.warnings[0].details.mediaIds, ['media-404'])
 })
 
-test('unsupported audio is visible in render JSON and the HTTP warning header', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'freecut-render-contract-'))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+test('unsupported audio fails before browser rendering and writes no output', async (t) => {
+  const dir = temporaryDirectory(t)
   const media = [
     {
       mediaId: 'clip-1',
@@ -157,12 +157,27 @@ test('unsupported audio is visible in render JSON and the HTTP warning header', 
       metadata: { fileName: 'source.mov', audioCodec: 'dts', audioCodecSupported: false },
     },
   ]
-  const result = await renderJob(fakePage(summary()), job(dir, { media }), { onWarn: () => {} })
-  assert.equal(result.warnings[0].code, 'UNSUPPORTED_AUDIO')
-  const cliJson = JSON.parse(JSON.stringify({ ok: true, renders: [{ summary: result }] }))
-  assert.equal(cliJson.renders[0].summary.warnings[0].code, 'UNSUPPORTED_AUDIO')
-  const httpWarnings = JSON.parse(warningsHeaderValue(result.warnings))
-  assert.equal(httpWarnings[0].code, 'UNSUPPORTED_AUDIO')
+  const page = fakePage(summary())
+  await assert.rejects(
+    () => renderJob(page, job(dir, { media }), { onWarn: () => {} }),
+    (error) => error instanceof AudioDecodeError && error.code === 'AUDIO_DECODE_FAILED',
+  )
+  assert.equal(page.evaluateCalls, 0)
+  assert.equal(fs.existsSync(path.join(dir, 'result.mp4')), false)
+})
+
+test('coded browser failures retain their stable error code', async (t) => {
+  const dir = temporaryDirectory(t)
+  const page = fakePage(summary())
+  page.evaluate = async () => {
+    throw new Error('[OUTPUT_AUDIO_TRACK_MISSING] rendered output has no audio')
+  }
+
+  await assert.rejects(
+    () => renderJob(page, job(dir), { onWarn: () => {} }),
+    (error) => error.code === 'OUTPUT_AUDIO_TRACK_MISSING',
+  )
+  assert.equal(fs.existsSync(path.join(dir, 'result.mp4')), false)
 })
 
 test('outputPathForContainer replaces stale requested extensions', () => {

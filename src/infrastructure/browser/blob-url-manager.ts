@@ -18,6 +18,15 @@ interface BlobUrlEntry {
   external?: boolean
   /** Absolute expiry for an external URL. Blob URLs do not expire. */
   expiresAt?: number
+  /** Stable source fingerprint used to detect content changes behind a URL. */
+  fingerprint?: string
+  /** Composite identity for reusing an external URL without re-checking its parts. */
+  externalReuseKey?: string
+}
+
+interface ExternalUrlOptions {
+  expiresAt?: number
+  fingerprint?: string
 }
 
 const EXTERNAL_URL_EXPIRY_SAFETY_MS = 5_000
@@ -84,18 +93,44 @@ class BlobUrlManager {
    * the media is range-streamed over HTTP instead of held fully in memory.
    * Reference-counted like acquire(); never used by the in-app flows.
    */
-  registerUrl(mediaId: string, url: string, options?: { expiresAt?: number }): string {
+  registerUrl(mediaId: string, url: string, options?: ExternalUrlOptions): string {
     const existing = this.entries.get(mediaId)
-    if (existing && !this.isExpired(existing)) {
+    const externalReuseKey = JSON.stringify([url, options?.fingerprint])
+    if (existing && !this.isExpired(existing) && existing.externalReuseKey === externalReuseKey) {
       existing.refCount++
       return existing.url
     }
-    if (existing) this.entries.delete(mediaId)
+    if (existing) {
+      this.revokeEntry(existing)
+      this.entries.delete(mediaId)
+    }
     this.entries.set(mediaId, {
       url,
       refCount: 1,
       external: true,
       expiresAt: options?.expiresAt,
+      fingerprint: options?.fingerprint,
+      externalReuseKey,
+    })
+    this.notify()
+    return url
+  }
+
+  /**
+   * Replace an external URL without retaining references from an earlier job.
+   * Headless render sessions use this so a persistent page never resolves a
+   * media id to a server that has already been closed.
+   */
+  replaceUrl(mediaId: string, url: string, options?: ExternalUrlOptions): string {
+    const existing = this.entries.get(mediaId)
+    if (existing) this.revokeEntry(existing)
+    this.entries.set(mediaId, {
+      url,
+      refCount: 1,
+      external: true,
+      expiresAt: options?.expiresAt,
+      fingerprint: options?.fingerprint,
+      externalReuseKey: JSON.stringify([url, options?.fingerprint]),
     })
     this.notify()
     return url

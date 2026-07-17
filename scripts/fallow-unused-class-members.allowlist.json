@@ -148,11 +148,6 @@
       "members": [
         {
           "parentName": "ElectronDirectoryBackend",
-          "memberName": "readFile",
-          "kind": "class_method"
-        },
-        {
-          "parentName": "ElectronDirectoryBackend",
           "memberName": "getReadUrl",
           "kind": "class_method"
         },
@@ -163,22 +158,12 @@
         },
         {
           "parentName": "ElectronDirectoryBackend",
-          "memberName": "listDirectory",
-          "kind": "class_method"
-        },
-        {
-          "parentName": "ElectronDirectoryBackend",
           "memberName": "createDirectory",
           "kind": "class_method"
         },
         {
           "parentName": "ElectronDirectoryBackend",
           "memberName": "exists",
-          "kind": "class_method"
-        },
-        {
-          "parentName": "ElectronDirectoryBackend",
-          "memberName": "stat",
           "kind": "class_method"
         },
         {
@@ -210,11 +195,6 @@
         {
           "parentName": "FileSystemAccessDirectoryBackend",
           "memberName": "getReadUrl",
-          "kind": "class_method"
-        },
-        {
-          "parentName": "FileSystemAccessDirectoryBackend",
-          "memberName": "listDirectory",
           "kind": "class_method"
         },
         {

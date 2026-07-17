@@ -197,7 +197,8 @@ export const NativePitchCorrectedAudio: React.FC<PitchCorrectedAudioProps> = Rea
         markPreviewAudioElementUsesWebAudio(audio)
         sourceNode.connect(graph.sourceInputNode)
         sourceNodeRef.current = sourceNode
-      } catch {
+      } catch (error) {
+        log.error('Failed to connect preview audio to Web Audio', { src, error })
         graph.dispose()
         graphRef.current = null
         audioRef.current = null

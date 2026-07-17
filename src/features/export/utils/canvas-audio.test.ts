@@ -474,6 +474,34 @@ describe('extractAudioSegments', () => {
     expect(mixed[overlapMidIndex]!).toBeLessThan(0.15)
   })
 
+  it('fails the export when any active audio segment cannot be decoded', async () => {
+    const composition: CompositionInputProps = {
+      fps: 30,
+      durationInFrames: 90,
+      width: 1920,
+      height: 1080,
+      tracks: [
+        makeTrack({
+          id: 'track-a1',
+          order: 0,
+          kind: 'audio',
+          items: [makeAudioItem({ src: 'http://127.0.0.1/mediabunny-fails.mp4' })],
+        }),
+      ],
+      transitions: [],
+      keyframes: [],
+    }
+
+    await expect(processAudio(composition)).rejects.toMatchObject({
+      code: 'AUDIO_DECODE_FAILED',
+      details: {
+        segmentsTotal: 1,
+        segmentsProcessed: 0,
+        failedSegments: [expect.objectContaining({ itemId: 'audio-1', trackId: 'track-a1' })],
+      },
+    })
+  })
+
   it('includes bus, track, and clip EQ stages in exported audio segments', () => {
     const clip = makeAudioItem({
       audioEqHighGainDb: 3,

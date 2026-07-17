@@ -111,6 +111,28 @@ interface AudioSegment {
   itemFrom: number // Item's timeline start frame (for keyframe offset)
 }
 
+interface AudioSegmentFailure {
+  itemId: string
+  trackId: string
+  message: string
+}
+
+class AudioExportError extends Error {
+  readonly code: 'AUDIO_DECODE_FAILED' | 'OUTPUT_AUDIO_TRACK_MISSING'
+  readonly details: Record<string, unknown>
+
+  constructor(
+    code: 'AUDIO_DECODE_FAILED' | 'OUTPUT_AUDIO_TRACK_MISSING',
+    message: string,
+    details: Record<string, unknown> = {},
+  ) {
+    super(message)
+    this.name = 'AudioExportError'
+    this.code = code
+    this.details = details
+  }
+}
+
 export interface AudioPacketPassthroughPlan {
   src: string
   durationSeconds: number
@@ -2428,6 +2450,7 @@ export async function processAudio(
   // memory use on long, multi-clip timelines.
   const mixedSamples = createAudioMixBuffer(config)
   let processedSegmentCount = 0
+  const failures: AudioSegmentFailure[] = []
 
   for (const segment of activeSegments) {
     if (signal?.aborted) {
@@ -2572,14 +2595,34 @@ export async function processAudio(
         outputSamples: processedChannels[0]?.length,
       })
     } catch (error) {
-      log.error(`Failed to process audio segment ${segment.itemId}: ${getErrorMessage(error)}`)
-      // Continue with other segments
+      const failure = {
+        itemId: segment.itemId,
+        trackId: segment.trackId,
+        message: getErrorMessage(error),
+      }
+      failures.push(failure)
+      log.error('Failed to process audio segment', failure)
     }
   }
 
+  if (failures.length > 0) {
+    throw new AudioExportError(
+      'AUDIO_DECODE_FAILED',
+      `Failed to decode ${failures.length} of ${activeSegments.length} active audio segment(s)`,
+      {
+        segmentsTotal: activeSegments.length,
+        segmentsProcessed: processedSegmentCount,
+        failedSegments: failures,
+      },
+    )
+  }
+
   if (processedSegmentCount === 0) {
-    log.warn('No audio segments were successfully processed')
-    return null
+    throw new AudioExportError(
+      'OUTPUT_AUDIO_TRACK_MISSING',
+      'Active audio exists but the audio mix is empty',
+      { segmentsTotal: activeSegments.length, segmentsProcessed: 0 },
+    )
   }
 
   softClipAudioMix(mixedSamples)
@@ -2654,7 +2697,20 @@ export function createAudioBuffer(audioData: {
  * before extractAudioSegments can see valid src values.
  */
 export async function hasAudioContent(composition: CompositionInputProps): Promise<boolean> {
+  return (await getAudioContentInfo(composition)).expected
+}
+
+export interface AudioContentInfo {
+  expected: boolean
+  segmentsTotal: number
+}
+
+export async function getAudioContentInfo(
+  composition: CompositionInputProps,
+): Promise<AudioContentInfo> {
   await resolveSubCompMediaUrls(composition)
-  const segments = extractAudioSegments(composition, composition.fps)
-  return segments.some((s) => !s.muted)
+  const segmentsTotal = extractAudioSegments(composition, composition.fps).filter(
+    (segment) => !segment.muted,
+  ).length
+  return { expected: segmentsTotal > 0, segmentsTotal }
 }

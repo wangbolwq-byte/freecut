@@ -2,6 +2,7 @@
 // render service (serve.mjs): settings, range, media resolution, the
 // harness/media servers, and the per-page render call.
 import { execSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -36,12 +37,53 @@ const VIDEO_BITRATE_BY_QUALITY = {
   ultra: 20_000_000,
 }
 
+const RENDER_PRESETS = {
+  draft: {
+    quality: 'medium',
+    videoBitrate: 4_000_000,
+    maxFps: 30,
+    maxWidth: 1280,
+    maxHeight: 1280,
+    maxEncoderQueue: 3,
+  },
+  balanced: {
+    quality: 'medium',
+    videoBitrate: 5_000_000,
+    maxFps: 30,
+    maxWidth: 1920,
+    maxHeight: 1080,
+    maxEncoderQueue: 3,
+  },
+  final: {
+    quality: 'high',
+    videoBitrate: 10_000_000,
+    maxFps: Number.POSITIVE_INFINITY,
+    maxWidth: Number.POSITIVE_INFINITY,
+    maxHeight: Number.POSITIVE_INFINITY,
+    maxEncoderQueue: 2,
+  },
+}
+
+function even(value) {
+  return Math.max(16, Math.round(value / 2) * 2)
+}
+
+function fitResolution(width, height, preset) {
+  const scale = Math.min(1, preset.maxWidth / width, preset.maxHeight / height)
+  return { width: even(width * scale), height: even(height * scale) }
+}
+
 /** Build ClientExportSettings from a job's options (same keys as the CLI flags). */
-function buildSettings(project, opts) {
+export function buildSettings(project, opts) {
   const meta = project.metadata ?? {}
-  const fps = opts.fps ? Number(opts.fps) : (meta.fps ?? 30)
-  let width = meta.width ?? 1920
-  let height = meta.height ?? 1080
+  const presetName = opts.preset ?? 'final'
+  const preset = RENDER_PRESETS[presetName]
+  if (!preset) throw new Error(`Unknown render preset "${presetName}"`)
+  const projectFps = meta.fps ?? 30
+  const fps = opts.fps ? Number(opts.fps) : Math.min(projectFps, preset.maxFps)
+  const projectWidth = meta.width ?? 1920
+  const projectHeight = meta.height ?? 1080
+  let { width, height } = fitResolution(projectWidth, projectHeight, preset)
   if (opts.resolution) {
     const m = /^(\d+)x(\d+)$/.exec(opts.resolution)
     if (!m)
@@ -54,7 +96,7 @@ function buildSettings(project, opts) {
   if (![width, height].every((value) => Number.isInteger(value) && value >= 16 && value <= 16384)) {
     throw new Error('Effective resolution dimensions must be integers between 16 and 16384')
   }
-  const quality = opts.quality ?? 'high'
+  const quality = opts.quality ?? preset.quality
 
   if (opts.audioOnly) {
     const container = opts.container ?? 'mp3'
@@ -67,6 +109,7 @@ function buildSettings(project, opts) {
       resolution: { width, height },
       fps,
       audioBitrate: 192_000,
+      preset: presetName,
     }
   }
 
@@ -82,8 +125,14 @@ function buildSettings(project, opts) {
     quality,
     resolution: { width, height },
     fps,
-    videoBitrate: VIDEO_BITRATE_BY_QUALITY[quality] ?? 10_000_000,
+    videoBitrate: opts.quality
+      ? (VIDEO_BITRATE_BY_QUALITY[quality] ?? preset.videoBitrate)
+      : preset.videoBitrate,
     audioBitrate: 192_000,
+    preset: presetName,
+    latencyMode: 'quality',
+    hardwareAcceleration: 'prefer-hardware',
+    maxEncoderQueue: preset.maxEncoderQueue,
   }
 }
 
@@ -169,11 +218,15 @@ export function prepareJob(workspace, jobArgs, mediaUrlOf) {
     hasRange ? { inFrame: inPoint ?? 0, outFrame: outPoint ?? Number.POSITIVE_INFINITY } : null,
   )
   const { files, missing } = resolveMediaFiles(workspace, mediaIds)
-  const media = [...files.keys()].map((id) => ({
-    mediaId: id,
-    url: mediaUrlOf(id),
-    metadata: readMediaMetadata(workspace, id) ?? undefined,
-  }))
+  const media = [...files.entries()].map(([id, filePath]) => {
+    const stat = fs.statSync(filePath)
+    return {
+      mediaId: id,
+      url: mediaUrlOf(id),
+      fingerprint: `${stat.size}:${stat.mtimeMs}`,
+      metadata: readMediaMetadata(workspace, id) ?? undefined,
+    }
+  })
 
   const outName = `${(project.name ?? 'freecut-export').replace(/[^\w.-]+/g, '_')}.${settings.container}`
   const outPath = path.resolve(jobArgs.out ?? path.join('headless', 'output', outName))
@@ -186,6 +239,7 @@ export function prepareJob(workspace, jobArgs, mediaUrlOf) {
     inPoint,
     outPoint,
     media,
+    mediaSessionId: randomUUID(),
     missing,
     mediaResolved: files.size,
     mediaTotal: mediaIds.length,
@@ -199,6 +253,15 @@ export class MissingMediaError extends Error {
     this.name = 'MissingMediaError'
     this.code = 'MISSING_MEDIA'
     this.mediaIds = mediaIds
+  }
+}
+
+export class AudioDecodeError extends Error {
+  constructor(media) {
+    super(`Audio cannot be decoded for ${media.length} media source(s)`)
+    this.name = 'AudioDecodeError'
+    this.code = 'AUDIO_DECODE_FAILED'
+    this.media = media
   }
 }
 
@@ -254,6 +317,7 @@ export async function renderJob(
     downloadTimeoutMs = 30 * 60_000,
   } = {},
 ) {
+  const renderJobStartedAt = performance.now()
   const warn = onWarn ?? ((m) => console.warn(m))
   assertHardwareGpuForJob(job, softwareGpu)
   if (job.missing.length > 0) {
@@ -268,41 +332,67 @@ export async function renderJob(
     })
   const unsupportedAudio = job.media.filter((m) => m.metadata?.audioCodecSupported === false)
   if (unsupportedAudio.length > 0) {
-    const list = unsupportedAudio
-      .map((m) => `${m.metadata.fileName ?? m.mediaId} (${m.metadata.audioCodec ?? 'unknown'})`)
-      .join(', ')
-    preparationWarnings.push({
-      code: 'UNSUPPORTED_AUDIO',
-      message: `Audio may be silent (codec not decodable headlessly): ${list}`,
-      details: {
-        media: unsupportedAudio.map((m) => ({
-          mediaId: m.mediaId,
-          fileName: m.metadata.fileName,
-          audioCodec: m.metadata.audioCodec ?? 'unknown',
-        })),
-      },
-    })
+    throw new AudioDecodeError(
+      unsupportedAudio.map((media) => ({
+        mediaId: media.mediaId,
+        fileName: media.metadata.fileName,
+        audioCodec: media.metadata.audioCodec ?? 'unknown',
+      })),
+    )
   }
 
   setProgressLabel?.(path.basename(job.outPath))
   const downloadPromise = page.waitForEvent('download', { timeout: downloadTimeoutMs })
   downloadPromise.catch(() => {})
-  const summary = await page.evaluate((payload) => window.autocut.renderProject(payload), {
-    project: job.project,
-    settings: job.settings,
-    media: job.media,
-    renderWholeProject: !job.hasRange,
-    inPoint: job.inPoint,
-    outPoint: job.outPoint,
-  })
+  let summary
+  try {
+    summary = await page.evaluate((payload) => window.autocut.renderProject(payload), {
+      project: job.project,
+      settings: job.settings,
+      media: job.media,
+      mediaSessionId: job.mediaSessionId,
+      renderWholeProject: !job.hasRange,
+      inPoint: job.inPoint,
+      outPoint: job.outPoint,
+    })
+  } catch (error) {
+    throw normalizeHeadlessRenderError(error)
+  }
   const download = await downloadPromise
   const effectiveContainer = summary.effectiveSettings?.container
   if (!effectiveContainer) throw new Error('Render summary omitted effectiveSettings.container')
   const outputPath = outputPathForContainer(job.outPath, effectiveContainer)
   fs.mkdirSync(path.dirname(outputPath), { recursive: true })
-  await download.saveAs(outputPath)
+  const temporaryPath = path.join(
+    path.dirname(outputPath),
+    `.${path.basename(outputPath)}.${randomUUID()}.partial`,
+  )
+  try {
+    await download.saveAs(temporaryPath)
+    await fs.promises.rm(outputPath, { force: true })
+    await fs.promises.rename(temporaryPath, outputPath)
+  } catch (error) {
+    await fs.promises.rm(temporaryPath, { force: true }).catch(() => {})
+    throw error
+  }
+  const downloadCompletedAt = performance.now()
+  summary.timings = {
+    ...(summary.timings ?? {}),
+    downloadMs: Math.max(
+      0,
+      downloadCompletedAt - renderJobStartedAt - (summary.timings?.totalMs ?? 0),
+    ),
+    totalMs: downloadCompletedAt - renderJobStartedAt,
+  }
   const warnings = [...preparationWarnings, ...(summary.warnings ?? [])]
   for (const warning of warnings)
     warn(`  WARNING [${warning.code ?? 'UNKNOWN'}]: ${warningMessage(warning)}`)
   return { ...summary, fileName: path.basename(outputPath), outputPath, warnings }
+}
+
+function normalizeHeadlessRenderError(error) {
+  const normalized = error instanceof Error ? error : new Error(String(error))
+  const match = /\[([A-Z][A-Z0-9_]+)\]/.exec(normalized.message)
+  if (match) normalized.code = match[1]
+  return normalized
 }

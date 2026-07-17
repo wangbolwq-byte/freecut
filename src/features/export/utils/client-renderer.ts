@@ -46,6 +46,11 @@ export interface ClientExportSettings {
   smartCopy?: boolean
   sampleRate?: number // For audio exports (default: 48000)
   subtitleMode?: SubtitleExportMode
+  /** Headless/Agent render profile; omitted for editor-driven exports. */
+  preset?: 'draft' | 'balanced' | 'final'
+  latencyMode?: 'quality' | 'realtime'
+  hardwareAcceleration?: 'no-preference' | 'prefer-hardware' | 'prefer-software'
+  maxEncoderQueue?: number
 }
 
 export interface RenderProgress {
@@ -65,6 +70,23 @@ export interface ClientRenderResult {
   temporaryOutput?: import('./export-output-target').TemporaryExportOutput
   /** Separate subtitle file to download alongside the video (sidecar mode). */
   subtitleSidecar?: { filename: string; content: string }
+  diagnostics?: {
+    timings: {
+      preparationMs: number
+      audioProcessingMs: number
+      videoRenderMs: number
+      videoEncodeBackpressureMs: number
+      muxMs: number
+      totalMs: number
+    }
+    encoder: {
+      preset?: 'draft' | 'balanced' | 'final'
+      hardwareAcceleration: 'no-preference' | 'prefer-hardware' | 'prefer-software'
+      latencyMode: 'quality' | 'realtime'
+      maxQueueDepth: number
+      peakQueueDepth: number
+    }
+  }
 }
 
 export interface CodecSupportCheckOptions {

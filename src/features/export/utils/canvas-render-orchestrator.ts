@@ -128,7 +128,11 @@ async function addCompositionAudio(params: {
   }
 
   const audioData = await canvasAudio.processAudio(composition, signal)
-  if (!audioData) return 0
+  if (!audioData) {
+    throw Object.assign(new Error('Active audio exists but no audio samples were produced'), {
+      code: 'OUTPUT_AUDIO_TRACK_MISSING',
+    })
+  }
   await addAudioDataInChunks(audioSource, AudioSample, audioData, signal, 0, recordFrames)
   return encodedFrames
 }
@@ -542,6 +546,7 @@ async function tryPacketRemuxComposition(
  * Main render function – orchestrates the entire client-side render.
  */
 export async function renderComposition(options: RenderEngineOptions): Promise<ClientRenderResult> {
+  const renderStartedAt = performance.now()
   const { settings, composition, onProgress, signal } = options
   const { fps, durationInFrames = 0 } = composition
   const canvasAudio = await loadCanvasAudio()
@@ -731,7 +736,8 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
     bitrate: settings.videoBitrate ?? 10_000_000,
     bitrateMode: settings.bitrateMode ?? 'variable',
     keyFrameInterval: 2, // Keyframe every 2 seconds for better seeking
-    latencyMode: 'quality', // Enables B-frames and consistent frame quality for offline encoding
+    latencyMode: settings.latencyMode ?? 'quality',
+    hardwareAcceleration: settings.hardwareAcceleration ?? 'no-preference',
   })
 
   // Add video track
@@ -808,6 +814,7 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
 
   let videoRenderingStarted = false
   let audioError: unknown
+  let audioProcessingMs = 0
   const reportAudioProgress = (completedSeconds: number, mode: 'copying' | 'processing') => {
     if (videoRenderingStarted) return
     const boundedSeconds = Math.min(durationSeconds, completedSeconds)
@@ -822,7 +829,8 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
 
   // Audio and video now advance together. Mediabunny's source backpressure
   // bounds encoded data while windowed processing bounds decoded PCM memory.
-  const audioTask: Promise<void> | null = packetAudio
+  const audioStartedAt = performance.now()
+  const rawAudioTask: Promise<void> | null = packetAudio
     ? feedAudioPacketCopy({
         mediabunny,
         prepared: packetAudio,
@@ -852,6 +860,11 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
           }
         })()
       : null
+  const audioTask = rawAudioTask
+    ? rawAudioTask.finally(() => {
+        audioProcessingMs = performance.now() - audioStartedAt
+      })
+    : null
   void audioTask?.catch((error: unknown) => {
     audioError = error
   })
@@ -865,41 +878,51 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
   })
 
   let frameRenderer: Awaited<ReturnType<typeof createCompositionRenderer>> | null = null
+  let videoRenderMs = 0
+  let videoEncodeBackpressureMs = 0
+  let muxMs = 0
+  const maxEncoderQueue = Math.max(1, Math.min(3, Math.trunc(settings.maxEncoderQueue ?? 1)))
+  let peakEncoderQueue = 0
+  let preparationMs = 0
+  const pendingEncodes: Promise<void>[] = []
+  let encodeError: unknown
+
+  const waitForOldestEncode = async () => {
+    const pending = pendingEncodes.shift()
+    if (!pending) return
+    const waitStartedAt = performance.now()
+    try {
+      await pending
+    } finally {
+      videoEncodeBackpressureMs += performance.now() - waitStartedAt
+    }
+  }
 
   try {
     frameRenderer = await createCompositionRenderer(renderCompositionInput, renderCanvas, ctx)
     // Preload media
     await frameRenderer.preload()
+    preparationMs = performance.now() - renderStartedAt
     videoRenderingStarted = true
     if (audioError) throw audioError
 
-    // Render each frame using a pipelined double-buffer approach.
-    // VideoSample copies pixel data on construction, so the canvas is free
-    // immediately after. We overlap the previous frame's encode with the
-    // next frame's render for ~25-40% throughput improvement.
-    let pendingEncode: Promise<void> | null = null
-
+    // Bound the number of in-flight samples so rendering can overlap encoder
+    // work without allowing GPU-backed VideoSamples to grow without limit.
     for (let frame = 0; frame < totalFrames; frame++) {
       if (audioError) throw audioError
+      if (encodeError) throw encodeError
       // Check for abort — drain any in-flight encode first so the encoder
       // is idle before we cancel the output. Discard encoder errors since
       // we are aborting anyway and must always surface AbortError.
       if (signal?.aborted) {
-        if (pendingEncode) {
-          try {
-            await pendingEncode
-          } catch {
-            /* discarded — aborting */
-          }
-        }
+        await Promise.allSettled(pendingEncodes)
         await output.cancel()
         throw new DOMException('Render cancelled', 'AbortError')
       }
 
-      // Render frame to canvas first — this overlaps with the previous frame's
-      // encode that is still in flight. The previous VideoSample already copied
-      // its pixels, so writing to the canvas here cannot corrupt it.
+      const frameRenderStartedAt = performance.now()
       await frameRenderer.renderFrame(frame)
+      videoRenderMs += performance.now() - frameRenderStartedAt
 
       // Scale to output resolution if needed
       if (needsScaling) {
@@ -907,10 +930,7 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
         outputCtx.drawImage(renderCanvas, 0, 0, exportWidth, exportHeight)
       }
 
-      // Now wait for the previous encode to finish before capturing a new
-      // VideoSample. This ensures at most one encode is in flight and that
-      // frames are fed to the encoder in order.
-      if (pendingEncode) await pendingEncode
+      if (pendingEncodes.length >= maxEncoderQueue) await waitForOldestEncode()
 
       // Calculate timestamp in seconds
       const timestamp = frame / fps
@@ -923,7 +943,7 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
       // Kick off encoding in the background. NOT awaited here — it runs
       // concurrently with the next iteration's renderFrame().
       const isKeyFrame = frame === 0
-      pendingEncode = (async () => {
+      const pendingEncode = (async () => {
         try {
           if (isKeyFrame) {
             await videoSource.add(sample, { keyFrame: true })
@@ -937,6 +957,11 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
           sample.close()
         }
       })()
+      void pendingEncode.catch((error: unknown) => {
+        encodeError = error
+      })
+      pendingEncodes.push(pendingEncode)
+      peakEncoderQueue = Math.max(peakEncoderQueue, pendingEncodes.length)
 
       // Report progress
       const progress = Math.round((frame / totalFrames) * 100)
@@ -949,8 +974,8 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
       })
     }
 
-    // Drain the final in-flight encode before finalizing
-    if (pendingEncode) await pendingEncode
+    while (pendingEncodes.length > 0) await waitForOldestEncode()
+    if (encodeError) throw encodeError
 
     if (audioTask) {
       onProgress({
@@ -971,10 +996,11 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
       message: 'Finalizing video...',
     })
 
-    // Finalize output
+    const muxStartedAt = performance.now()
     await output.finalize()
 
     const completed = await outputTarget.complete()
+    muxMs = performance.now() - muxStartedAt
     const { blob } = completed
 
     onProgress({
@@ -995,11 +1021,29 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
       duration: durationSeconds,
       fileSize: blob.size,
       temporaryOutput: completed.temporaryOutput,
+      diagnostics: {
+        timings: {
+          preparationMs,
+          audioProcessingMs,
+          videoRenderMs,
+          videoEncodeBackpressureMs,
+          muxMs,
+          totalMs: performance.now() - renderStartedAt,
+        },
+        encoder: {
+          preset: settings.preset,
+          hardwareAcceleration: settings.hardwareAcceleration ?? 'no-preference',
+          latencyMode: settings.latencyMode ?? 'quality',
+          maxQueueDepth: maxEncoderQueue,
+          peakQueueDepth: peakEncoderQueue,
+        },
+      },
     }
   } catch (error) {
     // Cleanup on error
     frameRenderer?.dispose()
     canvasAudio.clearAudioDecodeCache()
+    await Promise.allSettled(pendingEncodes)
 
     // Attempt to cancel the output on error
     try {

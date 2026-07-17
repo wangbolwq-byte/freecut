@@ -99,6 +99,10 @@ npm run headless -- --workspace "C:\path\to\workspace" --list
 npm run headless -- --workspace "C:\path\to\workspace" --project <projectId> \
   --out ./my-render.mp4
 
+# Fast iterative preview; use --preset final for the delivery artifact
+npm run headless -- --workspace "<ws>" --project <id> \
+  --out ./preview.mp4 --preset draft
+
 # Render only a slice (great for very long projects)
 npm run headless -- --workspace "<ws>" --project <id> --in 10 --duration 5
 
@@ -125,6 +129,7 @@ npm run headless -- --workspace "<ws>" --list --json
 | `--resolution <WxH>`    | project metadata               | e.g. `1920x1080`.                                                                              |
 | `--fps <n>`             | project metadata               |                                                                                                |
 | `--quality <q>`         | `high`                         | `low \| medium \| high \| ultra` (controls bitrate).                                           |
+| `--preset <p>`          | `final`                        | `draft \| balanced \| final`; explicit resolution, fps, and quality flags take precedence.     |
 | `--in <sec>`            | 0                              | Render range start (seconds).                                                                  |
 | `--out-sec <sec>`       | end                            | Render range end (seconds).                                                                    |
 | `--duration <sec>`      | —                              | Render this many seconds from `--in`.                                                          |
@@ -146,14 +151,16 @@ single machine-readable result without progress output.
 - **Codec support is verified at render time** and falls back the same way the
   app does (e.g. H.264 → VP9 if unavailable). Headless Chrome here supports
   H.264/HEVC/VP9/AV1 video and AAC/Opus audio with hardware WebGPU.
+- **All item, track, and master volume values use dB.** `0` is unity/original
+  volume and negative values attenuate. Use the explicit mute field for silence;
+  never change `0` to `1` merely to “enable” sound.
 - **Audio codecs:** AAC/MP3/Opus/Vorbis/FLAC/PCM decode natively; **AC-3/E-AC-3
   (Dolby Digital / DD+) decode via `@mediabunny/ac3`** — the CLI passes each
   media's `metadata.json` to the harness, which seeds the media-library store so
-  the codec is recognized and the AC-3 decoder is registered. Truly exotic
-  codecs (e.g. DTS) still can't be decoded headlessly; the CLI warns and that
-  audio is silent (video unaffected). Supporting those would need a Node-side
-  pre-decode (ffmpeg / `@mediabunny/server`) — not wired up since it needs a
-  heavy native dependency and is rarely needed.
+  the codec is recognized and the AC-3 decoder is registered. If expected audio
+  cannot be decoded, is mixed to an empty result, or is missing from the final
+  container, rendering fails with `AUDIO_DECODE_FAILED` or
+  `OUTPUT_AUDIO_TRACK_MISSING`; no silent fallback artifact is accepted.
 - A harmless `Video load error` may log — that's the optional DOM `<video>`
   fallback; decode goes through mediabunny/WebCodecs and is unaffected.
 

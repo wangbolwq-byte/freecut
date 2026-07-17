@@ -1,4 +1,5 @@
 import { createLogger } from '@/shared/logging/logger'
+import { configureCorsMediaElement } from '@/shared/utils/media-element-cors'
 
 const logger = createLogger('VideoSourcePool')
 
@@ -445,7 +446,7 @@ class SourceController {
 
   private createElementSync(): HTMLVideoElement {
     const element = document.createElement('video')
-    element.src = this.sourceUrl
+    configureCorsMediaElement(element, this.sourceUrl)
     element.preload = 'auto'
     element.playsInline = true
     element.muted = true // Start muted, unmute when needed

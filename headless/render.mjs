@@ -20,6 +20,7 @@
 //   --resolution <WxH>     Override output resolution (default: project metadata)
 //   --fps <n>              Override fps (default: project metadata)
 //   --quality <q>          low|medium|high|ultra (default: high)
+//   --preset <name>        draft|balanced|final (default: final)
 //   --in/--out-sec/--duration <sec>   Render only a slice
 //   --audio-only           Render audio only (container default: mp3)
 //   --allow-missing-media  Render blank/silent gaps and report MISSING_MEDIA warnings
@@ -45,6 +46,7 @@ const RENDER_OPTIONS = new Set([
   'resolution',
   'fps',
   'quality',
+  'preset',
   'in',
   'out-sec',
   'duration',
@@ -58,7 +60,7 @@ const RENDER_OPTIONS = new Set([
   'help',
   'json',
 ])
-const HELP = `Usage:\n  node headless/render.mjs --workspace <dir> --project <id|project.json> [options]\n  node headless/render.mjs --workspace <dir> --batch <jobs.json>\n  node headless/render.mjs --workspace <dir> --list [--json]\n\nOptions: --out --codec --container --resolution --fps --quality --in --out-sec --duration --audio-only --allow-missing-media --head --build --harness-url --json\n`
+const HELP = `Usage:\n  node headless/render.mjs --workspace <dir> --project <id|project.json> [options]\n  node headless/render.mjs --workspace <dir> --batch <jobs.json>\n  node headless/render.mjs --workspace <dir> --list [--json]\n\nOptions: --out --codec --container --resolution --fps --quality --preset --in --out-sec --duration --audio-only --allow-missing-media --head --build --harness-url --json\n`
 
 async function main() {
   const args = parseArgs(process.argv.slice(2), { allowed: RENDER_OPTIONS })

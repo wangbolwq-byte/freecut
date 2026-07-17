@@ -620,6 +620,7 @@ const RENDER_OPTIONS = {
   codecs: ['h264', 'h265', 'vp9', 'vp8', 'av1'],
   containers: ['mp4', 'webm', 'mov', 'mkv', 'mp3', 'wav', 'm4a'],
   qualities: ['low', 'medium', 'high', 'ultra'],
+  presets: ['draft', 'balanced', 'final'],
 }
 export const renderRequestSchema = z
   .object({
@@ -638,6 +639,7 @@ export const renderRequestSchema = z
       .optional(),
     fps: finite.min(1).max(240).optional(),
     quality: z.enum(RENDER_OPTIONS.qualities).optional(),
+    preset: z.enum(RENDER_OPTIONS.presets).optional(),
     inSec: finite.nonnegative().optional(),
     outSec: finite.positive().optional(),
     duration: finite.positive().optional(),

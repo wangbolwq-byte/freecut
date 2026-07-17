@@ -16,6 +16,7 @@ import {
 import { resolvePreviewAudioEqStages } from '@/shared/utils/audio-eq'
 import { useMixerLiveGain, clearMixerLiveGain } from '@/shared/state/mixer-live-gain'
 import type { ResolvedAudioEqSettings } from '@/types/audio'
+import { configureCorsMediaElement } from '@/shared/utils/media-element-cors'
 import {
   createPreviewClipAudioGraph,
   getSharedPreviewAudioContext,
@@ -38,6 +39,7 @@ export function applyVideoElementAudioState(
   audioVolume: number,
   audioEqStages: ReadonlyArray<ResolvedAudioEqSettings>,
 ): void {
+  configureCorsMediaElement(video)
   // Pool creates elements muted. Keep element unmuted and control via volume/gain.
   video.muted = false
   const safeVolume = Math.max(0, audioVolume)

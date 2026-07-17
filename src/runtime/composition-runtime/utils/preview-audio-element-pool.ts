@@ -1,6 +1,10 @@
+import { createLogger } from '@/shared/logging/logger'
+import { configureCorsMediaElement } from '@/shared/utils/media-element-cors'
+
 const IDLE_EVICT_MS = 15000
 const PREWARM_PLAY_PAUSE_MS = 48
 const SEEK_TOLERANCE_SECONDS = 0.05
+const log = createLogger('PreviewAudioPool')
 
 interface PreviewAudioPoolEntry {
   src: string
@@ -25,9 +29,7 @@ function getEntriesForSrc(src: string): PreviewAudioPoolEntry[] {
 }
 
 function configureAudioElement(audio: HTMLAudioElement, src: string): void {
-  if (audio.src !== src) {
-    audio.src = src
-  }
+  configureCorsMediaElement(audio, src)
   audio.preload = 'auto'
   audio.preservesPitch = true
   // @ts-expect-error - webkit prefix for older Safari
@@ -37,6 +39,13 @@ function configureAudioElement(audio: HTMLAudioElement, src: string): void {
 function createEntry(src: string): PreviewAudioPoolEntry {
   const audio = new window.Audio()
   configureAudioElement(audio, src)
+  audio.addEventListener('error', () => {
+    log.error('Preview audio media request failed', {
+      src,
+      code: audio.error?.code,
+      message: audio.error?.message,
+    })
+  })
   const entry: PreviewAudioPoolEntry = {
     src,
     audio,
@@ -215,8 +224,8 @@ function warmAudioElement(entry: PreviewAudioPoolEntry, targetTimeSeconds: numbe
       audio.addEventListener('loadedmetadata', seekAndWarm, { once: true })
       try {
         audio.load()
-      } catch {
-        // ignore load errors; canplay/metadata listeners will never fire
+      } catch (error) {
+        log.warn('Preview audio preload failed', { src: entry.src, error })
       }
       return
     }

@@ -145,6 +145,7 @@ export class VideoFrameExtractor {
 
       this.sink = new mb.VideoSampleSink(
         this.videoTrack as unknown as ConstructorParameters<typeof mb.VideoSampleSink>[0],
+        { hardwareAcceleration: 'prefer-hardware' },
       )
 
       this.ready = true
