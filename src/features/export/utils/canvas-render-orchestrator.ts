@@ -554,13 +554,14 @@ async function tryPacketRemuxComposition(
 export async function renderComposition(options: RenderEngineOptions): Promise<ClientRenderResult> {
   const renderStartedAt = performance.now()
   const { settings, composition, onProgress, signal } = options
-  const { fps, durationInFrames = 0 } = composition
+  const { fps: sourceFps, durationInFrames = 0 } = composition
   const canvasAudio = await loadCanvasAudio()
 
   getLog().info('Starting enhanced client render', {
-    fps,
+    sourceFps,
+    outputFps: settings.fps,
     durationInFrames,
-    durationSeconds: durationInFrames / fps,
+    durationSeconds: durationInFrames / sourceFps,
     width: settings.resolution.width,
     height: settings.resolution.height,
     codec: settings.codec,
@@ -574,8 +575,9 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
     throw new Error('Composition has no duration')
   }
 
-  const totalFrames = durationInFrames
-  const durationSeconds = totalFrames / fps
+  const durationSeconds = durationInFrames / sourceFps
+  const outputFps = settings.fps
+  const totalFrames = Math.ceil(durationSeconds * outputFps)
 
   onProgress({
     phase: 'preparing',
@@ -616,7 +618,7 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
   const compositionHasAudio = await canvasAudio.hasAudioContent(composition)
   const useWindowedAudio =
     compositionHasAudio &&
-    durationInFrames / fps >= 5 * 60 &&
+    durationSeconds >= 5 * 60 &&
     canvasAudio.supportsWindowedAudioProcessing(composition)
 
   onProgress({
@@ -749,7 +751,7 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
 
   // Add video track
   output.addVideoTrack(videoSource, {
-    frameRate: fps,
+    frameRate: outputFps,
   })
 
   let audioSource: InstanceType<typeof AudioSampleSource> | null = null
@@ -787,7 +789,7 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
       // Add audio track to output (audio data fed after start())
       output.addAudioTrack(audioSource)
       getLog().info('Audio track added to output', {
-        duration: durationInFrames / fps,
+        duration: durationSeconds,
         channels: 2,
         sampleRate: 48_000,
         codec: audioCodec,
@@ -928,7 +930,11 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
       }
 
       const frameRenderStartedAt = performance.now()
-      await frameRenderer.renderFrame(frame)
+      const sourceFrame = Math.min(
+        durationInFrames - 1,
+        Math.floor((frame * sourceFps) / outputFps),
+      )
+      await frameRenderer.renderFrame(sourceFrame)
       videoRenderMs += performance.now() - frameRenderStartedAt
 
       // Scale to output resolution if needed
@@ -940,8 +946,8 @@ export async function renderComposition(options: RenderEngineOptions): Promise<C
       if (pendingEncodes.length >= maxEncoderQueue) await waitForOldestEncode()
 
       // Calculate timestamp in seconds
-      const timestamp = frame / fps
-      const frameDuration = 1 / fps
+      const timestamp = frame / outputFps
+      const frameDuration = 1 / outputFps
 
       // Snapshot canvas pixels into a VideoSample. The constructor copies
       // pixel data immediately — the canvas is free for the next render.

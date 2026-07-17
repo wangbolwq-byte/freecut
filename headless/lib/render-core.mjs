@@ -41,7 +41,7 @@ const RENDER_PRESETS = {
   draft: {
     quality: 'medium',
     videoBitrate: 4_000_000,
-    maxFps: 30,
+    maxFps: 15,
     maxWidth: 1280,
     maxHeight: 1280,
     maxEncoderQueue: 3,
@@ -49,7 +49,7 @@ const RENDER_PRESETS = {
   balanced: {
     quality: 'medium',
     videoBitrate: 5_000_000,
-    maxFps: 30,
+    maxFps: 24,
     maxWidth: 1920,
     maxHeight: 1080,
     maxEncoderQueue: 3,

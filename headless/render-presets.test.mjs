@@ -12,7 +12,7 @@ test('render presets cap dimensions, fps, bitrate, and encoder queue', () => {
     container: 'mp4',
     quality: 'medium',
     resolution: { width: 1280, height: 720 },
-    fps: 30,
+    fps: 15,
     videoBitrate: 4_000_000,
     audioBitrate: 192_000,
     preset: 'draft',
@@ -23,7 +23,7 @@ test('render presets cap dimensions, fps, bitrate, and encoder queue', () => {
 
   const balanced = buildSettings(project, { preset: 'balanced' })
   assert.deepEqual(balanced.resolution, { width: 1920, height: 1080 })
-  assert.equal(balanced.fps, 30)
+  assert.equal(balanced.fps, 24)
   assert.equal(balanced.videoBitrate, 5_000_000)
   assert.equal(balanced.maxEncoderQueue, 3)
 
