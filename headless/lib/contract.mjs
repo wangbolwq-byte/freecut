@@ -704,6 +704,21 @@ export function capabilities() {
     apiVersion: HEADLESS_API_VERSION,
     operations: EDIT_OPERATION_NAMES,
     operationDescriptions: EDIT_OPERATION_DESCRIPTIONS,
+    agentGuidance: {
+      lifecycleEdit: {
+        opsFileRequired: true,
+        callerIdRequiredPerOperation: true,
+        callerIdPattern: '^[A-Za-z][A-Za-z0-9_-]{0,63}$',
+        callerIdMustBeUnique: true,
+        example: {
+          callerId: 'addAcceptanceTitle',
+          op: 'addText',
+          text: 'AutoCut DEV acceptance',
+          from: 540,
+          durationInFrames: 90,
+        },
+      },
+    },
     options: {
       ...RENDER_OPTIONS,
       gpuEffects: GPU_EFFECT_TYPES,

@@ -83,6 +83,19 @@ test('lifecycle edits require unique caller ids and accept id references', () =>
 
 test('capabilities publish lifecycle constraints', () => {
   const result = capabilities()
+  assert.deepEqual(result.agentGuidance.lifecycleEdit, {
+    opsFileRequired: true,
+    callerIdRequiredPerOperation: true,
+    callerIdPattern: '^[A-Za-z][A-Za-z0-9_-]{0,63}$',
+    callerIdMustBeUnique: true,
+    example: {
+      callerId: 'addAcceptanceTitle',
+      op: 'addText',
+      text: 'AutoCut DEV acceptance',
+      from: 540,
+      durationInFrames: 90,
+    },
+  })
   assert.equal(result.lifecycle.httpMediaUpload, false)
   assert.equal(result.lifecycle.deleteProject, false)
   assert.equal(result.lifecycle.writerMode, 'exclusive')
