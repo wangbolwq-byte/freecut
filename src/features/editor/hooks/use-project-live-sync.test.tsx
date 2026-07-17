@@ -7,6 +7,9 @@ const fetchMock = vi.hoisted(() => vi.fn())
 const toastWarning = vi.hoisted(() => vi.fn())
 const hydrateTimeline = vi.hoisted(() => vi.fn())
 const setCurrentProject = vi.hoisted(() => vi.fn())
+const getWorkspaceRoot = vi.hoisted(() => vi.fn())
+const loadDirectoryProjectSnapshot = vi.hoisted(() => vi.fn())
+let directoryChangeListener: (() => void) | undefined
 
 type DeferredSnapshotResponse = { ok: true; json: () => Promise<unknown> }
 
@@ -92,6 +95,14 @@ vi.mock('@/infrastructure/browser/blob-url-manager', () => ({
   blobUrlManager: { invalidate: vi.fn() },
 }))
 
+vi.mock('@/infrastructure/storage/workspace-fs/root', () => ({
+  getWorkspaceRoot,
+}))
+
+vi.mock('./directory-project-snapshot', () => ({
+  loadDirectoryProjectSnapshot,
+}))
+
 const eventSources: FakeEventSource[] = []
 
 class FakeEventSource {
@@ -130,6 +141,9 @@ describe('useProjectLiveSync', () => {
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('EventSource', FakeEventSource)
     hydrateTimeline.mockResolvedValue(undefined)
+    getWorkspaceRoot.mockReturnValue(null)
+    loadDirectoryProjectSnapshot.mockReset()
+    directoryChangeListener = undefined
     fetchMock.mockImplementation(async (_url: string, options?: RequestInit) => {
       if (options?.method === 'PUT') {
         return {
@@ -312,5 +326,75 @@ describe('useProjectLiveSync', () => {
     await act(async () => finishHydration?.())
 
     expect(setCurrentProject).not.toHaveBeenCalled()
+  })
+
+  it('applies Electron directory changes without calling the standalone Headless API', async () => {
+    const unsubscribe = vi.fn()
+    getWorkspaceRoot.mockReturnValue({
+      kind: 'electron-directory',
+      subscribe: vi.fn((listener: () => void) => {
+        directoryChangeListener = listener
+        return unsubscribe
+      }),
+    })
+    loadDirectoryProjectSnapshot
+      .mockResolvedValueOnce({
+        revision: 'directory:initial',
+        projectRevision: 'directory:initial-project',
+        project,
+        media: [],
+        missingMediaIds: [],
+      })
+      .mockResolvedValueOnce({
+        revision: 'directory:agent-edit',
+        projectRevision: 'directory:agent-project',
+        project: { ...project, name: 'Agent edit' },
+        media: [],
+        missingMediaIds: [],
+      })
+
+    const { result, unmount } = renderHook(() =>
+      useProjectLiveSync({ projectId: project.id, isDirty: false, enabled: true }),
+    )
+
+    await waitFor(() => expect(result.current.lastAppliedRevision).toBe('directory:initial'))
+    act(() => directoryChangeListener?.())
+    await waitFor(() => expect(result.current.lastAppliedRevision).toBe('directory:agent-edit'))
+
+    expect(setCurrentProject).toHaveBeenLastCalledWith(
+      expect.objectContaining({ name: 'Agent edit' }),
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(eventSources).toHaveLength(0)
+    unmount()
+    expect(unsubscribe).toHaveBeenCalledOnce()
+  })
+
+  it('publishes the chosen editor version locally in Electron directory mode', async () => {
+    getWorkspaceRoot.mockReturnValue({
+      kind: 'electron-directory',
+      subscribe: vi.fn(() => () => undefined),
+    })
+    loadDirectoryProjectSnapshot.mockResolvedValue({
+      revision: 'directory:agent-edit',
+      projectRevision: 'directory:agent-project',
+      project,
+      media: [],
+      missingMediaIds: [],
+    })
+    const { result, unmount } = renderHook(() =>
+      useProjectLiveSync({ projectId: project.id, isDirty: true, enabled: true }),
+    )
+    await waitFor(() => expect(result.current.conflictPending).toBe(true))
+    const persistLocal = vi.fn()
+
+    await act(async () => {
+      await result.current.publishEditorVersion({ ...project, name: 'Editor wins' }, persistLocal)
+    })
+
+    expect(persistLocal).toHaveBeenCalledOnce()
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(result.current.conflictPending).toBe(false)
+    unmount()
   })
 })

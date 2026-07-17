@@ -18,7 +18,9 @@ import { clearPreviewAudioCache } from '@/features/editor/deps/composition-runti
 import { usePlaybackStore } from '@/shared/state/playback'
 import { useSelectionStore } from '@/shared/state/selection'
 import { blobUrlManager } from '@/infrastructure/browser/blob-url-manager'
+import { getWorkspaceRoot } from '@/infrastructure/storage/workspace-fs/root'
 import { createLogger } from '@/shared/logging/logger'
+import { loadDirectoryProjectSnapshot } from './directory-project-snapshot'
 
 const logger = createLogger('ProjectLiveSync')
 const DEFAULT_HEADLESS_URL = 'http://127.0.0.1:8787'
@@ -69,6 +71,20 @@ async function requestProjectSnapshot(
   if (controller.signal.aborted || !isMounted()) return null
   if (!response.ok) throw new Error(`Snapshot request failed: ${response.status}`)
   const snapshot = (await response.json()) as ProjectSnapshot
+  return controller.signal.aborted || !isMounted() ? null : snapshot
+}
+
+async function requestCurrentProjectSnapshot(
+  baseUrl: string,
+  projectId: string,
+  controller: AbortController,
+  isMounted: () => boolean,
+): Promise<ProjectSnapshot | null> {
+  const root = getWorkspaceRoot()
+  if (root?.kind !== 'electron-directory') {
+    return await requestProjectSnapshot(baseUrl, projectId, controller, isMounted)
+  }
+  const snapshot = await loadDirectoryProjectSnapshot(root, projectId)
   return controller.signal.aborted || !isMounted() ? null : snapshot
 }
 
@@ -267,7 +283,7 @@ export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLi
     const baseUrl =
       (import.meta.env.VITE_FREECUT_HEADLESS_URL as string | undefined) ?? DEFAULT_HEADLESS_URL
     try {
-      const snapshot = await requestProjectSnapshot(
+      const snapshot = await requestCurrentProjectSnapshot(
         baseUrl,
         projectId,
         controller,
@@ -321,16 +337,17 @@ export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLi
 
     const baseUrl =
       (import.meta.env.VITE_FREECUT_HEADLESS_URL as string | undefined) ?? DEFAULT_HEADLESS_URL
-    const source = new EventSource(
-      `${baseUrl}/v1/events?projectId=${encodeURIComponent(projectId)}`,
-    )
-    source.addEventListener('project.changed', scheduleFetch)
+    const root = getWorkspaceRoot()
+    const stopSource =
+      root?.kind === 'electron-directory'
+        ? root.subscribe(scheduleFetch)
+        : subscribeHeadlessProjectChanges(baseUrl, projectId, scheduleFetch)
     const onVisible = () => {
       if (document.visibilityState === 'visible') scheduleFetch()
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
-      source.close()
+      stopSource()
       document.removeEventListener('visibilitychange', onVisible)
       fetchControllerRef.current?.abort()
       if (scheduleTimerRef.current !== null) window.clearTimeout(scheduleTimerRef.current)
@@ -357,24 +374,27 @@ export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLi
       fetchControllerRef.current = null
       let completed = false
       try {
-        const baseUrl =
-          (import.meta.env.VITE_FREECUT_HEADLESS_URL as string | undefined) ?? DEFAULT_HEADLESS_URL
-        const response = await fetch(`${baseUrl}/v1/projects/${encodeURIComponent(projectId)}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            project,
-            expectedRevision: snapshot.projectRevision,
-          }),
-        })
-        if (!response.ok) {
-          throw new Error(`Headless project save failed: ${response.status}`)
-        }
-        const saved = (await response.json()) as { revision?: string }
-        if (saved.revision && queuedSnapshotRef.current) {
-          queuedSnapshotRef.current = {
-            ...queuedSnapshotRef.current,
-            projectRevision: saved.revision,
+        if (getWorkspaceRoot()?.kind !== 'electron-directory') {
+          const baseUrl =
+            (import.meta.env.VITE_FREECUT_HEADLESS_URL as string | undefined) ??
+            DEFAULT_HEADLESS_URL
+          const response = await fetch(`${baseUrl}/v1/projects/${encodeURIComponent(projectId)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              project,
+              expectedRevision: snapshot.projectRevision,
+            }),
+          })
+          if (!response.ok) {
+            throw new Error(`Headless project save failed: ${response.status}`)
+          }
+          const saved = (await response.json()) as { revision?: string }
+          if (saved.revision && queuedSnapshotRef.current) {
+            queuedSnapshotRef.current = {
+              ...queuedSnapshotRef.current,
+              projectRevision: saved.revision,
+            }
           }
         }
         await persistLocal()
@@ -401,6 +421,16 @@ export function useProjectLiveSync({ projectId, isDirty, enabled }: UseProjectLi
     applyPendingExternal,
     publishEditorVersion,
   }
+}
+
+function subscribeHeadlessProjectChanges(
+  baseUrl: string,
+  projectId: string,
+  listener: () => void,
+): () => void {
+  const source = new EventSource(`${baseUrl}/v1/events?projectId=${encodeURIComponent(projectId)}`)
+  source.addEventListener('project.changed', listener)
+  return () => source.close()
 }
 
 type CompositionBreadcrumbSnapshot = {
