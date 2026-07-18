@@ -12,6 +12,11 @@ const TOP_LEVEL_HEADLESS_FILES = [
   'media-server.mjs',
   'server.mjs',
 ]
+const RUNTIME_DEPENDENCIES = {
+  playwright: '1.60.0',
+  'playwright-core': '1.60.0',
+  zod: '4.3.6',
+}
 const OPTION_KEYS = new Map([
   ['--output', 'output'],
   ['--platform-arch', 'platformArch'],
@@ -23,7 +28,11 @@ async function main(argv = process.argv.slice(2)) {
   const config = resolvePackageConfig(parseOptions(argv))
 
   await assertDirectory(path.join(REPO_ROOT, 'dist'))
-  await assertDirectory(path.join(REPO_ROOT, 'node_modules', 'zod'))
+  await Promise.all(
+    Object.keys(RUNTIME_DEPENDENCIES).map((dependency) =>
+      assertDirectory(path.join(REPO_ROOT, 'node_modules', dependency)),
+    ),
+  )
   await stageRuntime(config.outputRoot)
 
   const runtimeManifest = {
@@ -49,7 +58,7 @@ async function main(argv = process.argv.slice(2)) {
     version: config.version,
     private: true,
     type: 'module',
-    dependencies: { zod: '4.3.6' },
+    dependencies: RUNTIME_DEPENDENCIES,
   })
   await writeLaunchers(config.outputRoot)
   await writeFile(
@@ -58,7 +67,7 @@ async function main(argv = process.argv.slice(2)) {
       '# AutoCut runtime notices',
       '',
       `This runtime was built from FreeCut dev commit ${config.commit}.`,
-      'FreeCut and Zod license texts are included below the licenses directory.',
+      'FreeCut, Playwright, Playwright Core, and Zod license texts are included below the licenses directory.',
       '',
     ].join('\n'),
     'utf8',
@@ -75,7 +84,7 @@ function resolvePackageConfig(options) {
         path.join(REPO_ROOT, 'build', 'autocut-runtime', platformArch),
       ),
     ),
-    version: resolveOption(options.version, () => process.env.AUTOCUT_VERSION?.trim() || '0.1.2'),
+    version: resolveOption(options.version, () => process.env.AUTOCUT_VERSION?.trim() || '0.1.3'),
     commit: resolveOption(options.commit, readCurrentCommit),
   }
 }
@@ -99,13 +108,25 @@ async function stageRuntime(outputRoot) {
   await Promise.all(
     TOP_LEVEL_HEADLESS_FILES.map((fileName) => copyHeadlessFile(outputRoot, fileName)),
   )
-  await cp(
-    path.join(REPO_ROOT, 'node_modules', 'zod'),
-    path.join(outputRoot, 'node_modules', 'zod'),
-    { recursive: true },
+  await Promise.all(
+    Object.keys(RUNTIME_DEPENDENCIES).map((dependency) =>
+      cp(
+        path.join(REPO_ROOT, 'node_modules', dependency),
+        path.join(outputRoot, 'node_modules', dependency),
+        { recursive: true },
+      ),
+    ),
   )
   await Promise.all([
     cp(path.join(REPO_ROOT, 'LICENSE'), path.join(outputRoot, 'licenses', 'LICENSE.freecut.txt')),
+    cp(
+      path.join(REPO_ROOT, 'node_modules', 'playwright', 'LICENSE'),
+      path.join(outputRoot, 'licenses', 'LICENSE.playwright.txt'),
+    ),
+    cp(
+      path.join(REPO_ROOT, 'node_modules', 'playwright-core', 'LICENSE'),
+      path.join(outputRoot, 'licenses', 'LICENSE.playwright-core.txt'),
+    ),
     cp(
       path.join(REPO_ROOT, 'node_modules', 'zod', 'LICENSE'),
       path.join(outputRoot, 'licenses', 'LICENSE.zod.txt'),
