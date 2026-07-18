@@ -25,6 +25,7 @@ inspect a project:
 ```bash
 npm run build
 npm run headless:agent -- capabilities --workspace "<ws>" --json
+npm run headless:agent -- project audit --id <project-id> --mode remix --workspace "<ws>" --json
 npm run headless:agent -- project create --workspace "<ws>" --id demo --name "Demo" --json
 npm run headless:agent -- project list --workspace "<ws>" --json
 npm run headless:agent -- project get --workspace "<ws>" --id demo --json
@@ -186,29 +187,29 @@ Safe by default: with neither `--out` nor `--in-place` it's a dry run.
 
 `edits.json` is an array of ops (each `{ "op": "<name>", ... }`):
 
-| op                                                | fields                                                                                                                                    |
-| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `addText`                                         | `text`, `from`, `durationInFrames`, `trackId?`, `color?`, `fontSize?`, `fontWeight?`, `textAlign?`, `verticalAlign?`                      |
-| `addItem`                                         | `item` (a full `TimelineItem`)                                                                                                            |
-| `updateItem`                                      | `id`, `updates` (partial `TimelineItem`)                                                                                                  |
-| `moveItem`                                        | `id`, `from`, `trackId?`                                                                                                                  |
-| `removeItems`                                     | `ids` (array)                                                                                                                             |
-| `split`                                           | `id`, `frame`                                                                                                                             |
-| `trimStart` / `trimEnd`                           | `id`, `amount`                                                                                                                            |
-| `addTransition`                                   | `leftClipId`, `rightClipId`, `type?`, `durationInFrames?`                                                                                 |
-| `addClip`                                         | `mediaId`, `from`, `trackId?`, `durationInFrames?` (video adds a linked audio companion; source range computed from the media's metadata) |
-| `addTrack`                                        | `kind?` (`video`\|`audio`), `order?`                                                                                                      |
-| `updateTrack`                                     | `id`, `updates` (`name`, `order`, `locked`, `syncLock`, `visible`, `muted`, `solo`, `volume`, `audioEq`, etc.)                            |
-| `removeTrack`                                     | `id`                                                                                                                                      |
-| `addKeyframe`                                     | `itemId`, `property`, `frame`, `value`, `easing?`                                                                                         |
-| `removeKeyframes`                                 | `itemId`, `property`                                                                                                                      |
-| `addEffect`                                       | `itemId`, `gpuEffectType` + `params?` (or a full `effect` object)                                                                         |
-| `removeEffect`                                    | `itemId`, `effectId`                                                                                                                      |
-| `setTransform`                                    | `id`, `transform` (e.g. `{ "x": 0, "y": 150, "opacity": 0.5, "rotation": 0 }`)                                                            |
-| `addMarker` / `updateMarker` / `removeMarker`     | marker frame/id and updates                                                                                                               |
-| `setInPoint` / `setOutPoint` / `clearInOutPoints` | timeline range                                                                                                                            |
-| `setMasterAudio`                                  | `masterBusDb?`, `busAudioEq?`                                                                                                             |
-| `setProjectSettings`                              | `name?`, `description?`, `duration?`, `width?`, `height?`, `fps?`, `backgroundColor?`                                                     |
+| op                                                | fields                                                                                                                                                   |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `addText`                                         | `text`, `from`, `durationInFrames`, `trackId?`, `color?`, `fontSize?`, `fontWeight?`, `textAlign?`, `verticalAlign?`                                     |
+| `addItem`                                         | `item` (a full `TimelineItem`)                                                                                                                           |
+| `updateItem`                                      | `id`, `updates` (partial `TimelineItem`)                                                                                                                 |
+| `moveItem`                                        | `id`, `from`, `trackId?`                                                                                                                                 |
+| `removeItems`                                     | `ids` (array)                                                                                                                                            |
+| `split`                                           | `id`, `frame`                                                                                                                                            |
+| `trimStart` / `trimEnd`                           | `id`, `amount`                                                                                                                                           |
+| `addTransition`                                   | `leftClipId`, `rightClipId`, `type?`, `durationInFrames?`                                                                                                |
+| `addClip`                                         | `mediaId`, `from`, `trackId?`, `durationInFrames?`, `sourceStart?` (source-native frame; video adds a linked audio companion with the same source range) |
+| `addTrack`                                        | `kind?` (`video`\|`audio`), `order?`                                                                                                                     |
+| `updateTrack`                                     | `id`, `updates` (`name`, `order`, `locked`, `syncLock`, `visible`, `muted`, `solo`, `volume`, `audioEq`, etc.)                                           |
+| `removeTrack`                                     | `id`                                                                                                                                                     |
+| `addKeyframe`                                     | `itemId`, `property`, `frame`, `value`, `easing?`                                                                                                        |
+| `removeKeyframes`                                 | `itemId`, `property`                                                                                                                                     |
+| `addEffect`                                       | `itemId`, `gpuEffectType` + `params?` (or a full `effect` object)                                                                                        |
+| `removeEffect`                                    | `itemId`, `effectId`                                                                                                                                     |
+| `setTransform`                                    | `id`, `transform` (e.g. `{ "x": 0, "y": 150, "opacity": 0.5, "rotation": 0 }`)                                                                           |
+| `addMarker` / `updateMarker` / `removeMarker`     | marker frame/id and updates                                                                                                                              |
+| `setInPoint` / `setOutPoint` / `clearInOutPoints` | timeline range                                                                                                                                           |
+| `setMasterAudio`                                  | `masterBusDb?`, `busAudioEq?`                                                                                                                            |
+| `setProjectSettings`                              | `name?`, `description?`, `duration?`, `width?`, `height?`, `fps?`, `backgroundColor?`                                                                    |
 
 Operations are validated before Chrome starts. Item and track references must
 exist and be compatible. `removeItems` rejects the entire operation if any

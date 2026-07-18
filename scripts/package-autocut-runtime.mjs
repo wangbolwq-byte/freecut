@@ -32,7 +32,7 @@ async function main(argv = process.argv.slice(2)) {
     version: config.version,
     platformArch: config.platformArch,
     upstream: {
-      repository: 'freecut',
+      repository: 'https://github.com/wangbolwq-byte/freecut',
       branch: 'dev',
       commit: config.commit,
     },
@@ -75,7 +75,7 @@ function resolvePackageConfig(options) {
         path.join(REPO_ROOT, 'build', 'autocut-runtime', platformArch),
       ),
     ),
-    version: resolveOption(options.version, () => process.env.AUTOCUT_VERSION?.trim() || '0.1.0'),
+    version: resolveOption(options.version, () => process.env.AUTOCUT_VERSION?.trim() || '0.1.2'),
     commit: resolveOption(options.commit, readCurrentCommit),
   }
 }

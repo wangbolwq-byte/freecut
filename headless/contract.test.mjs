@@ -32,7 +32,7 @@ const samples = {
   addTrack: { op: 'addTrack', kind: 'audio', order: 2 },
   updateTrack: { op: 'updateTrack', id: 'v', updates: { name: 'Video', locked: true } },
   removeTrack: { op: 'removeTrack', id: 'v' },
-  addClip: { op: 'addClip', mediaId: 'm', from: 0 },
+  addClip: { op: 'addClip', mediaId: 'm', from: 0, sourceStart: 12 },
   addKeyframe: {
     op: 'addKeyframe',
     itemId: 'i',
@@ -155,6 +155,7 @@ test('validation errors and capabilities are machine-readable and bounded', () =
   const result = capabilities()
   assert.equal(result.apiVersion, HEADLESS_API_VERSION)
   assert.deepEqual(result.operations, EDIT_OPERATION_NAMES)
+  assert.deepEqual(result.features, { sourceRangeClip: true, projectAudit: true })
   assert.ok(result.schemas.render)
   assert.ok(result.lifecycle.routes.includes('GET /v1/projects/:id/snapshot'))
   assert.ok(result.lifecycle.routes.includes('GET /v1/events'))

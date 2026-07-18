@@ -236,11 +236,39 @@ function resolveOrCreateTrack(preferred: unknown, kind: 'video' | 'audio'): stri
 }
 
 /** Source-frame fields for a media clip (source* are in source-native fps). */
-function sourceFieldsFor(media: MediaMetadata, projectFps: number) {
+function sourceFieldsFor(
+  media: MediaMetadata,
+  projectFps: number,
+  durationInFrames: number,
+  requestedSourceStart: number,
+) {
   const sourceFps = media.fps && media.fps > 0 ? media.fps : projectFps
   const durationSec = media.duration ?? 0
-  const sourceEnd = Math.max(1, Math.round(durationSec * sourceFps))
-  return { sourceFps, sourceStart: 0, sourceEnd, sourceDuration: sourceEnd, speed: 1 }
+  const sourceDuration = Math.max(1, Math.round(durationSec * sourceFps))
+  const sourceStart = Math.round(requestedSourceStart)
+  if (sourceStart < 0 || sourceStart >= sourceDuration) {
+    throw new Error(
+      `addClip: sourceStart ${sourceStart} is outside source duration ${sourceDuration}`,
+    )
+  }
+  const sourceFramesNeeded = Math.max(1, Math.round((durationInFrames / projectFps) * sourceFps))
+  const sourceEnd = sourceStart + sourceFramesNeeded
+  if (sourceEnd > sourceDuration) {
+    throw new Error(
+      `addClip: source range [${sourceStart}, ${sourceEnd}) exceeds source duration ${sourceDuration}`,
+    )
+  }
+  return { sourceFps, sourceStart, sourceEnd, sourceDuration, speed: 1 }
+}
+
+function defaultClipDurationInFrames(
+  media: MediaMetadata,
+  projectFps: number,
+  sourceStart: number,
+): number {
+  const sourceFps = media.fps && media.fps > 0 ? media.fps : projectFps
+  const sourceDuration = Math.max(1, Math.round((media.duration ?? 0) * sourceFps))
+  return Math.max(1, Math.floor(((sourceDuration - sourceStart) / sourceFps) * projectFps))
 }
 
 function buildTextItem(op: EditOp): TextItem {
@@ -418,10 +446,14 @@ function applyOp(op: EditOp): unknown {
       }
       const from = asNumber(op.from, 0)!
       const projectFps = useTimelineSettingsStore.getState().fps || 30
+      const requestedSourceStart = asNumber(op.sourceStart, 0)!
       const created: Array<{ id: string; type: string }> = []
       const label = media.fileName ?? mediaId
 
       if (media.mimeType.startsWith('image/')) {
+        if (requestedSourceStart !== 0) {
+          throw new Error('addClip: image clips require sourceStart 0')
+        }
         const item: ImageItem = {
           id: newId(),
           type: 'image',
@@ -437,15 +469,16 @@ function applyOp(op: EditOp): unknown {
         addItem(item)
         created.push({ id: item.id, type: 'image' })
       } else if (media.mimeType.startsWith('audio/')) {
-        const sf = sourceFieldsFor(media, projectFps)
+        const durationInFrames =
+          asNumber(op.durationInFrames) ??
+          defaultClipDurationInFrames(media, projectFps, requestedSourceStart)
+        const sf = sourceFieldsFor(media, projectFps, durationInFrames, requestedSourceStart)
         const item: AudioItem = {
           id: newId(),
           type: 'audio',
           trackId: resolveOrCreateTrack(op.trackId, 'audio'),
           from,
-          durationInFrames:
-            asNumber(op.durationInFrames) ??
-            Math.max(1, Math.round((media.duration ?? 0) * projectFps)),
+          durationInFrames,
           label,
           mediaId,
           src: '',
@@ -455,10 +488,10 @@ function applyOp(op: EditOp): unknown {
         addItem(item)
         created.push({ id: item.id, type: 'audio' })
       } else if (media.mimeType.startsWith('video/')) {
-        const sf = sourceFieldsFor(media, projectFps)
         const durationInFrames =
           asNumber(op.durationInFrames) ??
-          Math.max(1, Math.round((media.duration ?? 0) * projectFps))
+          defaultClipDurationInFrames(media, projectFps, requestedSourceStart)
+        const sf = sourceFieldsFor(media, projectFps, durationInFrames, requestedSourceStart)
         const linkedGroupId = crypto.randomUUID()
         const video: VideoItem = {
           id: newId(),

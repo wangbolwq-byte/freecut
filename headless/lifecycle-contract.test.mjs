@@ -83,6 +83,8 @@ test('lifecycle edits require unique caller ids and accept id references', () =>
 
 test('capabilities publish lifecycle constraints', () => {
   const result = capabilities()
+  assert.equal(result.agentGuidance.sourceRangeClip, true)
+  assert.equal(result.agentGuidance.projectAudit, true)
   assert.deepEqual(result.agentGuidance.lifecycleEdit, {
     opsFileRequired: true,
     callerIdRequiredPerOperation: true,

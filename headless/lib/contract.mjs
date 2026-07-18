@@ -271,6 +271,7 @@ const opSchemas = [
       from: frame.optional(),
       trackId: id.optional(),
       durationInFrames: positiveFrames.optional(),
+      sourceStart: frame.optional(),
     })
     .strict(),
   z
@@ -704,6 +705,7 @@ export function capabilities() {
     apiVersion: HEADLESS_API_VERSION,
     operations: EDIT_OPERATION_NAMES,
     operationDescriptions: EDIT_OPERATION_DESCRIPTIONS,
+    features: { sourceRangeClip: true, projectAudit: true },
     agentGuidance: {
       lifecycleEdit: {
         opsFileRequired: true,
@@ -718,6 +720,8 @@ export function capabilities() {
           durationInFrames: 90,
         },
       },
+      sourceRangeClip: true,
+      projectAudit: true,
     },
     options: {
       ...RENDER_OPTIONS,

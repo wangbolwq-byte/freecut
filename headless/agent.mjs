@@ -33,6 +33,7 @@ import {
   updateMediaMetadata,
 } from './lib/lifecycle-store.mjs'
 import { isMainModule } from './lib/main-module.mjs'
+import { auditRemixProject } from './lib/project-audit.mjs'
 
 const OPTIONS = new Set([
   'workspace',
@@ -65,6 +66,8 @@ const OPTIONS = new Set([
   'out-sec',
   'audio-only',
   'allow-missing-media',
+  'mode',
+  'track-id',
 ])
 
 const envelope = (value) => ({ ok: true, apiVersion: HEADLESS_API_VERSION, ...value })
@@ -98,6 +101,17 @@ async function run(argv = process.argv.slice(2)) {
     return envelope({ projects: await listProjectResources(workspace), nextCursor: null })
   if (group === 'project' && action === 'get')
     return envelope(await getProjectResource(workspace, args.id))
+  if (group === 'project' && action === 'audit') {
+    if (!args.id) throw new Error('--id is required')
+    if ((args.mode ?? 'remix') !== 'remix') throw new Error('--mode must be remix')
+    const current = await getProjectResource(workspace, args.id)
+    return envelope({
+      revision: current.revision,
+      audit: auditRemixProject(current.project, {
+        ...(args['track-id'] ? { trackId: args['track-id'] } : {}),
+      }),
+    })
+  }
   if (group === 'media' && action === 'list')
     return envelope({ media: await listMediaResources(workspace) })
   if (group === 'media' && action === 'get')

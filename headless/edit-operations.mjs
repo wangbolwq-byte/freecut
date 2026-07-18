@@ -277,7 +277,8 @@ const cases = [
       op: 'addClip',
       mediaId: 'video-media',
       from: 20,
-      durationInFrames: 30,
+      durationInFrames: 20,
+      sourceStart: 5,
       trackId: 'video-1',
     },
     media: [
@@ -302,6 +303,13 @@ const cases = [
       )
       assert.deepEqual(linked.map((candidate) => candidate.type).sort(), ['audio', 'video'])
       assert.equal(new Set(linked.map((candidate) => candidate.linkedGroupId)).size, 1)
+      assert.deepEqual(
+        linked.map((candidate) => [candidate.sourceStart, candidate.sourceEnd]),
+        [
+          [5, 25],
+          [5, 25],
+        ],
+      )
     },
     failure: { op: 'addClip', mediaId: 'missing-media' },
   },
@@ -529,9 +537,7 @@ async function main() {
       process.stdout.write(`  PASS  ${testCase.name}\n`)
     }
     await assert.rejects(
-      edit(page, baseProject(), [
-        { op: 'updateTrack', id: 'video-1', updates: { height: 96 } },
-      ]),
+      edit(page, baseProject(), [{ op: 'updateTrack', id: 'video-1', updates: { height: 96 } }]),
       /track height is a local editor preference/,
       'direct browser edits reject track height updates instead of reporting success',
     )
