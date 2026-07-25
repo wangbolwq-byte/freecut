@@ -8,6 +8,7 @@ import {
 } from './lib/autocut-browser-session.mjs'
 import {
   capabilities,
+  compactCapabilities,
   HEADLESS_API_VERSION,
   projectCreateRequestSchema,
   projectSaveRequestSchema,
@@ -17,6 +18,7 @@ import {
   validate,
 } from './lib/contract.mjs'
 import { prepareJob, renderJob } from './lib/render-core.mjs'
+import { renderRemotionTask } from './lib/remotion-renderer.mjs'
 import { collectAddClipMedia, resolveMediaFile } from './lib/workspace.mjs'
 import {
   acquireWriterLock,
@@ -68,7 +70,23 @@ const OPTIONS = new Set([
   'allow-missing-media',
   'mode',
   'track-id',
+  'task',
+  'compact',
+  'help',
 ])
+
+const PROJECT_EDIT_ALLOWED_OPTIONS = [
+  '--id',
+  '--ops',
+  '--persist',
+  '--expected-revision',
+  '--force',
+  '--break-lock',
+]
+const PROJECT_EDIT_CANONICAL_COMMAND =
+  'autocut-agent project edit --id <project-id> --ops <operations.json> --persist --expected-revision <revision>'
+const REMOTION_RENDER_ALLOWED_OPTIONS = ['--task']
+const REMOTION_RENDER_CANONICAL_COMMAND = 'autocut-agent remotion-render --task <task.json>'
 
 const envelope = (value) => ({ ok: true, apiVersion: HEADLESS_API_VERSION, ...value })
 const number = (value) => (value === undefined ? undefined : Number(value))
@@ -86,15 +104,19 @@ async function withWriter(workspace, args, operation) {
   }
 }
 
-async function run(argv = process.argv.slice(2)) {
-  const args = parseArgs(argv, { allowed: OPTIONS })
+async function run(argv = process.argv.slice(2), dependencies = {}) {
+  const args = parseCliArgs(argv)
   const [group, action] = args._
+  if (group === 'project' && action === 'edit' && args.help)
+    return envelope({ help: projectEditHelp() })
+  if (group === 'remotion-render' && args.help) return envelope({ help: remotionRenderHelp() })
+  if (group === 'capabilities')
+    return envelope(args.compact ? compactCapabilities() : capabilities())
   const workspace = path.resolve(args.workspace ?? process.env.AUTOCUT_WORKSPACE ?? '.')
   if (!fs.existsSync(workspace)) throw new Error(`Workspace not found: ${workspace}`)
   assertAutoCutWorkspace(workspace)
-  if (group === 'capabilities') return envelope(capabilities())
   if (group === 'editor-url') return envelope(createEditorUrl(args))
-  if (!action && group !== 'render')
+  if (!action && group !== 'render' && group !== 'remotion-render')
     throw new Error('Expected a command such as project list or media import')
 
   if (group === 'project' && action === 'list')
@@ -116,6 +138,20 @@ async function run(argv = process.argv.slice(2)) {
     return envelope({ media: await listMediaResources(workspace) })
   if (group === 'media' && action === 'get')
     return envelope(await getMediaResource(workspace, args.id))
+  if (group === 'remotion-render') {
+    assertRemotionRenderArgs(args)
+    const taskPath = path.resolve(args.task)
+    if (path.basename(taskPath) !== 'task.json') {
+      throw remotionRenderUsageError('--task must reference a task.json file')
+    }
+    const renderTask = dependencies.renderRemotionTask ?? renderRemotionTask
+    return envelope(
+      await renderTask({
+        workspaceDirectory: workspace,
+        taskDirectory: path.dirname(taskPath),
+      }),
+    )
+  }
   if (group === 'render') {
     if (!args.project) throw new Error('--project is required')
     return withAutoCutBrowserSession({ workspace, args }, async (page, mediaUrlOf) => {
@@ -233,6 +269,7 @@ async function run(argv = process.argv.slice(2)) {
           ops: body.ops,
           media: collectAddClipMedia(workspace, body.ops),
         })
+        if (edited?.ok === false) throw projectEditFailure(edited, current.revision)
         if (!body.persist) return edited
         return {
           ...edited,
@@ -300,6 +337,147 @@ async function run(argv = process.argv.slice(2)) {
   })
 }
 
+function parseCliArgs(argv) {
+  try {
+    return parseArgs(argv, { allowed: OPTIONS })
+  } catch (error) {
+    const match = /^Unknown option: (--[^\s]+)$/.exec(error instanceof Error ? error.message : '')
+    if (!match) throw error
+    const option = match[1]
+    if (argv[0] === 'remotion-render') {
+      throw remotionRenderUsageError(`Unknown option: ${option}`, [
+        { path: option, message: 'option is not allowed', code: 'unknown_option' },
+      ])
+    }
+    const suggestion = suggestOption(option, PROJECT_EDIT_ALLOWED_OPTIONS)
+    throw new CliUsageError(`Unknown option: ${option}`, {
+      fields: [{ path: option, message: 'option is not allowed', code: 'unknown_option' }],
+      allowedOptions: PROJECT_EDIT_ALLOWED_OPTIONS,
+      canonicalCommand: PROJECT_EDIT_CANONICAL_COMMAND,
+      suggestion: suggestion
+        ? `Use ${suggestion} instead of ${option}.`
+        : projectEditHelp().summary,
+    })
+  }
+}
+
+class CliUsageError extends Error {
+  constructor(message, details) {
+    super(message)
+    this.name = 'CliUsageError'
+    this.code = 'CLI_USAGE_ERROR'
+    this.fields = details.fields
+    this.details = details
+  }
+}
+
+function projectEditHelp() {
+  return {
+    command: 'project edit',
+    summary: 'Pass a complete operations JSON file through --ops and use the current revision.',
+    allowedOptions: PROJECT_EDIT_ALLOWED_OPTIONS,
+    canonicalCommand: PROJECT_EDIT_CANONICAL_COMMAND,
+    examples: [PROJECT_EDIT_CANONICAL_COMMAND, 'autocut-agent project get --id <project-id>'],
+    authoritativeItemIds: 'project.timeline.items[].id',
+    resultReferenceExample: { $ref: 'addClipA#/detail/id' },
+  }
+}
+
+function remotionRenderHelp() {
+  return {
+    command: 'remotion-render',
+    summary:
+      'Render one controlled transparent animation from its task.json without creating an AutoCut project.',
+    allowedOptions: REMOTION_RENDER_ALLOWED_OPTIONS,
+    canonicalCommand: REMOTION_RENDER_CANONICAL_COMMAND,
+    taskLayout: 'projects/<project-or-assets>/remotion/<task-id>/task.json',
+  }
+}
+
+function assertRemotionRenderArgs(args) {
+  const allowedKeys = new Set(['_', 'workspace', 'task', 'json', 'help'])
+  const unsupported = Object.keys(args).find((key) => !allowedKeys.has(key))
+  if (unsupported) {
+    throw remotionRenderUsageError(`--${unsupported} is not supported by remotion-render`, [
+      {
+        path: `--${unsupported}`,
+        message: 'option is not allowed',
+        code: 'unknown_option',
+      },
+    ])
+  }
+  if (args._.length !== 1) {
+    throw remotionRenderUsageError('remotion-render does not accept positional arguments')
+  }
+  if (typeof args.task !== 'string' || args.task.trim() === '') {
+    throw remotionRenderUsageError('--task is required', [
+      { path: '--task', message: 'option is required', code: 'required' },
+    ])
+  }
+}
+
+function remotionRenderUsageError(message, fields = []) {
+  return new CliUsageError(message, {
+    fields,
+    allowedOptions: REMOTION_RENDER_ALLOWED_OPTIONS,
+    canonicalCommand: REMOTION_RENDER_CANONICAL_COMMAND,
+    suggestion: remotionRenderHelp().summary,
+  })
+}
+
+function projectEditFailure(result, baseRevision) {
+  const details = {
+    operationIndex: result.error?.operationIndex,
+    ...(result.error?.callerId ? { callerId: result.error.callerId } : {}),
+    ...(result.error?.op ? { operation: result.error.op } : {}),
+    baseRevision,
+    persisted: false,
+    projectUnchanged: true,
+  }
+  const error = new Error(result.error?.message ?? 'AutoCut project edit failed')
+  error.code = result.error?.code ?? 'EDIT_OPERATION_FAILED'
+  error.fields = [
+    {
+      path: Number.isInteger(details.operationIndex) ? `ops.${details.operationIndex}` : 'ops',
+      message: error.message,
+      code: error.code,
+    },
+  ]
+  error.details = details
+  return error
+}
+
+function suggestOption(option, allowedOptions) {
+  let best
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const candidate of allowedOptions) {
+    const distance = editDistance(option, candidate)
+    if (distance < bestDistance) {
+      best = candidate
+      bestDistance = distance
+    }
+  }
+  return bestDistance <= Math.max(2, Math.floor(option.length / 3)) ? best : undefined
+}
+
+function editDistance(left, right) {
+  const row = Array.from({ length: right.length + 1 }, (_, index) => index)
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    let previous = row[0]
+    row[0] = leftIndex
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const current = row[rightIndex]
+      row[rightIndex] = Math.min(
+        row[rightIndex] + 1,
+        row[rightIndex - 1] + 1,
+        previous + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1),
+      )
+      previous = current
+    }
+  }
+  return row[right.length]
+}
+
 function assertContainedOutput(workspace, outputPath) {
   const relative = path.relative(path.resolve(workspace), path.resolve(outputPath))
   if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
@@ -321,6 +499,7 @@ if (isMainModule(import.meta.url)) {
   run()
     .then((result) => console.log(JSON.stringify(result, null, 2)))
     .catch((error) => {
+      const details = error?.details && typeof error.details === 'object' ? error.details : {}
       console.error(
         JSON.stringify({
           ok: false,
@@ -329,6 +508,7 @@ if (isMainModule(import.meta.url)) {
             code: error.code ?? 'INTERNAL_ERROR',
             message: error.message,
             fields: error.fields ?? [],
+            ...details,
           },
         }),
       )

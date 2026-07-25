@@ -705,7 +705,13 @@ export function capabilities() {
     apiVersion: HEADLESS_API_VERSION,
     operations: EDIT_OPERATION_NAMES,
     operationDescriptions: EDIT_OPERATION_DESCRIPTIONS,
-    features: { sourceRangeClip: true, projectAudit: true },
+    features: {
+      sourceRangeClip: true,
+      projectAudit: true,
+      editingPlanMarkdown: true,
+      nativeAnimation: true,
+      remotionTransparentAsset: true,
+    },
     agentGuidance: {
       lifecycleEdit: {
         opsFileRequired: true,
@@ -764,5 +770,66 @@ export function capabilities() {
       },
       deprecatedRoutes: ['/capabilities', '/projects', '/render', '/edit'],
     },
+  }
+}
+
+export function compactCapabilities() {
+  return {
+    apiVersion: HEADLESS_API_VERSION,
+    compact: true,
+    features: {
+      sourceRangeClip: true,
+      projectAudit: true,
+      atomicProjectEdit: true,
+      editingPlanMarkdown: true,
+      nativeAnimation: true,
+      remotionTransparentAsset: true,
+    },
+    operations: EDIT_OPERATION_NAMES,
+    canonicalCommands: {
+      capabilities: 'autocut-agent capabilities --compact',
+      remotionRender: 'autocut-agent remotion-render --task <task.json>',
+      projectGet: 'autocut-agent project get --id <project-id>',
+      projectEdit:
+        'autocut-agent project edit --id <project-id> --ops <operations.json> --persist --expected-revision <revision>',
+      projectAudit: 'autocut-agent project audit --id <project-id> --mode remix',
+    },
+    projectEdit: {
+      allowedOptions: [
+        '--id',
+        '--ops',
+        '--persist',
+        '--expected-revision',
+        '--force',
+        '--break-lock',
+      ],
+      opsFileRequired: true,
+      callerIdRequiredPerOperation: true,
+      callerIdPattern: '^[A-Za-z][A-Za-z0-9_-]{0,63}$',
+      callerIdMustBeUnique: true,
+      resultReferences: {
+        syntax: '<callerId>#<JSON-pointer>',
+        example: { $ref: 'addClipA#/detail/id' },
+      },
+      failureAtomicity: {
+        persisted: false,
+        projectUnchanged: true,
+        reportsOperationIndex: true,
+        reportsCallerId: true,
+        reportsBaseRevision: true,
+      },
+    },
+    authoritativeProjectPaths: {
+      timelineItems: 'project.timeline.items',
+      itemId: 'project.timeline.items[].id',
+      forbidden: ['project.timeline.tracks[].items', 'track.items'],
+    },
+    constraints: [
+      'Use only operations listed in operations.',
+      'Never guess item or track IDs.',
+      'Read existing item IDs from project.timeline.items.',
+      'Use $ref for IDs created by earlier operations in the same ops file.',
+      'The --ops value is a file path, never inline JSON.',
+    ],
   }
 }

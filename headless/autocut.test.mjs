@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { createEditorUrl } from './agent.mjs'
+import { createEditorUrl, run } from './agent.mjs'
 import { createAutoCutServer } from './autocut-server.mjs'
 import { AutoCutBrokerPage } from './lib/autocut-browser-session.mjs'
+import { createProjectResource, getProjectResource } from './lib/lifecycle-store.mjs'
 import { isMainModule } from './lib/main-module.mjs'
 
 test(
@@ -82,6 +84,208 @@ test('editor-url binds the visible editor to the injected project token', () => 
   } finally {
     restoreEnvironment('AUTOCUT_EDITOR_URL', previousUrl)
     restoreEnvironment('AUTOCUT_PROJECT_TOKEN', previousToken)
+  }
+})
+
+test('AutoCut agent exposes compact capabilities and project edit help without a workspace', async () => {
+  const compact = await run(['capabilities', '--compact'])
+  assert.equal(compact.ok, true)
+  assert.equal(compact.compact, true)
+  assert.ok(Buffer.byteLength(JSON.stringify(compact), 'utf8') < 16 * 1024)
+  assert.equal(
+    compact.canonicalCommands.remotionRender,
+    'autocut-agent remotion-render --task <task.json>',
+  )
+
+  const help = await run(['project', 'edit', '--help'])
+  assert.equal(help.ok, true)
+  assert.match(help.help.canonicalCommand, /--ops <operations\.json> --persist/)
+  assert.equal(help.help.authoritativeItemIds, 'project.timeline.items[].id')
+
+  await assert.rejects(run(['project', 'edit', '--operation', 'ops.json']), (error) => {
+    assert.equal(error.code, 'CLI_USAGE_ERROR')
+    assert.ok(error.details.allowedOptions.includes('--ops'))
+    assert.match(error.details.canonicalCommand, /project edit/)
+    return true
+  })
+})
+
+test('AutoCut agent dispatches remotion-render to the global runner without a browser session', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autocut-remotion-agent-'))
+  const workspace = path.join(root, 'autocut')
+  const taskDirectory = path.join(workspace, 'projects', 'assets', 'remotion', 'title-card')
+  const taskPath = path.join(taskDirectory, 'task.json')
+  await mkdir(path.join(taskDirectory, 'src'), { recursive: true })
+  await writeFile(taskPath, '{}')
+
+  const calls = []
+  try {
+    const help = await run(['remotion-render', '--help'])
+    assert.equal(help.help.canonicalCommand, 'autocut-agent remotion-render --task <task.json>')
+
+    const result = await run(['remotion-render', '--workspace', workspace, '--task', taskPath], {
+      async renderRemotionTask(input) {
+        calls.push(input)
+        return {
+          ok: true,
+          taskId: 'title-card',
+          outputPath: path.join(taskDirectory, 'renders', 'title-card.webm'),
+          alphaVerified: true,
+        }
+      },
+    })
+    assert.equal(result.ok, true)
+    assert.equal(result.taskId, 'title-card')
+    assert.equal(result.alphaVerified, true)
+    assert.deepEqual(calls, [{ workspaceDirectory: workspace, taskDirectory }])
+
+    await assert.rejects(
+      run(['remotion-render', '--workspace', workspace], {
+        renderRemotionTask: async () => assert.fail('runner must not be called'),
+      }),
+      (error) => {
+        assert.equal(error.code, 'CLI_USAGE_ERROR')
+        assert.equal(
+          error.details.canonicalCommand,
+          'autocut-agent remotion-render --task <task.json>',
+        )
+        return true
+      },
+    )
+    await assert.rejects(
+      run(['remotion-render', '--workspace', workspace, '--task', taskPath, '--project', 'demo'], {
+        renderRemotionTask: async () => assert.fail('runner must not be called'),
+      }),
+      (error) => {
+        assert.equal(error.code, 'CLI_USAGE_ERROR')
+        assert.ok(error.details.allowedOptions.includes('--task'))
+        return true
+      },
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('failed project edit reports operation context and preserves project bytes and revision', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autocut-agent-atomic-failure-'))
+  const endpoint =
+    process.platform === 'win32'
+      ? `\\\\.\\pipe\\autocut-agent-failure-${process.pid}-${Date.now()}`
+      : path.join(root, 'broker.sock')
+  const harness = http.createServer((_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'text/html' })
+    response.end('<!doctype html><title>headless</title>')
+  })
+  await new Promise((resolve, reject) => {
+    harness.once('error', reject)
+    harness.listen(0, '127.0.0.1', resolve)
+  })
+  const harnessAddress = harness.address()
+  const harnessUrl = `http://127.0.0.1:${harnessAddress.port}/headless.html`
+  const broker = net.createServer((socket) => {
+    socket.setEncoding('utf8')
+    let buffer = ''
+    socket.on('data', (chunk) => {
+      buffer += chunk
+      if (!buffer.includes('\n')) return
+      socket.end(
+        `${JSON.stringify({
+          ok: true,
+          result: {
+            ok: false,
+            applied: 1,
+            results: [
+              { callerId: 'first', op: 'addText', ok: true, detail: { id: 'temporary' } },
+              { callerId: 'broken', op: 'addTransition', ok: false, error: 'invalid transition' },
+            ],
+            persisted: false,
+            projectUnchanged: true,
+            error: {
+              code: 'EDIT_OPERATION_FAILED',
+              message: 'Edit op "addTransition" failed: invalid transition',
+              operationIndex: 1,
+              callerId: 'broken',
+              op: 'addTransition',
+            },
+          },
+        })}\n`,
+      )
+    })
+  })
+  await new Promise((resolve, reject) => {
+    broker.once('error', reject)
+    broker.listen(endpoint, resolve)
+  })
+  const previousEndpoint = process.env.AUTOCUT_BROKER_ENDPOINT
+  const previousToken = process.env.AUTOCUT_BROKER_TOKEN
+  process.env.AUTOCUT_BROKER_ENDPOINT = endpoint
+  process.env.AUTOCUT_BROKER_TOKEN = 'test-token'
+  try {
+    const created = await createProjectResource(root, {
+      id: 'demo',
+      name: 'Demo',
+      description: '',
+      createdAt: 1,
+      updatedAt: 1,
+      duration: 0,
+      schemaVersion: 14,
+      metadata: { width: 1920, height: 1080, fps: 30 },
+      timeline: { tracks: [], items: [] },
+    })
+    const projectPath = path.join(root, 'projects', 'demo', 'project.json')
+    const beforeBytes = await readFile(projectPath)
+    const opsPath = path.join(root, 'operations.json')
+    await writeFile(
+      opsPath,
+      JSON.stringify([
+        { callerId: 'first', op: 'addText', text: 'temporary', from: 0 },
+        {
+          callerId: 'broken',
+          op: 'addTransition',
+          leftClipId: { $ref: 'first#/detail/id' },
+          rightClipId: 'missing',
+        },
+      ]),
+    )
+
+    await assert.rejects(
+      run([
+        'project',
+        'edit',
+        '--workspace',
+        root,
+        '--id',
+        'demo',
+        '--ops',
+        opsPath,
+        '--persist',
+        '--expected-revision',
+        created.revision,
+        '--harness-url',
+        harnessUrl,
+      ]),
+      (error) => {
+        assert.equal(error.code, 'EDIT_OPERATION_FAILED')
+        assert.deepEqual(error.details, {
+          operationIndex: 1,
+          callerId: 'broken',
+          operation: 'addTransition',
+          baseRevision: created.revision,
+          persisted: false,
+          projectUnchanged: true,
+        })
+        return true
+      },
+    )
+    assert.deepEqual(await readFile(projectPath), beforeBytes)
+    assert.equal((await getProjectResource(root, 'demo')).revision, created.revision)
+  } finally {
+    restoreEnvironment('AUTOCUT_BROKER_ENDPOINT', previousEndpoint)
+    restoreEnvironment('AUTOCUT_BROKER_TOKEN', previousToken)
+    await new Promise((resolve) => broker.close(resolve))
+    await new Promise((resolve) => harness.close(resolve))
+    await rm(root, { recursive: true, force: true })
   }
 })
 

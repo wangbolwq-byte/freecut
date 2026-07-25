@@ -7,6 +7,7 @@ if (isMainModule(import.meta.url)) {
   run()
     .then((result) => console.log(JSON.stringify(result, null, 2)))
     .catch((error) => {
+      const details = error?.details && typeof error.details === 'object' ? error.details : {}
       console.error(
         JSON.stringify({
           ok: false,
@@ -15,6 +16,7 @@ if (isMainModule(import.meta.url)) {
             code: error.code ?? 'INTERNAL_ERROR',
             message: error.message,
             fields: error.fields ?? [],
+            ...details,
           },
         }),
       )

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { cp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,8 +13,15 @@ const TOP_LEVEL_HEADLESS_FILES = [
   'server.mjs',
 ]
 const RUNTIME_DEPENDENCIES = {
+  '@babel/parser': '7.29.7',
+  '@remotion/bundler': '4.0.499',
+  '@remotion/renderer': '4.0.499',
   playwright: '1.60.0',
   'playwright-core': '1.60.0',
+  pngjs: '7.0.0',
+  react: '19.2.5',
+  'react-dom': '19.2.5',
+  remotion: '4.0.499',
   zod: '4.3.6',
 }
 const OPTION_KEYS = new Map([
@@ -28,12 +35,8 @@ async function main(argv = process.argv.slice(2)) {
   const config = resolvePackageConfig(parseOptions(argv))
 
   await assertDirectory(path.join(REPO_ROOT, 'dist'))
-  await Promise.all(
-    Object.keys(RUNTIME_DEPENDENCIES).map((dependency) =>
-      assertDirectory(path.join(REPO_ROOT, 'node_modules', dependency)),
-    ),
-  )
-  await stageRuntime(config.outputRoot)
+  const runtimePackages = await collectRuntimePackages()
+  await stageRuntime(config.outputRoot, runtimePackages)
 
   const runtimeManifest = {
     schemaVersion: 1,
@@ -50,6 +53,7 @@ async function main(argv = process.argv.slice(2)) {
       agent: 'headless/autocut-agent.mjs',
       editor: 'dist/index.html',
       headless: 'dist/headless.html',
+      remotionRenderer: 'headless/lib/remotion-renderer.mjs',
     },
   }
   await writeJson(path.join(config.outputRoot, 'runtime-manifest.json'), runtimeManifest)
@@ -67,7 +71,11 @@ async function main(argv = process.argv.slice(2)) {
       '# AutoCut runtime notices',
       '',
       `This runtime was built from FreeCut dev commit ${config.commit}.`,
-      'FreeCut, Playwright, Playwright Core, and Zod license texts are included below the licenses directory.',
+      'Runtime dependency license texts are included below the licenses directory.',
+      '',
+      ...runtimePackages.map(
+        (runtimePackage) => `- ${runtimePackage.name}@${runtimePackage.version}`,
+      ),
       '',
     ].join('\n'),
     'utf8',
@@ -84,12 +92,12 @@ function resolvePackageConfig(options) {
         path.join(REPO_ROOT, 'build', 'autocut-runtime', platformArch),
       ),
     ),
-    version: resolveOption(options.version, () => process.env.AUTOCUT_VERSION?.trim() || '0.1.3'),
+    version: resolveOption(options.version, () => process.env.AUTOCUT_VERSION?.trim() || '0.1.5'),
     commit: resolveOption(options.commit, readCurrentCommit),
   }
 }
 
-async function stageRuntime(outputRoot) {
+async function stageRuntime(outputRoot, runtimePackages) {
   await rm(outputRoot, { recursive: true, force: true })
   await Promise.all([
     mkdir(path.join(outputRoot, 'headless'), { recursive: true }),
@@ -108,30 +116,95 @@ async function stageRuntime(outputRoot) {
   await Promise.all(
     TOP_LEVEL_HEADLESS_FILES.map((fileName) => copyHeadlessFile(outputRoot, fileName)),
   )
-  await Promise.all(
-    Object.keys(RUNTIME_DEPENDENCIES).map((dependency) =>
-      cp(
-        path.join(REPO_ROOT, 'node_modules', dependency),
-        path.join(outputRoot, 'node_modules', dependency),
-        { recursive: true },
-      ),
-    ),
+  for (const runtimePackage of runtimePackages) {
+    await cp(
+      runtimePackage.root,
+      path.join(outputRoot, 'node_modules', runtimePackage.relativeRoot),
+      {
+        recursive: true,
+        filter: (source) => path.basename(source) !== 'node_modules',
+      },
+    )
+  }
+  await cp(
+    path.join(REPO_ROOT, 'LICENSE'),
+    path.join(outputRoot, 'licenses', 'LICENSE.freecut.txt'),
   )
-  await Promise.all([
-    cp(path.join(REPO_ROOT, 'LICENSE'), path.join(outputRoot, 'licenses', 'LICENSE.freecut.txt')),
-    cp(
-      path.join(REPO_ROOT, 'node_modules', 'playwright', 'LICENSE'),
-      path.join(outputRoot, 'licenses', 'LICENSE.playwright.txt'),
-    ),
-    cp(
-      path.join(REPO_ROOT, 'node_modules', 'playwright-core', 'LICENSE'),
-      path.join(outputRoot, 'licenses', 'LICENSE.playwright-core.txt'),
-    ),
-    cp(
-      path.join(REPO_ROOT, 'node_modules', 'zod', 'LICENSE'),
-      path.join(outputRoot, 'licenses', 'LICENSE.zod.txt'),
-    ),
-  ])
+  await copyRuntimeLicenses(outputRoot, runtimePackages)
+}
+
+async function collectRuntimePackages() {
+  const nodeModulesRoot = path.join(REPO_ROOT, 'node_modules')
+  const packages = new Map()
+  const pending = Object.entries(RUNTIME_DEPENDENCIES).map(([name, version]) => ({
+    name,
+    expectedVersion: version,
+    root: path.join(nodeModulesRoot, name),
+  }))
+  while (pending.length > 0) {
+    const current = pending.pop()
+    const packageJsonPath = path.join(current.root, 'package.json')
+    const packageJson = JSON.parse(await readFile(packageJsonPath, 'utf8'))
+    if (current.expectedVersion && packageJson.version !== current.expectedVersion) {
+      throw new Error(
+        `Runtime dependency ${current.name} must be ${current.expectedVersion}, received ${packageJson.version}`,
+      )
+    }
+    const relativeRoot = path.relative(nodeModulesRoot, current.root)
+    if (relativeRoot.startsWith('..') || path.isAbsolute(relativeRoot)) {
+      throw new Error(`Runtime dependency escapes node_modules: ${current.name}`)
+    }
+    if (packages.has(relativeRoot)) continue
+    packages.set(relativeRoot, {
+      name: packageJson.name ?? current.name,
+      version: packageJson.version,
+      root: current.root,
+      relativeRoot,
+    })
+    const dependencies = {
+      ...(packageJson.dependencies ?? {}),
+      ...(packageJson.optionalDependencies ?? {}),
+    }
+    for (const dependencyName of Object.keys(dependencies)) {
+      const dependencyRoot = await resolveInstalledDependency(current.root, dependencyName)
+      if (dependencyRoot) pending.push({ name: dependencyName, root: dependencyRoot })
+    }
+  }
+  return [...packages.values()].sort((left, right) =>
+    left.relativeRoot.localeCompare(right.relativeRoot),
+  )
+}
+
+async function resolveInstalledDependency(packageRoot, dependencyName) {
+  const nodeModulesRoot = path.join(REPO_ROOT, 'node_modules')
+  let current = packageRoot
+  while (current.startsWith(nodeModulesRoot)) {
+    const candidate = path.join(current, 'node_modules', dependencyName)
+    if (await isDirectory(candidate)) return candidate
+    const parent = path.dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+  const rootCandidate = path.join(nodeModulesRoot, dependencyName)
+  return (await isDirectory(rootCandidate)) ? rootCandidate : undefined
+}
+
+async function copyRuntimeLicenses(outputRoot, runtimePackages) {
+  for (const runtimePackage of runtimePackages) {
+    const entries = await readdir(runtimePackage.root, { withFileTypes: true })
+    const licenseFiles = entries
+      .filter(
+        (entry) => entry.isFile() && /^(?:licen[cs]e|copying|notice)(?:\..+)?$/iu.test(entry.name),
+      )
+      .map((entry) => entry.name)
+    for (const licenseFile of licenseFiles) {
+      const safePackageName = runtimePackage.relativeRoot.replaceAll(/[\\/]/gu, '__')
+      await cp(
+        path.join(runtimePackage.root, licenseFile),
+        path.join(outputRoot, 'licenses', `${safePackageName}__${licenseFile}`),
+      )
+    }
+  }
 }
 
 function copyHeadlessFile(outputRoot, fileName) {
@@ -178,6 +251,11 @@ async function assertDirectory(directory) {
   if (!(await stat(directory).catch(() => null))?.isDirectory()) {
     throw new Error(`Required directory is missing: ${directory}`)
   }
+}
+
+async function isDirectory(directory) {
+  const { stat } = await import('node:fs/promises')
+  return (await stat(directory).catch(() => null))?.isDirectory() === true
 }
 
 function currentPlatformArch() {

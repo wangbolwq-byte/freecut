@@ -7,6 +7,7 @@ import {
   HEADLESS_API_VERSION,
   EDIT_OPERATION_NAMES,
   capabilities,
+  compactCapabilities,
   editOpSchema,
   editRequestSchema,
   normalizeRenderInput,
@@ -155,11 +156,36 @@ test('validation errors and capabilities are machine-readable and bounded', () =
   const result = capabilities()
   assert.equal(result.apiVersion, HEADLESS_API_VERSION)
   assert.deepEqual(result.operations, EDIT_OPERATION_NAMES)
-  assert.deepEqual(result.features, { sourceRangeClip: true, projectAudit: true })
+  assert.deepEqual(result.features, {
+    sourceRangeClip: true,
+    projectAudit: true,
+    editingPlanMarkdown: true,
+    nativeAnimation: true,
+    remotionTransparentAsset: true,
+  })
   assert.ok(result.schemas.render)
   assert.ok(result.lifecycle.routes.includes('GET /v1/projects/:id/snapshot'))
   assert.ok(result.lifecycle.routes.includes('GET /v1/events'))
   assert.ok(JSON.stringify(result).length < 32_000)
+})
+
+test('compact capabilities are complete, parseable, and remain below 16 KiB', () => {
+  const result = compactCapabilities()
+  const serialized = JSON.stringify(result)
+  assert.ok(Buffer.byteLength(serialized, 'utf8') < 16 * 1024)
+  assert.deepEqual(JSON.parse(serialized), result)
+  assert.equal(
+    result.canonicalCommands.projectEdit,
+    'autocut-agent project edit --id <project-id> --ops <operations.json> --persist --expected-revision <revision>',
+  )
+  assert.equal(
+    result.canonicalCommands.remotionRender,
+    'autocut-agent remotion-render --task <task.json>',
+  )
+  assert.equal(result.authoritativeProjectPaths.timelineItems, 'project.timeline.items')
+  assert.deepEqual(result.projectEdit.resultReferences.example, {
+    $ref: 'addClipA#/detail/id',
+  })
 })
 
 test('CLI rejects unknown options and normalizes aliases', () => {

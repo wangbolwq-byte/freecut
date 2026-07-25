@@ -33,8 +33,15 @@ test('packaged AutoCut runtime includes standalone browser dependencies', async 
 
   const runtimePackage = JSON.parse(await readFile(path.join(outputRoot, 'package.json'), 'utf8'))
   assert.deepEqual(runtimePackage.dependencies, {
+    '@babel/parser': '7.29.7',
+    '@remotion/bundler': '4.0.499',
+    '@remotion/renderer': '4.0.499',
     playwright: '1.60.0',
     'playwright-core': '1.60.0',
+    pngjs: '7.0.0',
+    react: '19.2.5',
+    'react-dom': '19.2.5',
+    remotion: '4.0.499',
     zod: '4.3.6',
   })
 
@@ -42,4 +49,32 @@ test('packaged AutoCut runtime includes standalone browser dependencies', async 
     pathToFileURL(path.join(outputRoot, 'node_modules', 'playwright', 'index.mjs')).href
   )
   assert.equal(typeof packagedPlaywright.chromium.launch, 'function')
+  const packagedRemotionRenderer = await import(
+    pathToFileURL(path.join(outputRoot, 'headless', 'lib', 'remotion-renderer.mjs')).href
+  )
+  assert.equal(typeof packagedRemotionRenderer.renderRemotionTask, 'function')
+  const packagedBundler = await import(
+    pathToFileURL(path.join(outputRoot, 'node_modules', '@remotion', 'bundler', 'dist', 'index.js'))
+      .href
+  )
+  const packagedRenderer = await import(
+    pathToFileURL(
+      path.join(outputRoot, 'node_modules', '@remotion', 'renderer', 'dist', 'index.js'),
+    ).href
+  )
+  assert.equal(typeof packagedBundler.bundle, 'function')
+  assert.equal(typeof packagedRenderer.renderMedia, 'function')
+  const runtimeManifest = JSON.parse(
+    await readFile(path.join(outputRoot, 'runtime-manifest.json'), 'utf8'),
+  )
+  assert.equal(runtimeManifest.entrypoints.remotionRenderer, 'headless/lib/remotion-renderer.mjs')
+  const packagedHelp = await execFileAsync(
+    process.execPath,
+    [path.join(outputRoot, 'headless', 'autocut-agent.mjs'), 'remotion-render', '--help'],
+    { cwd: outputRoot },
+  )
+  assert.equal(
+    JSON.parse(packagedHelp.stdout).help.canonicalCommand,
+    'autocut-agent remotion-render --task <task.json>',
+  )
 })

@@ -58,6 +58,7 @@
     "prepare": "vp config"
   },
   "dependencies": {
+    "@babel/parser": "7.29.7",
     "@hookform/resolvers": "5.2.2",
     "@huggingface/transformers": "4.1.0",
     "@lottiefiles/dotlottie-web": "0.76.0",
@@ -82,6 +83,8 @@
     "@radix-ui/react-switch": "1.2.6",
     "@radix-ui/react-tabs": "1.1.13",
     "@radix-ui/react-tooltip": "1.2.8",
+    "@remotion/bundler": "4.0.499",
+    "@remotion/renderer": "4.0.499",
     "@tanstack/react-router": "1.168.22",
     "@tanstack/react-virtual": "3.13.24",
     "class-variance-authority": "0.7.1",
@@ -96,6 +99,7 @@
     "mediabunny": "1.50.8",
     "motion": "12.40.0",
     "onnxruntime-web": "1.26.0-dev.20260410-5e55544225",
+    "pngjs": "7.0.0",
     "react": "19.2.5",
     "react-colorful": "5.6.1",
     "react-dom": "19.2.5",
@@ -103,6 +107,7 @@
     "react-hotkeys-hook": "5.2.4",
     "react-i18next": "16.2.4",
     "react-resizable-panels": "3.0.6",
+    "remotion": "4.0.499",
     "sonner": "2.0.7",
     "tailwind-merge": "2.6.1",
     "tailwindcss-animate": "1.0.7",
@@ -130,6 +135,7 @@
   },
   "overrides": {
     "esbuild": "0.28.1",
+    "postcss": "8.5.23",
     "typescript": "7.0.2"
   },
   "packageManager": "npm@11.8.0"
