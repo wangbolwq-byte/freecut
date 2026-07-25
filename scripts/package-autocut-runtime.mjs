@@ -10,6 +10,7 @@ const TOP_LEVEL_HEADLESS_FILES = [
   'autocut-agent.mjs',
   'autocut-server.mjs',
   'media-server.mjs',
+  'remotion-render.mjs',
   'server.mjs',
 ]
 const RUNTIME_DEPENDENCIES = {
@@ -92,7 +93,7 @@ function resolvePackageConfig(options) {
         path.join(REPO_ROOT, 'build', 'autocut-runtime', platformArch),
       ),
     ),
-    version: resolveOption(options.version, () => process.env.AUTOCUT_VERSION?.trim() || '0.1.5'),
+    version: resolveOption(options.version, () => process.env.AUTOCUT_VERSION?.trim() || '0.1.6'),
     commit: resolveOption(options.commit, readCurrentCommit),
   }
 }
@@ -226,6 +227,7 @@ async function writeLaunchers(outputRoot) {
   const launchers = {
     'autocut-agent': 'autocut-agent.mjs',
     'autocut-server': 'autocut-server.mjs',
+    'remotion-render': 'remotion-render.mjs',
   }
   for (const [name, entry] of Object.entries(launchers)) {
     const shellPath = path.join(outputRoot, 'bin', name)

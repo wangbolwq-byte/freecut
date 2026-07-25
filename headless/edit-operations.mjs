@@ -528,19 +528,18 @@ async function main() {
           true,
           `${testCase.name} failure payload schema`,
         )
-        await assert.rejects(
-          edit(page, baseProject(), [testCase.failure]),
-          undefined,
-          `${testCase.name} meaningful failure`,
-        )
+        const failure = await edit(page, baseProject(), [testCase.failure])
+        assert.equal(failure.ok, false, `${testCase.name} meaningful failure`)
+        assert.equal(failure.projectUnchanged, true, `${testCase.name} rolls back project state`)
+        assert.equal(failure.persisted, false, `${testCase.name} is not persisted`)
       }
       process.stdout.write(`  PASS  ${testCase.name}\n`)
     }
-    await assert.rejects(
-      edit(page, baseProject(), [{ op: 'updateTrack', id: 'video-1', updates: { height: 96 } }]),
-      /track height is a local editor preference/,
-      'direct browser edits reject track height updates instead of reporting success',
-    )
+    const invalidTrackEdit = await edit(page, baseProject(), [
+      { op: 'updateTrack', id: 'video-1', updates: { height: 96 } },
+    ])
+    assert.equal(invalidTrackEdit.ok, false)
+    assert.match(invalidTrackEdit.error.message, /track height is a local editor preference/)
   } finally {
     await browser.close()
     await server.close()

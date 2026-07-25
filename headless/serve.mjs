@@ -125,10 +125,8 @@ export function installWorkspaceChangeMonitor({
     pollTimer = setIntervalFn(onPoll, 750)
   }
   try {
-    watcher = watch(
-      workspace,
-      { recursive: true, persistent: false },
-      (_eventType, fileName) => onChange(fileName),
+    watcher = watch(workspace, { recursive: true, persistent: false }, (_eventType, fileName) =>
+      onChange(fileName),
     )
     watcher.on('error', (error) => {
       startPolling(`Workspace watcher failed: ${error.message}`)
@@ -146,6 +144,33 @@ function sendJson(res, status, obj) {
   const body = JSON.stringify(obj)
   res.writeHead(status, { 'Content-Type': 'application/json' })
   res.end(body)
+}
+
+function assertEditSucceeded(result, baseRevision) {
+  if (result?.ok !== false) return result
+  const error = new HttpError(
+    422,
+    result.error?.code ?? 'EDIT_OPERATION_FAILED',
+    result.error?.message ?? 'Edit operation failed',
+  )
+  error.fields = [
+    {
+      path: Number.isInteger(result.error?.operationIndex)
+        ? `ops.${result.error.operationIndex}`
+        : 'ops',
+      message: error.message,
+      code: error.code,
+    },
+  ]
+  error.details = {
+    operationIndex: result.error?.operationIndex,
+    ...(result.error?.callerId ? { callerId: result.error.callerId } : {}),
+    ...(result.error?.op ? { operation: result.error.op } : {}),
+    ...(baseRevision ? { baseRevision } : {}),
+    persisted: false,
+    projectUnchanged: true,
+  }
+  throw error
 }
 
 function applyCors(req, res) {
@@ -343,7 +368,7 @@ async function main() {
         }),
       { timeoutMs: editTimeoutMs, kind: 'edit' },
     )
-    sendJson(res, 200, result)
+    sendJson(res, 200, assertEditSucceeded(result))
   }
 
   const handleSnapshot = async (res, projectId) => {
@@ -516,6 +541,7 @@ async function main() {
           }),
         { timeoutMs: editTimeoutMs, kind: 'edit' },
       )
+      assertEditSucceeded(result, current.revision)
       if (!body.persist)
         return {
           status: 200,
@@ -758,6 +784,7 @@ async function main() {
             apiVersion: HEADLESS_API_VERSION,
             ...(e.expectedRevision ? { expectedRevision: e.expectedRevision } : {}),
             ...(e.actualRevision ? { actualRevision: e.actualRevision } : {}),
+            ...(e.details && typeof e.details === 'object' ? e.details : {}),
           },
         })
       } else res.destroy()

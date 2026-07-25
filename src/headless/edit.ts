@@ -111,6 +111,21 @@ export interface HeadlessEditResult {
   results: Array<{ callerId?: string; op: string; ok: boolean; detail?: unknown; error?: string }>
 }
 
+export interface HeadlessEditFailureResult {
+  ok: false
+  applied: number
+  results: HeadlessEditResult['results']
+  persisted: false
+  projectUnchanged: true
+  error: {
+    code: 'EDIT_OPERATION_FAILED'
+    message: string
+    operationIndex: number
+    callerId?: string
+    op: string
+  }
+}
+
 function resolvePointer(value: unknown, pointer: string): unknown {
   if (!pointer.startsWith('/')) throw new Error(`Invalid result JSON pointer "${pointer}"`)
   let current = value
@@ -656,7 +671,9 @@ function applyOp(op: EditOp): unknown {
   }
 }
 
-export async function editProject(input: HeadlessEditInput): Promise<HeadlessEditResult> {
+export async function editProject(
+  input: HeadlessEditInput,
+): Promise<HeadlessEditResult | HeadlessEditFailureResult> {
   const { project: migrated } = migrateProject(input.project)
   let workingProject = migrated
   await hydrateTimelineStoresFromProject(workingProject)
@@ -668,10 +685,11 @@ export async function editProject(input: HeadlessEditInput): Promise<HeadlessEdi
   const prior = new Map<string, HeadlessEditResult['results'][number]>()
   const callerIds = input.ops.map((op) => asString(op.callerId)).filter(Boolean) as string[]
   if (new Set(callerIds).size !== callerIds.length) throw new Error('Duplicate edit callerId')
-  for (const rawOp of input.ops) {
+  for (let operationIndex = 0; operationIndex < input.ops.length; operationIndex += 1) {
+    const rawOp = input.ops[operationIndex]!
     const callerId = asString(rawOp.callerId)
-    const op = resolveOperationRefs(rawOp, prior)
     try {
+      const op = resolveOperationRefs(rawOp, prior)
       let detail: unknown
       if (op.op === 'setProjectSettings') {
         const name = asString(op.name)
@@ -703,15 +721,29 @@ export async function editProject(input: HeadlessEditInput): Promise<HeadlessEdi
       results.push(result)
       if (callerId) prior.set(callerId, result)
     } catch (error) {
+      const operationError = error instanceof Error ? error.message : String(error)
       results.push({
         ...(callerId ? { callerId } : {}),
-        op: op.op,
+        op: String(rawOp.op),
         ok: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: operationError,
       })
-      throw new Error(
-        `Edit op "${op.op}" failed: ${error instanceof Error ? error.message : String(error)}`,
-      )
+      await hydrateTimelineStoresFromProject(migrated)
+      seedMediaLibrary(input.media)
+      return {
+        ok: false,
+        applied: operationIndex,
+        results,
+        persisted: false,
+        projectUnchanged: true,
+        error: {
+          code: 'EDIT_OPERATION_FAILED',
+          message: `Edit op "${String(rawOp.op)}" failed: ${operationError}`,
+          operationIndex,
+          ...(callerId ? { callerId } : {}),
+          op: String(rawOp.op),
+        },
+      }
     }
   }
 

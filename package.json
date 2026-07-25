@@ -4,7 +4,8 @@
   "private": true,
   "bin": {
     "autocut-agent": "headless/autocut-agent.mjs",
-    "autocut-server": "headless/autocut-server.mjs"
+    "autocut-server": "headless/autocut-server.mjs",
+    "remotion-render": "headless/remotion-render.mjs"
   },
   "type": "module",
   "scripts": {

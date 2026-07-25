@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { canonicalCommands } from './agent-command-contracts.mjs'
 
 export const HEADLESS_API_VERSION = 1
 
@@ -380,6 +381,64 @@ export const EDIT_OPERATION_NAMES = [
   'setMasterAudio',
   'setProjectSettings',
 ]
+export const EDIT_OPERATION_EXAMPLES = Object.freeze({
+  addText: { op: 'addText', text: 'Title', from: 0, durationInFrames: 90 },
+  addItem: {
+    op: 'addItem',
+    item: { type: 'text', trackId: 'video-track', from: 0, durationInFrames: 90 },
+  },
+  updateItem: { op: 'updateItem', id: 'item-id', updates: { label: 'Updated' } },
+  moveItem: { op: 'moveItem', id: 'item-id', from: 30, trackId: 'track-id' },
+  removeItems: { op: 'removeItems', ids: ['item-id'] },
+  split: { op: 'split', id: 'item-id', frame: 30 },
+  trimStart: { op: 'trimStart', id: 'item-id', amount: 15 },
+  trimEnd: { op: 'trimEnd', id: 'item-id', amount: 15 },
+  addTransition: {
+    op: 'addTransition',
+    leftClipId: 'left-clip-id',
+    rightClipId: 'right-clip-id',
+    type: 'crossfade',
+    durationInFrames: 12,
+  },
+  addTrack: { op: 'addTrack', kind: 'video' },
+  updateTrack: { op: 'updateTrack', id: 'track-id', updates: { name: 'Overlay' } },
+  removeTrack: { op: 'removeTrack', id: 'track-id' },
+  addClip: {
+    op: 'addClip',
+    mediaId: 'media-id',
+    from: 0,
+    trackId: 'track-id',
+    durationInFrames: 90,
+    sourceStart: 0,
+  },
+  addKeyframe: {
+    op: 'addKeyframe',
+    itemId: 'item-id',
+    property: 'opacity',
+    frame: 0,
+    value: 1,
+  },
+  removeKeyframes: { op: 'removeKeyframes', itemId: 'item-id', property: 'opacity' },
+  addEffect: {
+    op: 'addEffect',
+    itemId: 'item-id',
+    gpuEffectType: 'gpu-gaussian-blur',
+    params: { radius: 2 },
+  },
+  removeEffect: { op: 'removeEffect', itemId: 'item-id', effectId: 'effect-id' },
+  setTransform: { op: 'setTransform', id: 'item-id', transform: { opacity: 0.8 } },
+  addMarker: { op: 'addMarker', frame: 30, label: 'Beat' },
+  updateMarker: { op: 'updateMarker', id: 'marker-id', updates: { frame: 45 } },
+  removeMarker: { op: 'removeMarker', id: 'marker-id' },
+  setInPoint: { op: 'setInPoint', frame: 0 },
+  setOutPoint: { op: 'setOutPoint', frame: 90 },
+  clearInOutPoints: { op: 'clearInOutPoints' },
+  setMasterAudio: { op: 'setMasterAudio', masterBusDb: -3 },
+  setProjectSettings: { op: 'setProjectSettings', name: 'Updated project' },
+})
+const EDIT_OPERATION_SCHEMAS = new Map(
+  EDIT_OPERATION_NAMES.map((name, index) => [name, opSchemas[index]]),
+)
 const EDIT_OPERATION_DESCRIPTIONS = Object.fromEntries(
   EDIT_OPERATION_NAMES.map((name) => [name, samplesDescription(name)]),
 )
@@ -588,8 +647,51 @@ export const lifecycleEditRequestSchema = z
         return input
       }
       const { callerId: _callerId, ...wireOp } = value.ops[index]
-      const parsed = editOpSchema.safeParse(normalizeRefs(wireOp))
-      if (!parsed.success) {
+      const operationName = typeof wireOp.op === 'string' ? wireOp.op : undefined
+      const operationSchema = operationName ? EDIT_OPERATION_SCHEMAS.get(operationName) : undefined
+      if (!operationSchema) {
+        ctx.addIssue({
+          code: 'custom',
+          message: operationName
+            ? `unknown operation "${operationName}"`
+            : 'op is required and must name a supported operation',
+          path: ['ops', index, 'op'],
+        })
+      }
+      const aliases = {
+        trackKind: operationName === 'addTrack' ? 'kind' : undefined,
+        trackIndex:
+          operationName === 'addClip' || operationName === 'moveItem' ? 'trackId' : undefined,
+        startTime:
+          operationName === 'addText' || operationName === 'addClip' || operationName === 'moveItem'
+            ? 'from'
+            : undefined,
+        duration:
+          operationName === 'addText' ||
+          operationName === 'addClip' ||
+          operationName === 'addTransition'
+            ? 'durationInFrames'
+            : undefined,
+        itemIds: operationName === 'removeItems' ? 'ids' : undefined,
+        itemId:
+          operationName === 'removeItems'
+            ? 'ids'
+            : ['updateItem', 'moveItem', 'split', 'trimStart', 'trimEnd', 'setTransform'].includes(
+                  operationName,
+                )
+              ? 'id'
+              : undefined,
+      }
+      for (const [alias, replacement] of Object.entries(aliases)) {
+        if (!(alias in wireOp) || !replacement) continue
+        ctx.addIssue({
+          code: 'custom',
+          message: `use "${replacement}" instead of "${alias}" for ${operationName}`,
+          path: ['ops', index, alias],
+        })
+      }
+      const parsed = operationSchema?.safeParse(normalizeRefs(wireOp))
+      if (parsed && !parsed.success) {
         for (const issue of parsed.error.issues)
           ctx.addIssue({ ...issue, path: ['ops', index, ...issue.path] })
       }
@@ -681,23 +783,28 @@ export function normalizeRenderInput(value) {
 }
 
 export class ContractValidationError extends Error {
-  constructor(message, fields) {
+  constructor(message, fields, fieldsTruncated = false) {
     super(message)
     this.name = 'ContractValidationError'
     this.code = 'VALIDATION_ERROR'
     this.fields = fields
+    if (fieldsTruncated) this.details = { fieldsTruncated: true }
   }
 }
 
 export function validate(schema, value) {
   const result = schema.safeParse(value)
   if (result.success) return result.data
-  const fields = result.error.issues.map((issue) => ({
+  const allFields = result.error.issues.map((issue) => ({
     path: issue.path.join('.') || '$',
     message: issue.message,
     code: issue.code,
   }))
-  throw new ContractValidationError('Request validation failed', fields)
+  throw new ContractValidationError(
+    'Request validation failed',
+    allFields.slice(0, 64),
+    allFields.length > 64,
+  )
 }
 
 export function capabilities() {
@@ -711,6 +818,8 @@ export function capabilities() {
       editingPlanMarkdown: true,
       nativeAnimation: true,
       remotionTransparentAsset: true,
+      remotionComposition: true,
+      remotionRenderModes: ['transparent-overlay', 'composition'],
     },
     agentGuidance: {
       lifecycleEdit: {
@@ -774,6 +883,7 @@ export function capabilities() {
 }
 
 export function compactCapabilities() {
+  const commands = canonicalCommands()
   return {
     apiVersion: HEADLESS_API_VERSION,
     compact: true,
@@ -784,15 +894,16 @@ export function compactCapabilities() {
       editingPlanMarkdown: true,
       nativeAnimation: true,
       remotionTransparentAsset: true,
+      remotionComposition: true,
+      remotionRenderModes: ['transparent-overlay', 'composition'],
     },
     operations: EDIT_OPERATION_NAMES,
     canonicalCommands: {
-      capabilities: 'autocut-agent capabilities --compact',
-      remotionRender: 'autocut-agent remotion-render --task <task.json>',
-      projectGet: 'autocut-agent project get --id <project-id>',
-      projectEdit:
-        'autocut-agent project edit --id <project-id> --ops <operations.json> --persist --expected-revision <revision>',
-      projectAudit: 'autocut-agent project audit --id <project-id> --mode remix',
+      capabilities: commands.capabilities,
+      remotionRender: commands['remotion-render'],
+      projectGet: commands['project get'],
+      projectEdit: commands['project edit'],
+      projectAudit: commands['project audit'],
     },
     projectEdit: {
       allowedOptions: [

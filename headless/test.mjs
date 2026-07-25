@@ -341,38 +341,34 @@ async function main() {
         12,
     )
 
-    const missingTargetError = await page.evaluate(async (project) => {
-      try {
-        await window.freecut.editProject({
+    const missingTargetError = await page.evaluate(
+      (project) =>
+        window.freecut.editProject({
           project,
           ops: [{ op: 'updateItem', id: 'missing', updates: { label: 'nope' } }],
-        })
-        return null
-      } catch (error) {
-        return error instanceof Error ? error.message : String(error)
-      }
-    }, SAMPLE_PROJECT)
+        }),
+      SAMPLE_PROJECT,
+    )
     check(
       'missing update target fails truthfully',
-      /id: item "missing" does not exist/.test(missingTargetError ?? ''),
-      missingTargetError,
+      missingTargetError.ok === false &&
+        /id: item "missing" does not exist/.test(missingTargetError.error?.message ?? ''),
+      missingTargetError.error?.message,
     )
 
-    const missingRemoveError = await page.evaluate(async (project) => {
-      try {
-        await window.freecut.editProject({
+    const missingRemoveError = await page.evaluate(
+      (project) =>
+        window.freecut.editProject({
           project,
           ops: [{ op: 'removeItems', ids: ['text-1', 'missing'] }],
-        })
-        return null
-      } catch (error) {
-        return error instanceof Error ? error.message : String(error)
-      }
-    }, SAMPLE_PROJECT)
+        }),
+      SAMPLE_PROJECT,
+    )
     check(
       'removeItems rejects a batch containing missing ids',
-      /ids: item "missing" does not exist/.test(missingRemoveError ?? ''),
-      missingRemoveError,
+      missingRemoveError.ok === false &&
+        /ids: item "missing" does not exist/.test(missingRemoveError.error?.message ?? ''),
+      missingRemoveError.error?.message,
     )
 
     const reopenedProject = JSON.parse(JSON.stringify(edit.project))

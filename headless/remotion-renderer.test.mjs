@@ -50,6 +50,70 @@ test('controlled Remotion task renders verified VP9 alpha inside its project dir
   assert.match(compositionCall.bundleHtml, /connect-src 'self'/)
 })
 
+test('controlled Remotion task renders an opaque H.264 composition without alpha requirements', async (t) => {
+  const fixture = await createFixture({ renderMode: 'composition' })
+  t.after(() => rm(fixture.root, { recursive: true, force: true }))
+  const calls = []
+
+  const result = await renderRemotionTask({
+    workspaceDirectory: fixture.workspace,
+    taskDirectory: fixture.taskDirectory,
+    browserExecutable: process.execPath,
+    dependencies: fakeRendererDependencies(calls, { alpha: 255, codec: 'h264' }),
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.renderMode, 'composition')
+  assert.equal(result.container, 'mp4')
+  assert.equal(result.codec, 'h264')
+  assert.equal(result.alphaVerified, undefined)
+  assert.equal(result.representativeFrames.length, 3)
+  assert.match(result.representativeFrames[0].hash, /^sha256:[0-9a-f]{64}$/)
+  assert.equal(
+    result.outputPath,
+    path.join(await realpath(fixture.taskDirectory), 'renders', 'lower-third.mp4'),
+  )
+
+  const renderCall = calls.find((call) => call.name === 'renderMedia')
+  assert.equal(renderCall.options.codec, 'h264')
+  assert.equal(renderCall.options.imageFormat, 'jpeg')
+  assert.equal(renderCall.options.pixelFormat, 'yuv420p')
+})
+
+test('controlled Remotion task allows readable local imports beyond the task directory', async (t) => {
+  const fixture = await createFixture({ renderMode: 'composition' })
+  t.after(() => rm(fixture.root, { recursive: true, force: true }))
+  const projectMedia = path.join(fixture.root, 'project-media.png')
+  const outsideRoot = await mkdtemp(path.join(os.tmpdir(), 'freecut-remotion-outside-'))
+  t.after(() => rm(outsideRoot, { recursive: true, force: true }))
+  const outsideMedia = path.join(outsideRoot, 'outside.png')
+  await Promise.all([
+    writeFile(projectMedia, 'project-image'),
+    writeFile(outsideMedia, 'outside-image'),
+  ])
+  const sourceDirectory = path.join(fixture.taskDirectory, 'src')
+  const projectMediaImport = relativeImport(sourceDirectory, projectMedia)
+  const outsideMediaImport = relativeImport(sourceDirectory, outsideMedia)
+
+  await writeFile(
+    path.join(fixture.taskDirectory, 'src', 'Animation.tsx'),
+    `import imageUrl from ${JSON.stringify(projectMediaImport)}; export default () => <img src={imageUrl} />;\n`,
+  )
+  await validateRemotionTask({
+    workspaceDirectory: fixture.workspace,
+    taskDirectory: fixture.taskDirectory,
+  })
+
+  await writeFile(
+    path.join(fixture.taskDirectory, 'src', 'Animation.tsx'),
+    `import imageUrl from ${JSON.stringify(outsideMediaImport)}; export default () => <img src={imageUrl} />;\n`,
+  )
+  await validateRemotionTask({
+    workspaceDirectory: fixture.workspace,
+    taskDirectory: fixture.taskDirectory,
+  })
+})
+
 test('controlled Remotion validation rejects external imports and network capabilities', async (t) => {
   const fixture = await createFixture()
   t.after(() => rm(fixture.root, { recursive: true, force: true }))
@@ -140,17 +204,53 @@ test(
   },
 )
 
-async function createFixture() {
+test(
+  'controlled Remotion task renders a real H.264 MP4 composition',
+  { skip: process.env.AUTOCUT_REMOTION_INTEGRATION !== '1' },
+  async (t) => {
+    const fixture = await createFixture({
+      renderMode: 'composition',
+      externalAsset: true,
+    })
+    t.after(() => rm(fixture.root, { recursive: true, force: true }))
+
+    const result = await renderRemotionTask({
+      workspaceDirectory: fixture.workspace,
+      taskDirectory: fixture.taskDirectory,
+      browserExecutable: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      timeoutInMilliseconds: 120_000,
+    })
+
+    assert.equal(result.renderMode, 'composition')
+    assert.equal(result.container, 'mp4')
+    assert.equal(result.codec, 'h264')
+    assert.equal(result.alphaVerified, undefined)
+    assert.ok(result.representativeFrames.length > 0)
+    assert.ok((await readFile(result.outputPath)).byteLength > 0)
+  },
+)
+
+async function createFixture({ renderMode = 'transparent-overlay', externalAsset = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'freecut-remotion-'))
   const workspace = path.join(root, 'autocut')
   const taskDirectory = path.join(workspace, 'projects', 'demo', 'remotion', 'lower-third')
   await mkdir(path.join(taskDirectory, 'src'), { recursive: true })
   await mkdir(path.join(taskDirectory, 'public'), { recursive: true })
+  let externalAssetImport
+  if (externalAsset) {
+    const externalAssetPath = path.join(root, 'shared-assets', 'background.png')
+    await mkdir(path.dirname(externalAssetPath), { recursive: true })
+    const image = new PNG({ width: 2, height: 2 })
+    image.data.fill(255)
+    await writeFile(externalAssetPath, PNG.sync.write(image))
+    externalAssetImport = relativeImport(path.join(taskDirectory, 'src'), externalAssetPath)
+  }
   await writeFile(
     path.join(taskDirectory, 'task.json'),
     `${JSON.stringify(
       {
         schemaVersion: 1,
+        ...(renderMode === 'transparent-overlay' ? {} : { renderMode }),
         taskId: 'lower-third',
         entryPoint: 'src/Animation.tsx',
         componentExport: 'default',
@@ -162,7 +262,8 @@ async function createFixture() {
           durationInFrames: 30,
         },
         inputProps: { title: 'AutoCut' },
-        output: 'renders/lower-third.webm',
+        output:
+          renderMode === 'composition' ? 'renders/lower-third.mp4' : 'renders/lower-third.webm',
       },
       null,
       2,
@@ -172,10 +273,13 @@ async function createFixture() {
     path.join(taskDirectory, 'src', 'Animation.tsx'),
     [
       'import React from "react";',
-      'import {AbsoluteFill, useCurrentFrame} from "remotion";',
+      `import {AbsoluteFill, Img, useCurrentFrame} from "remotion";`,
+      ...(externalAssetImport
+        ? [`import backgroundUrl from ${JSON.stringify(externalAssetImport)};`]
+        : []),
       'export default function Animation({title}: {title: string}) {',
       '  const frame = useCurrentFrame();',
-      '  return <AbsoluteFill style={{opacity: frame > 0 ? 0.8 : 0.2}}>{title}</AbsoluteFill>;',
+      `  return <AbsoluteFill style={{opacity: frame > 0 ? 0.8 : 0.2}}>${externalAssetImport ? '<Img src={backgroundUrl} />' : ''}{title}</AbsoluteFill>;`,
       '}',
       '',
     ].join('\n'),
@@ -183,7 +287,7 @@ async function createFixture() {
   return { root, workspace, taskDirectory }
 }
 
-function fakeRendererDependencies(calls, { alpha }) {
+function fakeRendererDependencies(calls, { alpha, codec = 'vp9' }) {
   const composition = {
     id: 'lower-third',
     width: 640,
@@ -222,13 +326,13 @@ function fakeRendererDependencies(calls, { alpha }) {
     },
     async renderMedia(options) {
       calls.push({ name: 'renderMedia', options })
-      await writeFile(options.outputLocation, 'fake-webm-alpha')
+      await writeFile(options.outputLocation, codec === 'h264' ? 'fake-mp4' : 'fake-webm-alpha')
     },
     async getVideoMetadata(file) {
       calls.push({ name: 'getVideoMetadata', file })
       return {
-        codec: 'vp9',
-        pixelFormat: 'yuva420p',
+        codec,
+        pixelFormat: codec === 'h264' ? 'yuv420p' : 'yuva420p',
         width: 640,
         height: 360,
         fps: 30,
@@ -236,4 +340,9 @@ function fakeRendererDependencies(calls, { alpha }) {
       }
     },
   }
+}
+
+function relativeImport(fromDirectory, target) {
+  const relative = path.relative(fromDirectory, target).split(path.sep).join('/')
+  return relative.startsWith('.') ? relative : `./${relative}`
 }

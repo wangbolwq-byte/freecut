@@ -3,18 +3,29 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from './lib/cli.mjs'
 import {
+  commandHelp,
+  correctExamples,
+  normalizeCommandArgv,
+  optionNames,
+  resolveCommand,
+} from './lib/agent-command-contracts.mjs'
+import {
   assertAutoCutWorkspace,
   withAutoCutBrowserSession,
 } from './lib/autocut-browser-session.mjs'
+import { runAgentCli } from './lib/agent-cli.mjs'
 import {
   capabilities,
   compactCapabilities,
+  EDIT_OPERATION_EXAMPLES,
   HEADLESS_API_VERSION,
   projectCreateRequestSchema,
   projectSaveRequestSchema,
   projectUpdateRequestSchema,
   lifecycleEditRequestSchema,
   mediaProbeRequestSchema,
+  normalizeRenderInput,
+  renderRequestSchema,
   validate,
 } from './lib/contract.mjs'
 import { prepareJob, renderJob } from './lib/render-core.mjs'
@@ -37,60 +48,24 @@ import {
 import { isMainModule } from './lib/main-module.mjs'
 import { auditRemixProject } from './lib/project-audit.mjs'
 
-const OPTIONS = new Set([
-  'workspace',
-  'json',
-  'id',
-  'name',
-  'description',
-  'width',
-  'height',
-  'fps',
-  'background-color',
-  'file',
-  'ops',
-  'persist',
-  'expected-revision',
-  'force',
-  'project',
-  'build',
-  'harness-url',
-  'head',
-  'break-lock',
-  'out',
-  'codec',
-  'container',
-  'resolution',
-  'quality',
-  'preset',
-  'duration',
-  'in',
-  'out-sec',
-  'audio-only',
-  'allow-missing-media',
-  'mode',
-  'track-id',
-  'task',
-  'compact',
-  'help',
-])
-
-const PROJECT_EDIT_ALLOWED_OPTIONS = [
-  '--id',
-  '--ops',
-  '--persist',
-  '--expected-revision',
-  '--force',
-  '--break-lock',
-]
-const PROJECT_EDIT_CANONICAL_COMMAND =
-  'autocut-agent project edit --id <project-id> --ops <operations.json> --persist --expected-revision <revision>'
-const REMOTION_RENDER_ALLOWED_OPTIONS = ['--task']
-const REMOTION_RENDER_CANONICAL_COMMAND = 'autocut-agent remotion-render --task <task.json>'
-
 const envelope = (value) => ({ ok: true, apiVersion: HEADLESS_API_VERSION, ...value })
 const number = (value) => (value === undefined ? undefined : Number(value))
-const readJson = (file) => JSON.parse(fs.readFileSync(path.resolve(file), 'utf8'))
+const readJson = (file) => {
+  try {
+    return JSON.parse(fs.readFileSync(path.resolve(file), 'utf8'))
+  } catch (cause) {
+    const error = new Error(`Unable to read valid JSON from ${file}`)
+    error.code = 'VALIDATION_ERROR'
+    error.fields = [
+      {
+        path: file,
+        message: cause instanceof Error ? cause.message : String(cause),
+        code: 'invalid_json_file',
+      },
+    ]
+    throw error
+  }
+}
 
 async function withWriter(workspace, args, operation) {
   if (args['break-lock'])
@@ -105,27 +80,53 @@ async function withWriter(workspace, args, operation) {
 }
 
 async function run(argv = process.argv.slice(2), dependencies = {}) {
-  const args = parseCliArgs(argv)
+  const commandArgv = normalizeCommandArgv(argv)
+  const resolved = resolveCommand(commandArgv)
+  if (resolved.kind === 'help') return envelope({ help: resolved.help })
+  if (resolved.kind === 'unknown') throw unknownCommandUsageError(resolved)
+  const contract = resolved.contract
+  let args
+  try {
+    args = parseCliArgs(commandArgv, contract)
+    assertCommandArgs(args, contract)
+  } catch (error) {
+    throw contextualizeCommandError(error, contract)
+  }
+  try {
+    return await runCommand(args, dependencies, contract)
+  } catch (error) {
+    throw contextualizeCommandError(error, contract, args)
+  }
+}
+
+async function runCommand(args, dependencies, contract) {
   const [group, action] = args._
-  if (group === 'project' && action === 'edit' && args.help)
-    return envelope({ help: projectEditHelp() })
-  if (group === 'remotion-render' && args.help) return envelope({ help: remotionRenderHelp() })
+  if (args.help) return envelope({ help: commandSpecificHelp(contract) })
   if (group === 'capabilities')
     return envelope(args.compact ? compactCapabilities() : capabilities())
   const workspace = path.resolve(args.workspace ?? process.env.AUTOCUT_WORKSPACE ?? '.')
-  if (!fs.existsSync(workspace)) throw new Error(`Workspace not found: ${workspace}`)
+  if (!fs.existsSync(workspace)) {
+    const error = new Error(`Workspace not found: ${workspace}`)
+    error.code = 'PREREQUISITE_ERROR'
+    error.details = {
+      nextActions: [
+        'Select or create a Desktop project so the Host can inject its AutoCut workspace.',
+      ],
+    }
+    throw error
+  }
   assertAutoCutWorkspace(workspace)
   if (group === 'editor-url') return envelope(createEditorUrl(args))
-  if (!action && group !== 'render' && group !== 'remotion-render')
-    throw new Error('Expected a command such as project list or media import')
 
   if (group === 'project' && action === 'list')
     return envelope({ projects: await listProjectResources(workspace), nextCursor: null })
   if (group === 'project' && action === 'get')
     return envelope(await getProjectResource(workspace, args.id))
   if (group === 'project' && action === 'audit') {
-    if (!args.id) throw new Error('--id is required')
-    if ((args.mode ?? 'remix') !== 'remix') throw new Error('--mode must be remix')
+    if ((args.mode ?? 'remix') !== 'remix')
+      throw commandUsageError(contract, '--mode must be remix', [
+        { path: '--mode', message: 'must equal remix', code: 'invalid_value' },
+      ])
     const current = await getProjectResource(workspace, args.id)
     return envelope({
       revision: current.revision,
@@ -139,10 +140,15 @@ async function run(argv = process.argv.slice(2), dependencies = {}) {
   if (group === 'media' && action === 'get')
     return envelope(await getMediaResource(workspace, args.id))
   if (group === 'remotion-render') {
-    assertRemotionRenderArgs(args)
     const taskPath = path.resolve(args.task)
     if (path.basename(taskPath) !== 'task.json') {
-      throw remotionRenderUsageError('--task must reference a task.json file')
+      throw commandUsageError(contract, '--task must reference a task.json file', [
+        {
+          path: '--task',
+          message: 'must reference a task.json file',
+          code: 'invalid_value',
+        },
+      ])
     }
     const renderTask = dependencies.renderRemotionTask ?? renderRemotionTask
     return envelope(
@@ -153,30 +159,30 @@ async function run(argv = process.argv.slice(2), dependencies = {}) {
     )
   }
   if (group === 'render') {
-    if (!args.project) throw new Error('--project is required')
+    const outputPath = args.out
+      ? path.resolve(workspace, args.out)
+      : path.join(workspace, 'exports', `${args.project}-render`)
+    assertContainedOutput(workspace, outputPath, contract)
+    const renderInput = validate(
+      renderRequestSchema,
+      normalizeRenderInput({
+        project: args.project,
+        out: outputPath,
+        ...(args.codec ? { codec: args.codec } : {}),
+        ...(args.container ? { container: args.container } : {}),
+        ...(args.resolution ? { resolution: args.resolution } : {}),
+        ...(args.fps ? { fps: args.fps } : {}),
+        ...(args.quality ? { quality: args.quality } : {}),
+        preset: args.preset ?? 'balanced',
+        ...(args.duration ? { duration: args.duration } : {}),
+        ...(args.in ? { in: args.in } : {}),
+        ...(args['out-sec'] ? { 'out-sec': args['out-sec'] } : {}),
+        ...(args['audio-only'] ? { 'audio-only': true } : {}),
+      }),
+    )
     return withAutoCutBrowserSession({ workspace, args }, async (page, mediaUrlOf) => {
-      const outputPath = args.out
-        ? path.resolve(workspace, args.out)
-        : path.join(workspace, 'exports', `${args.project}-render`)
-      const job = prepareJob(
-        workspace,
-        {
-          project: args.project,
-          out: outputPath,
-          ...(args.codec ? { codec: args.codec } : {}),
-          ...(args.container ? { container: args.container } : {}),
-          ...(args.resolution ? { resolution: args.resolution } : {}),
-          ...(args.fps ? { fps: args.fps } : {}),
-          ...(args.quality ? { quality: args.quality } : {}),
-          preset: args.preset ?? 'balanced',
-          ...(args.duration ? { duration: args.duration } : {}),
-          ...(args.in ? { in: args.in } : {}),
-          ...(args['out-sec'] ? { 'out-sec': args['out-sec'] } : {}),
-          ...(args['audio-only'] ? { 'audio-only': true } : {}),
-        },
-        mediaUrlOf,
-      )
-      assertContainedOutput(workspace, job.outPath)
+      const job = prepareJob(workspace, renderInput, mediaUrlOf)
+      assertContainedOutput(workspace, job.outPath, contract)
       const summary = await renderJob(page, job, {
         allowMissingMedia: Boolean(args['allow-missing-media']),
         downloadTimeoutMs: 0,
@@ -202,14 +208,19 @@ async function run(argv = process.argv.slice(2), dependencies = {}) {
       return envelope(await createProjectResource(workspace, project))
     }
     if (group === 'project' && action === 'save') {
-      if (!args.file) throw new Error('--file is required')
       const body = validate(projectSaveRequestSchema, {
         project: readJson(args.file),
         expectedRevision: args['expected-revision'],
         force: Boolean(args.force),
       })
       if (body.project.id !== undefined && body.project.id !== args.id)
-        throw new Error('Project body id must equal --id')
+        throw commandUsageError(contract, 'Project body id must equal --id', [
+          {
+            path: 'project.id',
+            message: 'must equal --id',
+            code: 'invalid_value',
+          },
+        ])
       const project = await withAutoCutBrowserSession({ workspace, args }, (page) =>
         page.evaluate((value) => window.autocut.normalizeProject(value), {
           ...body.project,
@@ -255,7 +266,6 @@ async function run(argv = process.argv.slice(2), dependencies = {}) {
       return envelope(await saveProjectResource(workspace, args.id, project, body))
     }
     if (group === 'project' && action === 'edit') {
-      if (!args.ops) throw new Error('--ops is required')
       const body = validate(lifecycleEditRequestSchema, {
         ops: readJson(args.ops),
         persist: Boolean(args.persist),
@@ -298,7 +308,17 @@ async function run(argv = process.argv.slice(2), dependencies = {}) {
       })
       const current = await getMediaResource(workspace, args.id)
       const source = resolveMediaFile(workspace, args.id)
-      if (!source) throw new Error('Media source file is missing')
+      if (!source) {
+        const error = new Error('Media source file is missing')
+        error.code = 'PREREQUISITE_ERROR'
+        error.details = {
+          nextActions: [
+            `Run autocut-agent media get --id ${args.id} to inspect the media resource.`,
+            'Re-import the original source file if it is no longer present.',
+          ],
+        }
+        throw error
+      }
       const probe = await withAutoCutBrowserSession({ workspace, args }, (page, mediaUrlOf) =>
         page.evaluate((payload) => window.autocut.probeMedia(payload), {
           url: mediaUrlOf(args.id),
@@ -311,7 +331,6 @@ async function run(argv = process.argv.slice(2), dependencies = {}) {
       return envelope({ mediaId: args.id, probe, persisted: true, revision: saved.revision })
     }
     if (group === 'media' && action === 'import') {
-      if (!args.file) throw new Error('--file is required')
       let staged
       try {
         staged = await stageLocalMedia(workspace, args.file, args.id)
@@ -333,31 +352,181 @@ async function run(argv = process.argv.slice(2), dependencies = {}) {
         throw error
       }
     }
-    throw new Error(`Unknown command: ${group} ${action}`)
+    throw commandUsageError(contract, `Unknown command: ${group} ${action}`)
   })
 }
 
-function parseCliArgs(argv) {
+function parseCliArgs(argv, contract) {
   try {
-    return parseArgs(argv, { allowed: OPTIONS })
+    return parseArgs(argv, { allowed: optionNames(contract) })
   } catch (error) {
     const match = /^Unknown option: (--[^\s]+)$/.exec(error instanceof Error ? error.message : '')
     if (!match) throw error
     const option = match[1]
-    if (argv[0] === 'remotion-render') {
-      throw remotionRenderUsageError(`Unknown option: ${option}`, [
-        { path: option, message: 'option is not allowed', code: 'unknown_option' },
+    const suggestion = suggestOption(option, contract.allowedOptions)
+    throw commandUsageError(
+      contract,
+      `Unknown option: ${option}`,
+      [{ path: option, message: 'option is not allowed', code: 'unknown_option' }],
+      {
+        suggestion: suggestion ? `Use ${suggestion} instead of ${option}.` : contract.summary,
+      },
+    )
+  }
+}
+
+function assertCommandArgs(args, contract) {
+  if (
+    args._.length !== contract.path.length ||
+    !contract.path.every((part, index) => args._[index] === part)
+  ) {
+    throw commandUsageError(contract, `${contract.key} does not accept positional arguments`, [
+      { path: '$', message: 'unexpected positional argument', code: 'unexpected_argument' },
+    ])
+  }
+  if (args.help) return
+  for (const required of contract.requiredOptions) {
+    const key = required.slice(2)
+    if (typeof args[key] !== 'string' || args[key].trim() === '') {
+      throw commandUsageError(contract, `${required} is required`, [
+        { path: required, message: 'option is required', code: 'required' },
       ])
     }
-    const suggestion = suggestOption(option, PROJECT_EDIT_ALLOWED_OPTIONS)
-    throw new CliUsageError(`Unknown option: ${option}`, {
-      fields: [{ path: option, message: 'option is not allowed', code: 'unknown_option' }],
-      allowedOptions: PROJECT_EDIT_ALLOWED_OPTIONS,
-      canonicalCommand: PROJECT_EDIT_CANONICAL_COMMAND,
-      suggestion: suggestion
-        ? `Use ${suggestion} instead of ${option}.`
-        : projectEditHelp().summary,
-    })
+  }
+  for (const option of contract.allowedOptions) {
+    const key = option.slice(2)
+    if (
+      args[key] !== undefined &&
+      !contract.booleanOptions.includes(option) &&
+      typeof args[key] !== 'string'
+    ) {
+      throw commandUsageError(contract, `${option} requires a value`, [
+        { path: option, message: 'option requires a value', code: 'invalid_type' },
+      ])
+    }
+  }
+}
+
+function commandSpecificHelp(contract) {
+  const help = commandHelp(contract)
+  if (contract.key === 'project edit') {
+    return {
+      ...help,
+      authoritativeItemIds: 'project.timeline.items[].id',
+      resultReferenceExample: { $ref: 'addClipA#/detail/id' },
+    }
+  }
+  if (contract.key === 'remotion-render') {
+    return {
+      ...help,
+      taskLayout: 'projects/<project-or-assets>/remotion/<task-id>/task.json',
+    }
+  }
+  return help
+}
+
+function unknownCommandUsageError(resolved) {
+  const suggestion = suggestOption(resolved.command, resolved.candidates)
+  return new CliUsageError(`Unknown command: ${resolved.command}`, {
+    fields: [
+      {
+        path: resolved.command,
+        message: 'command is not available',
+        code: 'unknown_command',
+      },
+    ],
+    command: resolved.help.command,
+    allowedCommands: resolved.candidates,
+    usage: resolved.help,
+    ...correctExamplesFromHelp(resolved.help),
+    ...(suggestion ? { suggestion: `Use ${suggestion} instead.` } : {}),
+  })
+}
+
+function commandUsageError(contract, message, fields = [], details = {}) {
+  return new CliUsageError(message, {
+    fields,
+    command: contract.key,
+    allowedOptions: contract.allowedOptions,
+    canonicalCommand: contract.examples[0].command,
+    usage: commandSpecificHelp(contract),
+    ...correctExamples(contract),
+    ...(contract.key === 'project edit' ? { persisted: false, projectUnchanged: true } : {}),
+    ...details,
+  })
+}
+
+function contextualizeCommandError(error, contract, args) {
+  if (!(error instanceof Error)) return error
+  if (error instanceof CliUsageError && error.details?.correctExamples) return error
+  const operationExamples =
+    contract.key === 'project edit' ? projectEditCorrectionExamples(error, args) : []
+  const revisionExamples =
+    error.code === 'REVISION_CONFLICT' && args?.id
+      ? [
+          {
+            description: 'Read the current resource revision before retrying.',
+            command:
+              contract.key === 'media probe'
+                ? `autocut-agent media get --id ${args.id}`
+                : `autocut-agent project get --id ${args.id}`,
+          },
+        ]
+      : []
+  const resourceExamples =
+    error.code === 'PROJECT_NOT_FOUND'
+      ? [{ description: 'List available project IDs.', command: 'autocut-agent project list' }]
+      : error.code === 'MEDIA_NOT_FOUND' || error.code === 'MISSING_MEDIA'
+        ? [{ description: 'List available media IDs.', command: 'autocut-agent media list' }]
+        : []
+  const context = {
+    command: contract.key,
+    allowedOptions: contract.allowedOptions,
+    canonicalCommand: contract.examples[0].command,
+    usage: commandSpecificHelp(contract),
+    ...correctExamples(contract, [...operationExamples, ...revisionExamples, ...resourceExamples]),
+    ...(contract.key === 'project edit' ? { persisted: false, projectUnchanged: true } : {}),
+  }
+  error.details = {
+    ...(error.details && typeof error.details === 'object' ? error.details : {}),
+    ...(error.expectedRevision ? { expectedRevision: error.expectedRevision } : {}),
+    ...(error.actualRevision ? { actualRevision: error.actualRevision } : {}),
+    ...context,
+  }
+  return error
+}
+
+function projectEditCorrectionExamples(error, args) {
+  const fields = Array.isArray(error.fields) ? error.fields : []
+  const operationIndex =
+    error.details?.operationIndex ??
+    fields.map((field) => /^ops\.(\d+)/.exec(field.path)?.[1]).find((value) => value !== undefined)
+  if (operationIndex === undefined || !args?.ops) return []
+  let operations
+  try {
+    operations = readJson(args.ops)
+  } catch {
+    return []
+  }
+  const operation = Array.isArray(operations) ? operations[Number(operationIndex)] : undefined
+  if (!operation || typeof operation !== 'object') return []
+  const op = typeof operation.op === 'string' ? operation.op : error.details?.operation
+  if (!op) return []
+  const example = EDIT_OPERATION_EXAMPLES[op]
+  if (!example) return []
+  return [
+    {
+      description: `Valid ${op} operation shape.`,
+      ops: [{ callerId: `${op}Example`, ...example }],
+    },
+  ]
+}
+
+function correctExamplesFromHelp(help) {
+  const examples = Array.isArray(help.examples) ? help.examples : []
+  return {
+    correctExamples: examples.slice(0, 8),
+    ...(examples.length > 8 ? { correctExamplesTruncated: true } : {}),
   }
 }
 
@@ -369,60 +538,6 @@ class CliUsageError extends Error {
     this.fields = details.fields
     this.details = details
   }
-}
-
-function projectEditHelp() {
-  return {
-    command: 'project edit',
-    summary: 'Pass a complete operations JSON file through --ops and use the current revision.',
-    allowedOptions: PROJECT_EDIT_ALLOWED_OPTIONS,
-    canonicalCommand: PROJECT_EDIT_CANONICAL_COMMAND,
-    examples: [PROJECT_EDIT_CANONICAL_COMMAND, 'autocut-agent project get --id <project-id>'],
-    authoritativeItemIds: 'project.timeline.items[].id',
-    resultReferenceExample: { $ref: 'addClipA#/detail/id' },
-  }
-}
-
-function remotionRenderHelp() {
-  return {
-    command: 'remotion-render',
-    summary:
-      'Render one controlled transparent animation from its task.json without creating an AutoCut project.',
-    allowedOptions: REMOTION_RENDER_ALLOWED_OPTIONS,
-    canonicalCommand: REMOTION_RENDER_CANONICAL_COMMAND,
-    taskLayout: 'projects/<project-or-assets>/remotion/<task-id>/task.json',
-  }
-}
-
-function assertRemotionRenderArgs(args) {
-  const allowedKeys = new Set(['_', 'workspace', 'task', 'json', 'help'])
-  const unsupported = Object.keys(args).find((key) => !allowedKeys.has(key))
-  if (unsupported) {
-    throw remotionRenderUsageError(`--${unsupported} is not supported by remotion-render`, [
-      {
-        path: `--${unsupported}`,
-        message: 'option is not allowed',
-        code: 'unknown_option',
-      },
-    ])
-  }
-  if (args._.length !== 1) {
-    throw remotionRenderUsageError('remotion-render does not accept positional arguments')
-  }
-  if (typeof args.task !== 'string' || args.task.trim() === '') {
-    throw remotionRenderUsageError('--task is required', [
-      { path: '--task', message: 'option is required', code: 'required' },
-    ])
-  }
-}
-
-function remotionRenderUsageError(message, fields = []) {
-  return new CliUsageError(message, {
-    fields,
-    allowedOptions: REMOTION_RENDER_ALLOWED_OPTIONS,
-    canonicalCommand: REMOTION_RENDER_CANONICAL_COMMAND,
-    suggestion: remotionRenderHelp().summary,
-  })
 }
 
 function projectEditFailure(result, baseRevision) {
@@ -478,42 +593,38 @@ function editDistance(left, right) {
   return row[right.length]
 }
 
-function assertContainedOutput(workspace, outputPath) {
+function assertContainedOutput(workspace, outputPath, contract) {
   const relative = path.relative(path.resolve(workspace), path.resolve(outputPath))
   if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error('AutoCut render output must stay inside the project autocut workspace')
+    throw commandUsageError(
+      contract,
+      'AutoCut render output must stay inside the project autocut workspace',
+      [{ path: '--out', message: 'must stay inside the workspace', code: 'invalid_path' }],
+    )
   }
 }
 
 function createEditorUrl(args, env = process.env) {
   const editorUrl = env.AUTOCUT_EDITOR_URL?.trim()
   const projectToken = env.AUTOCUT_PROJECT_TOKEN?.trim()
-  if (!editorUrl) throw new Error('AUTOCUT_EDITOR_URL is required')
-  if (!projectToken) throw new Error('AUTOCUT_PROJECT_TOKEN is required')
+  if (!editorUrl || !projectToken) {
+    const missing = !editorUrl ? 'AUTOCUT_EDITOR_URL' : 'AUTOCUT_PROJECT_TOKEN'
+    const error = new Error(`${missing} is required`)
+    error.code = 'PREREQUISITE_ERROR'
+    error.details = {
+      nextActions: [
+        'Open the AutoCut extension panel and choose 下载并验证, then retry this command.',
+      ],
+    }
+    throw error
+  }
   const url = new URL(args.id ? `/editor/${encodeURIComponent(args.id)}` : '/projects', editorUrl)
   url.searchParams.set('autocutProjectToken', projectToken)
   return { url: url.toString() }
 }
 
 if (isMainModule(import.meta.url)) {
-  run()
-    .then((result) => console.log(JSON.stringify(result, null, 2)))
-    .catch((error) => {
-      const details = error?.details && typeof error.details === 'object' ? error.details : {}
-      console.error(
-        JSON.stringify({
-          ok: false,
-          apiVersion: HEADLESS_API_VERSION,
-          error: {
-            code: error.code ?? 'INTERNAL_ERROR',
-            message: error.message,
-            fields: error.fields ?? [],
-            ...details,
-          },
-        }),
-      )
-      process.exitCode = 1
-    })
+  await runAgentCli(run)
 }
 
 export { createEditorUrl, run }

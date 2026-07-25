@@ -92,10 +92,7 @@ test('AutoCut agent exposes compact capabilities and project edit help without a
   assert.equal(compact.ok, true)
   assert.equal(compact.compact, true)
   assert.ok(Buffer.byteLength(JSON.stringify(compact), 'utf8') < 16 * 1024)
-  assert.equal(
-    compact.canonicalCommands.remotionRender,
-    'autocut-agent remotion-render --task <task.json>',
-  )
+  assert.equal(compact.canonicalCommands.remotionRender, 'remotion-render --task <task.json>')
 
   const help = await run(['project', 'edit', '--help'])
   assert.equal(help.ok, true)
@@ -121,7 +118,7 @@ test('AutoCut agent dispatches remotion-render to the global runner without a br
   const calls = []
   try {
     const help = await run(['remotion-render', '--help'])
-    assert.equal(help.help.canonicalCommand, 'autocut-agent remotion-render --task <task.json>')
+    assert.equal(help.help.canonicalCommand, 'remotion-render --task <task.json>')
 
     const result = await run(['remotion-render', '--workspace', workspace, '--task', taskPath], {
       async renderRemotionTask(input) {
@@ -145,10 +142,7 @@ test('AutoCut agent dispatches remotion-render to the global runner without a br
       }),
       (error) => {
         assert.equal(error.code, 'CLI_USAGE_ERROR')
-        assert.equal(
-          error.details.canonicalCommand,
-          'autocut-agent remotion-render --task <task.json>',
-        )
+        assert.equal(error.details.canonicalCommand, 'remotion-render --task <task.json>')
         return true
       },
     )
@@ -267,14 +261,26 @@ test('failed project edit reports operation context and preserves project bytes 
       ]),
       (error) => {
         assert.equal(error.code, 'EDIT_OPERATION_FAILED')
-        assert.deepEqual(error.details, {
-          operationIndex: 1,
-          callerId: 'broken',
-          operation: 'addTransition',
-          baseRevision: created.revision,
-          persisted: false,
-          projectUnchanged: true,
-        })
+        assert.deepEqual(
+          {
+            operationIndex: error.details.operationIndex,
+            callerId: error.details.callerId,
+            operation: error.details.operation,
+            baseRevision: error.details.baseRevision,
+            persisted: error.details.persisted,
+            projectUnchanged: error.details.projectUnchanged,
+          },
+          {
+            operationIndex: 1,
+            callerId: 'broken',
+            operation: 'addTransition',
+            baseRevision: created.revision,
+            persisted: false,
+            projectUnchanged: true,
+          },
+        )
+        assert.equal(error.details.command, 'project edit')
+        assert.equal(error.details.correctExamples[0].ops[0].op, 'addTransition')
         return true
       },
     )

@@ -68,13 +68,27 @@ test('packaged AutoCut runtime includes standalone browser dependencies', async 
     await readFile(path.join(outputRoot, 'runtime-manifest.json'), 'utf8'),
   )
   assert.equal(runtimeManifest.entrypoints.remotionRenderer, 'headless/lib/remotion-renderer.mjs')
-  const packagedHelp = await execFileAsync(
-    process.execPath,
-    [path.join(outputRoot, 'headless', 'autocut-agent.mjs'), 'remotion-render', '--help'],
-    { cwd: outputRoot },
-  )
-  assert.equal(
-    JSON.parse(packagedHelp.stdout).help.canonicalCommand,
-    'autocut-agent remotion-render --task <task.json>',
+  const packagedRendererCli = path.join(outputRoot, 'bin', 'remotion-render')
+  const packagedEnvironment = { ...process.env, AUTOCUT_NODE: process.execPath }
+  const packagedHelp = await execFileAsync(packagedRendererCli, ['--help'], {
+    cwd: outputRoot,
+    env: packagedEnvironment,
+  })
+  const packagedHelpPayload = JSON.parse(packagedHelp.stdout)
+  assert.equal(packagedHelpPayload.ok, true)
+  assert.deepEqual(packagedHelpPayload.help.requiredOptions, ['--task'])
+  assert.equal(packagedHelpPayload.help.canonicalCommand, 'remotion-render --task <task.json>')
+  await assert.rejects(
+    execFileAsync(packagedRendererCli, [], {
+      cwd: outputRoot,
+      env: packagedEnvironment,
+    }),
+    (error) => {
+      const payload = JSON.parse(error.stderr)
+      assert.equal(payload.error.code, 'CLI_USAGE_ERROR')
+      assert.equal(payload.error.usage.command, 'remotion-render')
+      assert.equal(payload.error.usage.canonicalCommand, 'remotion-render --task <task.json>')
+      return true
+    },
   )
 })

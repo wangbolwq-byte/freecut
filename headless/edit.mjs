@@ -113,6 +113,13 @@ async function main() {
     await closeServers()
   }
 
+  if (result?.ok === false) {
+    const error = new Error(result.error?.message ?? 'Edit operation failed')
+    error.code = result.error?.code ?? 'EDIT_OPERATION_FAILED'
+    error.details = result.error
+    throw error
+  }
+
   if (!args.json) console.log('\nApplied ops:')
   for (const r of result.results) {
     if (!args.json)
@@ -149,9 +156,7 @@ async function main() {
     fs.writeFileSync(outPath, `${JSON.stringify(writtenProject, null, 2)}\n`)
   }
   if (args.json)
-    console.log(
-      JSON.stringify({ ...result, project: writtenProject, written: outPath, warnings }),
-    )
+    console.log(JSON.stringify({ ...result, project: writtenProject, written: outPath, warnings }))
   else console.log(`\nWrote: ${outPath}`)
   await releaseWriterLock?.()
 }

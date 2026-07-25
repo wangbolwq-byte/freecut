@@ -67,7 +67,10 @@ export async function renderRemotionTask(input) {
   const browserExecutable = await resolveBrowserExecutable(input.browserExecutable)
   const dependencies = input.dependencies ?? (await loadRemotionDependencies())
   const temporaryDirectory = await mkdtemp(path.join(taskDirectory, '.autocut-render-'))
-  const temporaryOutput = path.join(temporaryDirectory, 'render.webm')
+  const temporaryOutput = path.join(
+    temporaryDirectory,
+    task.renderMode === 'composition' ? 'render.mp4' : 'render.webm',
+  )
   const outputPath = resolveContained(
     taskDirectory,
     task.output,
@@ -131,22 +134,24 @@ export async function renderRemotionTask(input) {
     })
     assertCompositionMatchesTask(composition, task.composition)
 
-    const alphaSamples = await verifyCompositionHasTransparency({
+    const representativeFrames = await renderRepresentativeFrames({
       dependencies,
       composition,
       serveUrl,
       sharedBrowserOptions,
       temporaryDirectory,
+      requireTransparency: task.renderMode === 'transparent-overlay',
     })
+    const transparentOverlay = task.renderMode === 'transparent-overlay'
     const renderOptions = {
       composition,
       serveUrl,
       outputLocation: temporaryOutput,
       inputProps: task.inputProps,
       envVariables: {},
-      codec: 'vp9',
-      imageFormat: 'png',
-      pixelFormat: 'yuva420p',
+      codec: transparentOverlay ? 'vp9' : 'h264',
+      imageFormat: transparentOverlay ? 'png' : 'jpeg',
+      pixelFormat: transparentOverlay ? 'yuva420p' : 'yuv420p',
       muted: true,
       overwrite: true,
       concurrency: 1,
@@ -162,15 +167,24 @@ export async function renderRemotionTask(input) {
     await dependencies.renderMedia(renderOptions)
 
     const metadata = await dependencies.getVideoMetadata(temporaryOutput)
-    const alphaMode =
-      metadata.pixelFormat === 'yuva420p'
-        ? true
-        : await (dependencies.probeWebmAlpha ?? probeWebmAlpha)(temporaryOutput)
-    if (metadata.codec !== 'vp9' || !alphaMode) {
+    let alphaMode
+    if (transparentOverlay) {
+      alphaMode =
+        metadata.pixelFormat === 'yuva420p'
+          ? true
+          : await (dependencies.probeWebmAlpha ?? probeWebmAlpha)(temporaryOutput)
+      if (metadata.codec !== 'vp9' || !alphaMode) {
+        throw taskError(
+          'REMOTION_ALPHA_OUTPUT_INVALID',
+          `Transparent Remotion output must be VP9 with WebM alpha mode, received ${metadata.codec}/${metadata.pixelFormat ?? 'unknown'}`,
+          { codec: metadata.codec, pixelFormat: metadata.pixelFormat, alphaMode },
+        )
+      }
+    } else if (metadata.codec !== 'h264') {
       throw taskError(
-        'REMOTION_ALPHA_OUTPUT_INVALID',
-        `Transparent Remotion output must be VP9 with WebM alpha mode, received ${metadata.codec}/${metadata.pixelFormat ?? 'unknown'}`,
-        { codec: metadata.codec, pixelFormat: metadata.pixelFormat, alphaMode },
+        'REMOTION_COMPOSITION_OUTPUT_INVALID',
+        `Composition output must be H.264 MP4, received ${metadata.codec}/${metadata.pixelFormat ?? 'unknown'}`,
+        { codec: metadata.codec, pixelFormat: metadata.pixelFormat },
       )
     }
     if (metadata.width !== task.composition.width || metadata.height !== task.composition.height) {
@@ -179,6 +193,7 @@ export async function renderRemotionTask(input) {
         `Remotion output dimensions ${metadata.width}x${metadata.height} do not match ${task.composition.width}x${task.composition.height}`,
       )
     }
+    assertOutputTimingMatchesTask(metadata, task.composition)
 
     await mkdir(path.dirname(outputPath), { recursive: true })
     await rm(outputPath, { force: true })
@@ -187,18 +202,25 @@ export async function renderRemotionTask(input) {
     return {
       ok: true,
       taskId: task.taskId,
+      renderMode: task.renderMode,
       compositionId: task.composition.id,
       outputPath,
+      container: transparentOverlay ? 'webm' : 'mp4',
       codec: metadata.codec,
-      pixelFormat: 'yuva420p',
+      pixelFormat: transparentOverlay ? 'yuva420p' : 'yuv420p',
       probedPixelFormat: metadata.pixelFormat,
-      alphaMode,
       width: metadata.width,
       height: metadata.height,
       fps: task.composition.fps,
       durationInFrames: task.composition.durationInFrames,
-      alphaVerified: true,
-      alphaSampleFrames: alphaSamples,
+      ...(transparentOverlay
+        ? {
+            alphaMode,
+            alphaVerified: true,
+            alphaSampleFrames: representativeFrames.map((sample) => sample.frame),
+          }
+        : {}),
+      representativeFrames,
       sourceHash: hashInventory(sourceInventory),
       outputHash: `sha256:${createHash('sha256').update(outputBytes).digest('hex')}`,
     }
@@ -390,6 +412,7 @@ async function readTask(taskDirectory) {
     value,
     [
       'schemaVersion',
+      'renderMode',
       'taskId',
       'entryPoint',
       'componentExport',
@@ -402,6 +425,17 @@ async function readTask(taskDirectory) {
   if (value.schemaVersion !== 1) {
     throw taskError('REMOTION_TASK_CONFIG_INVALID', 'task.json schemaVersion must be 1')
   }
+  const renderMode =
+    value.renderMode === undefined
+      ? 'transparent-overlay'
+      : value.renderMode === 'transparent-overlay' || value.renderMode === 'composition'
+        ? value.renderMode
+        : (() => {
+            throw taskError(
+              'REMOTION_TASK_CONFIG_INVALID',
+              'renderMode must be transparent-overlay or composition',
+            )
+          })()
   const taskId = requirePortableId(value.taskId, 'taskId')
   if (taskId !== path.basename(taskDirectory)) {
     throw taskError(
@@ -441,23 +475,46 @@ async function readTask(taskDirectory) {
   const inputProps = value.inputProps ?? {}
   assertRecord(inputProps, 'inputProps')
   assertJsonValue(inputProps, 'inputProps')
+  const defaultOutputExtension = renderMode === 'composition' ? '.mp4' : '.webm'
   const output =
     value.output === undefined
-      ? `renders/${taskId}.webm`
+      ? `renders/${taskId}${defaultOutputExtension}`
       : requireRelativePath(value.output, 'output')
-  if (!output.startsWith('renders/') || path.extname(output).toLowerCase() !== '.webm') {
-    throw taskError('REMOTION_TASK_CONFIG_INVALID', 'output must be a .webm file below renders/')
+  if (
+    !output.startsWith('renders/') ||
+    path.extname(output).toLowerCase() !== defaultOutputExtension
+  ) {
+    throw taskError(
+      'REMOTION_TASK_CONFIG_INVALID',
+      `output must be a ${defaultOutputExtension} file below renders/ for ${renderMode}`,
+    )
   }
-  return { schemaVersion: 1, taskId, entryPoint, componentExport, composition, inputProps, output }
+  return {
+    schemaVersion: 1,
+    renderMode,
+    taskId,
+    entryPoint,
+    componentExport,
+    composition,
+    inputProps,
+    output,
+  }
 }
 
 async function validateSourceTree(taskDirectory, task) {
-  const sourceEntry = resolveContained(
+  const sourceEntryCandidate = resolveContained(
     taskDirectory,
     task.entryPoint,
     'REMOTION_SOURCE_OUTSIDE_TASK',
     'Remotion source entry',
   )
+  const sourceEntry = await realpath(sourceEntryCandidate).catch(() => sourceEntryCandidate)
+  if (!isContainedPath(taskDirectory, sourceEntry)) {
+    throw taskError(
+      'REMOTION_SOURCE_OUTSIDE_TASK',
+      'Remotion source entry must stay inside the task directory',
+    )
+  }
   if (!(await isFile(sourceEntry))) {
     throw taskError(
       'REMOTION_SOURCE_MISSING',
@@ -576,12 +633,7 @@ async function resolveLocalImport(taskDirectory, importer, specifier) {
   if (specifier.includes('?') || specifier.includes('#')) {
     throw taskError('REMOTION_IMPORT_FORBIDDEN', `Import query/hash is not allowed: ${specifier}`)
   }
-  const candidate = resolveContained(
-    taskDirectory,
-    path.relative(taskDirectory, path.resolve(path.dirname(importer), specifier)),
-    'REMOTION_IMPORT_OUTSIDE_TASK',
-    'Remotion import',
-  )
+  const candidate = path.resolve(path.dirname(importer), specifier)
   const possibilities = path.extname(candidate)
     ? [candidate]
     : [
@@ -591,7 +643,8 @@ async function resolveLocalImport(taskDirectory, importer, specifier) {
   for (const possibility of possibilities) {
     if (await isFile(possibility)) {
       await assertNotSymlink(possibility)
-      return possibility
+      const realFilePath = await realpath(possibility)
+      return realFilePath
     }
   }
   throw taskError(
@@ -680,12 +733,13 @@ async function writePrivateEntry({ temporaryDirectory, sourceEntry, task }) {
   return entryPath
 }
 
-async function verifyCompositionHasTransparency({
+async function renderRepresentativeFrames({
   dependencies,
   composition,
   serveUrl,
   sharedBrowserOptions,
   temporaryDirectory,
+  requireTransparency,
 }) {
   const frames = [
     0,
@@ -693,6 +747,7 @@ async function verifyCompositionHasTransparency({
     composition.durationInFrames - 1,
   ].filter((frame, index, values) => values.indexOf(frame) === index)
   let foundTransparentPixel = false
+  const samples = []
   for (const frame of frames) {
     const output = path.join(temporaryDirectory, `alpha-${frame}.png`)
     await dependencies.renderStill({
@@ -704,7 +759,13 @@ async function verifyCompositionHasTransparency({
       overwrite: true,
       ...sharedBrowserOptions,
     })
-    const image = PNG.sync.read(await readFile(output))
+    const bytes = await readFile(output)
+    samples.push({
+      frame,
+      hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    })
+    if (!requireTransparency) continue
+    const image = PNG.sync.read(bytes)
     for (let index = 3; index < image.data.length; index += 4) {
       if (image.data[index] < 255) {
         foundTransparentPixel = true
@@ -712,14 +773,33 @@ async function verifyCompositionHasTransparency({
       }
     }
   }
-  if (!foundTransparentPixel) {
+  if (requireTransparency && !foundTransparentPixel) {
     throw taskError(
       'REMOTION_ALPHA_NOT_PRESENT',
       'Remotion composition did not contain transparent pixels in representative frames',
       { sampledFrames: frames },
     )
   }
-  return frames
+  return samples
+}
+
+function assertOutputTimingMatchesTask(metadata, expected) {
+  if (typeof metadata.fps === 'number' && Math.abs(metadata.fps - expected.fps) > 0.01) {
+    throw taskError(
+      'REMOTION_OUTPUT_FPS_INVALID',
+      `Remotion output FPS ${metadata.fps} does not match ${expected.fps}`,
+    )
+  }
+  if (typeof metadata.durationInSeconds === 'number') {
+    const expectedDuration = expected.durationInFrames / expected.fps
+    const frameTolerance = 1 / expected.fps
+    if (Math.abs(metadata.durationInSeconds - expectedDuration) > frameTolerance) {
+      throw taskError(
+        'REMOTION_OUTPUT_DURATION_INVALID',
+        `Remotion output duration ${metadata.durationInSeconds}s does not match ${expectedDuration}s`,
+      )
+    }
+  }
 }
 
 function assertCompositionMatchesTask(composition, expected) {
@@ -795,6 +875,11 @@ function resolveContained(root, relativePath, code, label) {
     throw taskError(code, `${label} must stay inside the Remotion task directory`)
   }
   return resolved
+}
+
+function isContainedPath(root, target) {
+  const relative = path.relative(path.resolve(root), path.resolve(target))
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
 function requireRelativePath(value, field) {

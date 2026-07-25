@@ -6,10 +6,12 @@ import path from 'node:path'
 import {
   HEADLESS_API_VERSION,
   EDIT_OPERATION_NAMES,
+  EDIT_OPERATION_EXAMPLES,
   capabilities,
   compactCapabilities,
   editOpSchema,
   editRequestSchema,
+  lifecycleEditRequestSchema,
   normalizeRenderInput,
   renderRequestSchema,
   validate,
@@ -63,8 +65,11 @@ const samples = {
 
 test('every published edit discriminator has a valid strict schema', () => {
   assert.deepEqual(Object.keys(samples), EDIT_OPERATION_NAMES)
+  assert.deepEqual(Object.keys(EDIT_OPERATION_EXAMPLES), EDIT_OPERATION_NAMES)
   for (const op of EDIT_OPERATION_NAMES)
     assert.equal(editOpSchema.safeParse(samples[op]).success, true, op)
+  for (const op of EDIT_OPERATION_NAMES)
+    assert.equal(editOpSchema.safeParse(EDIT_OPERATION_EXAMPLES[op]).success, true, `${op} example`)
   assert.equal(editOpSchema.safeParse({ ...samples.addText, surprise: true }).success, false)
   assert.equal(editOpSchema.safeParse({ op: 'invented' }).success, false)
   assert.equal(
@@ -98,6 +103,71 @@ test('every published edit discriminator has a valid strict schema', () => {
       busAudioEq: { lowCutEnabled: 'yes' },
     }).success,
     false,
+  )
+})
+
+test('lifecycle edit validation reports operation-specific fields and common replacements', () => {
+  assert.deepEqual(
+    validate(lifecycleEditRequestSchema, {
+      ops: [
+        {
+          callerId: 'settingsDuration',
+          op: 'setProjectSettings',
+          duration: 90,
+        },
+      ],
+    }).ops[0],
+    {
+      callerId: 'settingsDuration',
+      op: 'setProjectSettings',
+      duration: 90,
+    },
+  )
+  assert.throws(
+    () =>
+      validate(lifecycleEditRequestSchema, {
+        ops: [
+          {
+            callerId: 'badTrack',
+            op: 'addTrack',
+            trackKind: 'video',
+          },
+        ],
+      }),
+    (error) => {
+      assert.equal(error.code, 'VALIDATION_ERROR')
+      assert.ok(
+        error.fields.some(
+          (field) =>
+            field.path === 'ops.0.trackKind' &&
+            field.message === 'use "kind" instead of "trackKind" for addTrack',
+        ),
+      )
+      assert.equal(
+        error.fields.some((field) => field.code === 'invalid_union'),
+        false,
+      )
+      return true
+    },
+  )
+  assert.throws(
+    () =>
+      validate(lifecycleEditRequestSchema, {
+        ops: [
+          {
+            callerId: 'badClip',
+            op: 'addClip',
+            mediaId: 'media',
+            startTime: 0,
+            duration: 90,
+          },
+        ],
+      }),
+    (error) => {
+      assert.ok(error.fields.some((field) => field.path === 'ops.0.startTime'))
+      assert.ok(error.fields.some((field) => field.path === 'ops.0.duration'))
+      return true
+    },
   )
 })
 
@@ -162,6 +232,8 @@ test('validation errors and capabilities are machine-readable and bounded', () =
     editingPlanMarkdown: true,
     nativeAnimation: true,
     remotionTransparentAsset: true,
+    remotionComposition: true,
+    remotionRenderModes: ['transparent-overlay', 'composition'],
   })
   assert.ok(result.schemas.render)
   assert.ok(result.lifecycle.routes.includes('GET /v1/projects/:id/snapshot'))
@@ -178,10 +250,7 @@ test('compact capabilities are complete, parseable, and remain below 16 KiB', ()
     result.canonicalCommands.projectEdit,
     'autocut-agent project edit --id <project-id> --ops <operations.json> --persist --expected-revision <revision>',
   )
-  assert.equal(
-    result.canonicalCommands.remotionRender,
-    'autocut-agent remotion-render --task <task.json>',
-  )
+  assert.equal(result.canonicalCommands.remotionRender, 'remotion-render --task <task.json>')
   assert.equal(result.authoritativeProjectPaths.timelineItems, 'project.timeline.items')
   assert.deepEqual(result.projectEdit.resultReferences.example, {
     $ref: 'addClipA#/detail/id',
