@@ -236,6 +236,70 @@ export const AUTOCUT_AGENT_COMMAND_CONTRACTS = Object.freeze({
       },
     ],
   }),
+  'render submit': command({
+    path: ['render', 'submit'],
+    summary: 'Submit a Host-managed render that keeps running after this terminal command exits.',
+    options: [
+      '--project',
+      '--out',
+      '--codec',
+      '--container',
+      '--resolution',
+      '--fps',
+      '--quality',
+      '--preset',
+      '--duration',
+      '--in',
+      '--out-sec',
+      '--audio-only',
+      '--allow-missing-media',
+    ],
+    flags: ['--audio-only', '--allow-missing-media'],
+    required: ['--project'],
+    examples: [
+      {
+        description: 'Submit a durable background render.',
+        command:
+          'autocut-agent render submit --project <project-id> --out projects/<project-id>/renders/final.mp4 --preset final',
+      },
+    ],
+  }),
+  'render status': command({
+    path: ['render', 'status'],
+    summary: 'Read the current Host-managed render status and progress.',
+    options: ['--ref'],
+    required: ['--ref'],
+    examples: [
+      {
+        description: 'Read render progress.',
+        command: 'autocut-agent render status --ref <autocut-render-ref>',
+      },
+    ],
+  }),
+  'render output': command({
+    path: ['render', 'output'],
+    summary: 'Read the verified output of a completed Host-managed render.',
+    options: ['--ref'],
+    required: ['--ref'],
+    examples: [
+      {
+        description: 'Read a completed render output.',
+        command: 'autocut-agent render output --ref <autocut-render-ref>',
+      },
+    ],
+  }),
+  'render cancel': command({
+    path: ['render', 'cancel'],
+    summary: 'Explicitly cancel a Host-managed render.',
+    options: ['--ref'],
+    required: ['--ref'],
+    examples: [
+      {
+        description: 'Cancel a render.',
+        command: 'autocut-agent render cancel --ref <autocut-render-ref>',
+      },
+    ],
+  }),
   'remotion-render': command({
     path: ['remotion-render'],
     summary:
@@ -313,8 +377,11 @@ export function normalizeCommandArgv(argv) {
 export function resolveCommand(argv) {
   const first = argv[0]
   if (!first || first === '--help') return { kind: 'help', help: groupHelp() }
-  if (first === 'project' || first === 'media') {
+  if (first === 'project' || first === 'media' || first === 'render') {
     const second = argv[1]
+    if (first === 'render' && (!second || second.startsWith('-'))) {
+      return { kind: 'command', contract: commandContract('render') }
+    }
     if (!second || second === '--help') return { kind: 'help', help: groupHelp(first) }
     const contract = commandContract(`${first} ${second}`)
     if (contract) return { kind: 'command', contract }

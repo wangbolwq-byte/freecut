@@ -359,6 +359,90 @@ test('broker page sends only known operations and captures render downloads', as
   }
 })
 
+test('managed render submit returns after Host queueing and status uses the durable reference', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autocut-managed-render-'))
+  const endpoint =
+    process.platform === 'win32'
+      ? `\\\\.\\pipe\\autocut-managed-render-${process.pid}-${Date.now()}`
+      : path.join(root, 'broker.sock')
+  const requests = []
+  const server = net.createServer((socket) => {
+    socket.setEncoding('utf8')
+    let buffer = ''
+    socket.on('data', (chunk) => {
+      buffer += chunk
+      const newline = buffer.indexOf('\n')
+      if (newline === -1) return
+      const request = JSON.parse(buffer.slice(0, newline))
+      requests.push(request)
+      const result =
+        request.operation === 'renderSubmit'
+          ? { renderRef: 'autocut-render://render-1', status: 'queued', projectVersion: 'v1' }
+          : {
+              renderRef: 'autocut-render://render-1',
+              status: 'running',
+              progress: { percent: 48, message: 'rendering' },
+            }
+      socket.end(`${JSON.stringify({ ok: true, result })}\n`)
+    })
+  })
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(endpoint, resolve)
+  })
+  const previousEndpoint = process.env.AUTOCUT_BROKER_ENDPOINT
+  const previousToken = process.env.AUTOCUT_BROKER_TOKEN
+  process.env.AUTOCUT_BROKER_ENDPOINT = endpoint
+  process.env.AUTOCUT_BROKER_TOKEN = 'managed-token'
+  try {
+    const created = await createProjectResource(root, {
+      id: 'demo',
+      name: 'Demo',
+      description: '',
+      createdAt: 1,
+      updatedAt: 1,
+      duration: 0,
+      schemaVersion: 14,
+      metadata: { width: 1920, height: 1080, fps: 30 },
+      timeline: { tracks: [], items: [] },
+    })
+    const submitted = await run([
+      'render',
+      'submit',
+      '--workspace',
+      root,
+      '--project',
+      'demo',
+      '--out',
+      'projects/demo/renders/final.mp4',
+      '--preset',
+      'final',
+    ])
+    assert.equal(submitted.render.status, 'queued')
+    assert.equal(requests[0].operation, 'renderSubmit')
+    assert.equal(requests[0].payload.expectedRevision, created.revision)
+    assert.equal(requests[0].payload.settings.preset, 'final')
+
+    const status = await run([
+      'render',
+      'status',
+      '--workspace',
+      root,
+      '--ref',
+      submitted.render.renderRef,
+    ])
+    assert.equal(status.render.status, 'running')
+    assert.equal(status.render.progress.percent, 48)
+    assert.equal(requests[1].operation, 'renderStatus')
+    assert.deepEqual(requests[1].payload, { renderRef: 'autocut-render://render-1' })
+  } finally {
+    restoreEnvironment('AUTOCUT_BROKER_ENDPOINT', previousEndpoint)
+    restoreEnvironment('AUTOCUT_BROKER_TOKEN', previousToken)
+    await new Promise((resolve) => server.close(resolve))
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 function restoreEnvironment(key, value) {
   if (value === undefined) delete process.env[key]
   else process.env[key] = value

@@ -7,6 +7,7 @@ export function auditRemixProject(project, options = {}) {
     (item) => !options.trackId || item.trackId === options.trackId,
   )
   const issues = []
+  const uncoveredCuts = []
 
   for (const [trackId, trackItems] of groupBy(items, (item) => item.trackId)) {
     const track = tracks.get(trackId)
@@ -29,6 +30,24 @@ export function auditRemixProject(project, options = {}) {
             frames: previousEnd - currentStart,
           }),
         )
+      }
+      if (
+        currentStart === previousEnd &&
+        track?.kind !== 'audio' &&
+        isVisualItem(previous) &&
+        isVisualItem(current)
+      ) {
+        const transition = (timeline.transitions ?? []).find(
+          (entry) => entry.leftClipId === previous.id && entry.rightClipId === current.id,
+        )
+        if (!transition) {
+          uncoveredCuts.push({
+            leftClipId: previous.id,
+            rightClipId: current.id,
+            trackId,
+            cutFrame: currentStart,
+          })
+        }
       }
     }
   }
@@ -143,16 +162,187 @@ export function auditRemixProject(project, options = {}) {
     }
   }
 
+  const semanticFacts = collectSemanticFacts({ timeline, tracks, items, uncoveredCuts })
+
   return {
     ok: issues.length === 0,
     mode: 'remix',
     projectId: project?.id,
     issues,
+    semanticFacts,
     metrics: {
       itemCount: items.length,
       duplicateRangeCount,
       frontLoadedRangeCount,
     },
+  }
+}
+
+function collectSemanticFacts({ timeline, tracks, items, uncoveredCuts }) {
+  const itemById = new Map(items.map((item) => [item.id, item]))
+  const positionAnimations = (timeline.keyframes ?? []).flatMap((entry) => {
+    const properties = (entry.properties ?? []).filter(
+      (property) => property.property === 'x' || property.property === 'y',
+    )
+    if (properties.length === 0) return []
+    const axes = Object.fromEntries(
+      properties.map((property) => {
+        const values = (property.keyframes ?? []).map((keyframe) => keyframe.value)
+        return [
+          property.property,
+          {
+            keyframes: property.keyframes ?? [],
+            displacement: values.length > 0 ? Math.max(...values) - Math.min(...values) : 0,
+          },
+        ]
+      }),
+    )
+    const displacement = Math.hypot(axes.x?.displacement ?? 0, axes.y?.displacement ?? 0)
+    return [{ itemId: entry.itemId, axes, displacement, hasActualMotion: displacement > 0 }]
+  })
+  const animationByItem = new Map(positionAnimations.map((entry) => [entry.itemId, entry]))
+  const overlayPositions = items
+    .filter((item) => item.type === 'image' || item.type === 'lottie')
+    .map((item) => ({
+      itemId: item.id,
+      itemType: item.type,
+      from: item.from ?? 0,
+      to: (item.from ?? 0) + (item.durationInFrames ?? 0),
+      positionAnimation: animationByItem.get(item.id) ?? null,
+    }))
+  const transitions = (timeline.transitions ?? []).map((transition) => {
+    const left = itemById.get(transition.leftClipId)
+    const right = itemById.get(transition.rightClipId)
+    const cutFrame =
+      right?.from ??
+      (left?.from ?? 0) + (left?.durationInFrames ?? transition.durationInFrames ?? 0)
+    const duration = transition.durationInFrames ?? 0
+    const alignment = transition.alignment ?? 0.5
+    const beforeCut = Math.round(duration * alignment)
+    return {
+      id: transition.id,
+      type: transition.type,
+      presentation: transition.presentation,
+      leftClipId: transition.leftClipId,
+      rightClipId: transition.rightClipId,
+      durationInFrames: duration,
+      coverage: {
+        from: cutFrame - beforeCut,
+        to: cutFrame - beforeCut + duration,
+      },
+    }
+  })
+  const audioTracks = [...tracks.values()]
+    .filter((track) => (track.kind ?? 'video') === 'audio')
+    .map((track) => {
+      const trackItems = items.filter((item) => item.trackId === track.id && item.type === 'audio')
+      const sourceAudioItems = trackItems.filter((item) => item.linkedGroupId)
+      const musicItems = trackItems.filter((item) => !item.linkedGroupId)
+      return {
+        trackId: track.id,
+        name: track.name,
+        muted: track.muted === true,
+        volumeDb: track.volume ?? 0,
+        sourceAudioItemIds: sourceAudioItems.map((item) => item.id),
+        musicItemIds: musicItems.map((item) => item.id),
+        coverage: intervalCoverage(trackItems),
+        musicCoverage: intervalCoverage(musicItems),
+      }
+    })
+  const gpuEffects = items.flatMap((item) =>
+    (item.effects ?? [])
+      .filter((effect) => effect.enabled !== false)
+      .map((effect) => ({
+        itemId: item.id,
+        effectId: effect.id,
+        gpuEffectType: effect.effect?.gpuEffectType,
+        coverage: {
+          from: item.from ?? 0,
+          to: (item.from ?? 0) + (item.durationInFrames ?? 0),
+        },
+      })),
+  )
+  const durationFrames = Math.max(
+    0,
+    ...items.map((item) => (item.from ?? 0) + (item.durationInFrames ?? 0)),
+  )
+  const musicCoverage = intervalCoverage(
+    items.filter((item) => item.type === 'audio' && !item.linkedGroupId),
+  )
+  const findings = [
+    ...overlayPositions
+      .filter((item) => !item.positionAnimation?.hasActualMotion)
+      .map((item) => ({
+        code: 'static_overlay_position',
+        itemIds: [item.itemId],
+        fact: 'Overlay has no distinct x/y keyframe values.',
+      })),
+    ...uncoveredCuts.map((cut) => ({
+      code: 'cut_without_transition',
+      itemIds: [cut.leftClipId, cut.rightClipId],
+      fact: 'Adjacent visual clips meet at a cut with no transition record.',
+      cutFrame: cut.cutFrame,
+    })),
+    ...(timeline.masterBusDb <= -59 && audioTracks.some((track) => !track.muted)
+      ? [
+          {
+            code: 'master_bus_used_for_source_mute',
+            itemIds: [],
+            fact: 'The master bus is effectively silent while one or more audio tracks remain unmuted.',
+          },
+        ]
+      : []),
+    ...(musicCoverage.frames < durationFrames
+      ? [
+          {
+            code: 'background_music_undercoverage',
+            itemIds: [],
+            fact: `Unlinked audio covers ${musicCoverage.frames} of ${durationFrames} project frames.`,
+          },
+        ]
+      : []),
+  ]
+  return {
+    positionAnimations,
+    overlayPositions,
+    transitions,
+    uncoveredCuts,
+    audio: {
+      masterBusDb: timeline.masterBusDb ?? 0,
+      volumeUnit: 'dB',
+      zeroDbMeaning: 'unity_gain',
+      tracks: audioTracks,
+      backgroundMusicCoverage: musicCoverage,
+      projectDurationFrames: durationFrames,
+    },
+    gpuEffects,
+    findings,
+  }
+}
+
+function isVisualItem(item) {
+  return (
+    item.type === 'video' || item.type === 'image' || item.type === 'text' || item.type === 'lottie'
+  )
+}
+
+function intervalCoverage(items) {
+  const intervals = items
+    .map((item) => ({
+      from: item.from ?? 0,
+      to: (item.from ?? 0) + (item.durationInFrames ?? 0),
+    }))
+    .filter((interval) => interval.to > interval.from)
+    .sort((left, right) => left.from - right.from)
+  const merged = []
+  for (const interval of intervals) {
+    const previous = merged.at(-1)
+    if (!previous || interval.from > previous.to) merged.push({ ...interval })
+    else previous.to = Math.max(previous.to, interval.to)
+  }
+  return {
+    ranges: merged,
+    frames: merged.reduce((total, interval) => total + interval.to - interval.from, 0),
   }
 }
 

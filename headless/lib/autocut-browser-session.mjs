@@ -8,7 +8,7 @@ import { startHarness } from './render-core.mjs'
 import { PageSession } from './page-session.mjs'
 
 const BROKER_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
-const BROKER_DEFAULT_TIMEOUT_MS = 30 * 60_000
+const BROKER_DEFAULT_TIMEOUT_MS = 0
 
 export async function withAutoCutBrowserSession({ workspace, args, env = process.env }, operation) {
   const endpoint = env.AUTOCUT_BROKER_ENDPOINT?.trim()
@@ -51,7 +51,11 @@ async function withBrokerSession({ workspace, args, env, endpoint }, operation) 
     throw new Error('AUTOCUT_HEADLESS_URL is required when AUTOCUT_BROKER_ENDPOINT is configured')
   }
   const harness = await startHarness({ workspace, devUrl: harnessUrl, build: false })
-  const page = new AutoCutBrokerPage({ endpoint, token })
+  const page = new AutoCutBrokerPage({
+    endpoint,
+    token,
+    requestId: env.AUTOCUT_MANAGED_RENDER_TASK_ID?.trim(),
+  })
   try {
     return await operation(page, harness.mediaUrlOf)
   } finally {
@@ -63,9 +67,10 @@ async function withBrokerSession({ workspace, args, env, endpoint }, operation) 
 export class AutoCutBrokerPage {
   #pendingDownload
 
-  constructor({ endpoint, token }) {
+  constructor({ endpoint, token, requestId }) {
     this.endpoint = endpoint
     this.token = token
+    this.requestId = requestId
   }
 
   async evaluate(callback, payload) {
@@ -75,6 +80,7 @@ export class AutoCutBrokerPage {
       token: this.token,
       operation,
       payload,
+      requestId: this.requestId,
       timeoutMs: operation === 'renderProject' ? BROKER_DEFAULT_TIMEOUT_MS : 120_000,
     })
     return operation === 'renderProject' ? this.#completeRender(result) : result
@@ -164,9 +170,11 @@ function operationFromCallback(callback) {
   throw new Error('AutoCut broker rejected an unknown page operation')
 }
 
-async function requestBroker({ endpoint, token, operation, payload, timeoutMs }) {
+async function requestBroker({ endpoint, token, operation, payload, requestId, timeoutMs }) {
   const socket = net.createConnection(endpoint)
-  socket.write(`${JSON.stringify({ token, operation, payload })}\n`)
+  socket.write(
+    `${JSON.stringify({ token, operation, payload, ...(requestId ? { requestId } : {}) })}\n`,
+  )
   const frame = await readBrokerFrame(socket, operation, timeoutMs)
   return parseBrokerFrame(frame)
 }
@@ -183,7 +191,7 @@ function readBrokerFrame(socket, operation, timeoutMs) {
       socket.destroy()
       callback()
     }
-    socket.setTimeout(timeoutMs)
+    if (timeoutMs > 0) socket.setTimeout(timeoutMs)
     socket.on('data', (chunk) => {
       receivedBytes += Buffer.byteLength(chunk)
       if (receivedBytes > BROKER_MAX_RESPONSE_BYTES) {
@@ -199,6 +207,12 @@ function readBrokerFrame(socket, operation, timeoutMs) {
       finish(() => reject(new Error('AutoCut broker closed without a response'))),
     )
   })
+}
+
+export async function requestAutoCutHost(operation, payload, env = process.env) {
+  const endpoint = requireEnvironmentValue(env, 'AUTOCUT_BROKER_ENDPOINT')
+  const token = requireEnvironmentValue(env, 'AUTOCUT_BROKER_TOKEN')
+  return await requestBroker({ endpoint, token, operation, payload, timeoutMs: 120_000 })
 }
 
 function parseBrokerFrame(frame) {

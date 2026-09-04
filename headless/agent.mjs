@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs'
+import crypto from 'node:crypto'
 import path from 'node:path'
 import { parseArgs } from './lib/cli.mjs'
 import {
@@ -11,6 +12,7 @@ import {
 } from './lib/agent-command-contracts.mjs'
 import {
   assertAutoCutWorkspace,
+  requestAutoCutHost,
   withAutoCutBrowserSession,
 } from './lib/autocut-browser-session.mjs'
 import { runAgentCli } from './lib/agent-cli.mjs'
@@ -93,7 +95,25 @@ async function run(argv = process.argv.slice(2), dependencies = {}) {
     throw contextualizeCommandError(error, contract)
   }
   try {
-    return await runCommand(args, dependencies, contract)
+    const receipt = createHostReceipt(args, contract)
+    if (receipt) await recordHostReceipt({ ...receipt, status: 'started' })
+    try {
+      const result = await runCommand(args, dependencies, contract)
+      if (receipt) await recordHostReceipt({ ...receipt, status: 'succeeded' })
+      return result
+    } catch (error) {
+      if (receipt) {
+        await recordHostReceipt({
+          ...receipt,
+          status: 'failed',
+          error: {
+            code: error?.code ?? 'AUTOCUT_OPERATION_FAILED',
+            message: error instanceof Error ? error.message : String(error),
+          },
+        })
+      }
+      throw error
+    }
   } catch (error) {
     throw contextualizeCommandError(error, contract, args)
   }
@@ -157,6 +177,26 @@ async function runCommand(args, dependencies, contract) {
         taskDirectory: path.dirname(taskPath),
       }),
     )
+  }
+  if (group === 'render' && action === 'status') {
+    return envelope({ render: await requestAutoCutHost('renderStatus', { renderRef: args.ref }) })
+  }
+  if (group === 'render' && action === 'output') {
+    const render = await requestAutoCutHost('renderOutput', { renderRef: args.ref })
+    if (render?.status !== 'completed') {
+      const error = new Error(`Render is ${render?.status ?? 'not available'}`)
+      error.code = 'AUTOCUT_RENDER_NOT_COMPLETED'
+      error.details = { render }
+      throw error
+    }
+    return envelope({ render })
+  }
+  if (group === 'render' && action === 'cancel') {
+    return envelope({ render: await requestAutoCutHost('renderCancel', { renderRef: args.ref }) })
+  }
+  if (group === 'render' && action === 'submit') {
+    const request = await managedRenderRequest(workspace, args, contract)
+    return envelope({ render: await requestAutoCutHost('renderSubmit', request) })
   }
   if (group === 'render') {
     const outputPath = args.out
@@ -354,6 +394,76 @@ async function runCommand(args, dependencies, contract) {
     }
     throw commandUsageError(contract, `Unknown command: ${group} ${action}`)
   })
+}
+
+async function managedRenderRequest(workspace, args, contract) {
+  const outputPath = args.out
+    ? path.resolve(workspace, args.out)
+    : path.join(workspace, 'exports', `${args.project}-render`)
+  assertContainedOutput(workspace, outputPath, contract)
+  const current = await getProjectResource(workspace, args.project)
+  const normalized = validate(
+    renderRequestSchema,
+    normalizeRenderInput({
+      project: args.project,
+      out: outputPath,
+      ...(args.codec ? { codec: args.codec } : {}),
+      ...(args.container ? { container: args.container } : {}),
+      ...(args.resolution ? { resolution: args.resolution } : {}),
+      ...(args.fps ? { fps: args.fps } : {}),
+      ...(args.quality ? { quality: args.quality } : {}),
+      preset: args.preset ?? 'balanced',
+      ...(args.duration ? { duration: args.duration } : {}),
+      ...(args.in ? { in: args.in } : {}),
+      ...(args['out-sec'] ? { 'out-sec': args['out-sec'] } : {}),
+      ...(args['audio-only'] ? { 'audio-only': true } : {}),
+    }),
+  )
+  const { project: _project, projectObject: _projectObject, out: _out, ...settings } = normalized
+  return {
+    projectId: args.project,
+    expectedRevision: current.revision,
+    outputPath,
+    settings: {
+      ...settings,
+      ...(args['allow-missing-media'] ? { allowMissingMedia: true } : {}),
+    },
+  }
+}
+
+function createHostReceipt(args, contract, env = process.env) {
+  if (!env.AUTOCUT_BROKER_ENDPOINT?.trim() || !env.AUTOCUT_BROKER_TOKEN?.trim()) return undefined
+  const [group, action] = args._
+  const tracksProject =
+    (group === 'project' && ['create', 'save', 'update', 'edit', 'audit'].includes(action)) ||
+    (group === 'media' && ['import', 'probe'].includes(action)) ||
+    (group === 'render' && !action && !env.AUTOCUT_MANAGED_RENDER_TASK_ID?.trim())
+  if (!tracksProject) return undefined
+  const projectId =
+    group === 'project'
+      ? (args.id ?? (action === 'create' ? undefined : args.project))
+      : group === 'media'
+        ? args.project
+        : args.project
+  if (!projectId) return undefined
+  return {
+    receiptId: crypto.randomUUID(),
+    command: contract.key,
+    projectId,
+  }
+}
+
+async function recordHostReceipt(receipt) {
+  try {
+    await requestAutoCutHost('recordProjectState', {
+      ...receipt,
+      occurredAt: new Date().toISOString(),
+    })
+  } catch (error) {
+    console.error(
+      `AutoCut Host state receipt warning: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
 }
 
 function parseCliArgs(argv, contract) {

@@ -388,10 +388,17 @@ function applyOp(op: EditOp): unknown {
       const added = addTransition(
         left,
         right,
-        asString(op.type) as Parameters<typeof addTransition>[2],
+        'crossfade',
         asNumber(op.durationInFrames),
+        asString(op.presentation) as Parameters<typeof addTransition>[4],
+        asString(op.direction) as Parameters<typeof addTransition>[5],
+        asNumber(op.alignment, 0.5),
       )
-      if (!added) throw new Error(`addTransition failed for clips "${left}" and "${right}"`)
+      if (!added) {
+        throw new Error(
+          `addTransition failed for clips "${left}" and "${right}"; clips must meet on one track and have source handles around the cut`,
+        )
+      }
       return { added }
     }
     case 'addTrack': {

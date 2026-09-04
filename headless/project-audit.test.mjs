@@ -120,3 +120,112 @@ test('remix audit rejects source ranges that move backward along the timeline', 
   assert.equal(result.ok, false)
   assert.ok(result.issues.some((issue) => issue.code === 'source_range_not_monotonic'))
 })
+
+test('remix audit reports motion, transition, audio, music, and GPU coverage as facts', () => {
+  const project = {
+    id: 'semantic-project',
+    timeline: {
+      masterBusDb: 0,
+      tracks: [
+        { id: 'video-track', kind: 'video' },
+        { id: 'source-audio', kind: 'audio', name: 'Original', muted: true, volume: 0 },
+        { id: 'music-track', kind: 'audio', name: 'Music', muted: false, volume: -8 },
+        { id: 'overlay-track', kind: 'video' },
+      ],
+      items: [
+        {
+          id: 'video-a',
+          type: 'video',
+          trackId: 'video-track',
+          from: 0,
+          durationInFrames: 90,
+          mediaId: 'media-a',
+          sourceStart: 30,
+          sourceEnd: 120,
+          sourceDuration: 600,
+          effects: [{ id: 'blur', enabled: true, effect: { gpuEffectType: 'gpu-gaussian-blur' } }],
+        },
+        {
+          id: 'video-b',
+          type: 'video',
+          trackId: 'video-track',
+          from: 90,
+          durationInFrames: 90,
+          mediaId: 'media-b',
+          sourceStart: 30,
+          sourceEnd: 120,
+          sourceDuration: 600,
+        },
+        {
+          id: 'sticker',
+          type: 'image',
+          trackId: 'overlay-track',
+          from: 0,
+          durationInFrames: 180,
+        },
+        {
+          id: 'original-audio',
+          type: 'audio',
+          trackId: 'source-audio',
+          from: 0,
+          durationInFrames: 180,
+          linkedGroupId: 'linked-original',
+        },
+        {
+          id: 'music',
+          type: 'audio',
+          trackId: 'music-track',
+          from: 0,
+          durationInFrames: 120,
+        },
+      ],
+      transitions: [
+        {
+          id: 'transition-a-b',
+          type: 'crossfade',
+          presentation: 'slide',
+          direction: 'from-left',
+          leftClipId: 'video-a',
+          rightClipId: 'video-b',
+          durationInFrames: 15,
+          alignment: 0.5,
+        },
+      ],
+      keyframes: [
+        {
+          itemId: 'sticker',
+          properties: [
+            {
+              property: 'x',
+              keyframes: [
+                { id: 'x-start', frame: 0, value: -300, easing: 'linear' },
+                { id: 'x-end', frame: 179, value: 300, easing: 'linear' },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  }
+
+  const facts = auditRemixProject(project).semanticFacts
+  assert.equal(facts.overlayPositions[0].positionAnimation.hasActualMotion, true)
+  assert.equal(facts.overlayPositions[0].positionAnimation.displacement, 600)
+  assert.deepEqual(facts.transitions[0].coverage, { from: 82, to: 97 })
+  assert.equal(facts.uncoveredCuts.length, 0)
+  assert.deepEqual(
+    facts.audio.tracks.map(({ trackId, muted, volumeDb }) => ({ trackId, muted, volumeDb })),
+    [
+      { trackId: 'source-audio', muted: true, volumeDb: 0 },
+      { trackId: 'music-track', muted: false, volumeDb: -8 },
+    ],
+  )
+  assert.equal(facts.audio.zeroDbMeaning, 'unity_gain')
+  assert.equal(facts.audio.backgroundMusicCoverage.frames, 120)
+  assert.deepEqual(facts.gpuEffects[0].coverage, { from: 0, to: 90 })
+  assert.ok(facts.findings.some((finding) => finding.code === 'background_music_undercoverage'))
+  assert.equal(
+    facts.findings.some((finding) => finding.code === 'static_overlay_position'),
+    false,
+  )
+})

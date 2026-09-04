@@ -7,6 +7,7 @@ import {
   HEADLESS_API_VERSION,
   EDIT_OPERATION_NAMES,
   EDIT_OPERATION_EXAMPLES,
+  TRANSITION_PRESENTATIONS,
   capabilities,
   compactCapabilities,
   editOpSchema,
@@ -31,7 +32,14 @@ const samples = {
   split: { op: 'split', id: 'i', frame: 1 },
   trimStart: { op: 'trimStart', id: 'i', amount: 1 },
   trimEnd: { op: 'trimEnd', id: 'i', amount: 1 },
-  addTransition: { op: 'addTransition', leftClipId: 'a', rightClipId: 'b', type: 'crossfade' },
+  addTransition: {
+    op: 'addTransition',
+    leftClipId: 'a',
+    rightClipId: 'b',
+    type: 'crossfade',
+    presentation: 'slide',
+    direction: 'from-left',
+  },
   addTrack: { op: 'addTrack', kind: 'audio', order: 2 },
   updateTrack: { op: 'updateTrack', id: 'v', updates: { name: 'Video', locked: true } },
   removeTrack: { op: 'removeTrack', id: 'v' },
@@ -181,6 +189,22 @@ test('edit request requires exactly one project source and nonempty valid ops', 
   assert.equal(editRequestSchema.safeParse({ project: 'p', ops: [samples.addText] }).success, true)
 })
 
+test('headless semantics expose real position motion, transition presentations, and dB audio', () => {
+  assert.ok(TRANSITION_PRESENTATIONS.includes('slide'))
+  assert.ok(TRANSITION_PRESENTATIONS.includes('glitch'))
+  assert.equal(
+    editOpSchema.safeParse({ ...samples.addTransition, presentation: 'not-registered' }).success,
+    false,
+  )
+  const full = capabilities()
+  assert.deepEqual(full.semantics.transform.positionProperties, ['x', 'y'])
+  assert.equal(full.semantics.transform.opacityIsNotPositionMotion, true)
+  assert.deepEqual(full.semantics.transitions.presentations, TRANSITION_PRESENTATIONS)
+  assert.equal(full.semantics.audio.volumeUnit, 'dB')
+  assert.equal(full.semantics.audio.unityGainDb, 0)
+  assert.equal(EDIT_OPERATION_EXAMPLES.addKeyframe.property, 'x')
+})
+
 test('render request enforces finite bounds, ranges, enums, and canonical HTTP fields', () => {
   assert.equal(
     renderRequestSchema.safeParse({ project: 'p', fps: 1, resolution: '16x16' }).success,
@@ -251,7 +275,11 @@ test('compact capabilities are complete, parseable, and remain below 16 KiB', ()
     'autocut-agent project edit --id <project-id> --ops <operations.json> --persist --expected-revision <revision>',
   )
   assert.equal(result.canonicalCommands.remotionRender, 'remotion-render --task <task.json>')
+  assert.match(result.canonicalCommands.renderSubmit, /render submit/)
+  assert.match(result.canonicalCommands.renderStatus, /render status/)
   assert.equal(result.authoritativeProjectPaths.timelineItems, 'project.timeline.items')
+  assert.deepEqual(result.semantics.animatablePositionProperties, ['x', 'y'])
+  assert.equal(result.semantics.zeroDbMeaning, 'unity gain, not mute')
   assert.deepEqual(result.projectEdit.resultReferences.example, {
     $ref: 'addClipA#/detail/id',
   })
