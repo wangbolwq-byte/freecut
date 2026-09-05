@@ -347,7 +347,11 @@ const opSchemas = [
       from: frame.optional(),
       trackId: id.optional(),
       durationInFrames: positiveFrames.optional(),
-      sourceStart: frame.optional(),
+      sourceStart: frame
+        .describe(
+          'Source-media frames, not seconds. Convert seconds with Math.round(seconds * sourceFps). Timeline from/durationInFrames use project FPS.',
+        )
+        .optional(),
     })
     .strict(),
   z
@@ -534,7 +538,8 @@ function samplesDescription(name) {
     addTrack: 'Add a video or audio track',
     updateTrack: 'Update an existing timeline track',
     removeTrack: 'Remove an existing timeline track',
-    addClip: 'Add workspace media as a clip',
+    addClip:
+      'Add workspace media as a clip; sourceStart is source frames (seconds * sourceFps), while from and durationInFrames are project frames',
     addKeyframe: 'Add a property keyframe',
     removeKeyframes: 'Remove keyframes for a property',
     addEffect: 'Add a registered GPU effect',
@@ -656,9 +661,21 @@ export const lifecycleEditRequestSchema = z
     persist: z.boolean().optional(),
     expectedRevision: revisionSchema.optional(),
     force: z.boolean().optional(),
+    idempotencyKey: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/)
+      .optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
+    if (value.idempotencyKey && value.persist !== true)
+      ctx.addIssue({
+        code: 'custom',
+        path: ['idempotencyKey'],
+        message: 'idempotencyKey requires persist: true',
+      })
     const callers = new Set()
     const referenceFields = new Set([
       'id',
@@ -896,6 +913,7 @@ export function capabilities() {
       nativeAnimation: true,
       remotionTransparentAsset: true,
       remotionComposition: true,
+      remotionNpmDependencies: true,
       remotionRenderModes: ['transparent-overlay', 'composition'],
     },
     agentGuidance: {
@@ -922,6 +940,20 @@ export function capabilities() {
       transitionPresentations: TRANSITION_PRESENTATIONS,
     },
     semantics: {
+      sourceTime: {
+        sourceStartUnit: 'source_frames',
+        timelineUnit: 'project_frames',
+        secondsToSourceFrames: 'Math.round(seconds * sourceFps)',
+        sourceSpanFrames: 'Math.round(durationInFrames / projectFps * sourceFps * speed)',
+      },
+      idempotency: {
+        cliOption: '--idempotency-key',
+        field: 'idempotencyKey',
+        scope: 'workspace_and_project',
+        sameKeySameOps: 'replay_original_receipt',
+        sameKeyDifferentOps: 'IDEMPOTENCY_KEY_CONFLICT',
+        forceBypassesConflict: false,
+      },
       transform: {
         positionProperties: ['x', 'y'],
         units: 'project-pixels',
@@ -997,6 +1029,7 @@ export function compactCapabilities() {
       nativeAnimation: true,
       remotionTransparentAsset: true,
       remotionComposition: true,
+      remotionNpmDependencies: true,
       remotionRenderModes: ['transparent-overlay', 'composition'],
     },
     operations: EDIT_OPERATION_NAMES,
@@ -1011,6 +1044,13 @@ export function compactCapabilities() {
       renderOutput: commands['render output'],
       renderCancel: commands['render cancel'],
     },
+    remotionDependencies: {
+      inferredFromImports: true,
+      taskDeclarationRequired: false,
+      installScripts: false,
+      registry: 'https://registry.npmjs.org/',
+      bundled: { gsap: '3.13.0' },
+    },
     projectEdit: {
       allowedOptions: [
         '--id',
@@ -1018,12 +1058,20 @@ export function compactCapabilities() {
         '--persist',
         '--expected-revision',
         '--force',
+        '--idempotency-key',
         '--break-lock',
       ],
       opsFileRequired: true,
       callerIdRequiredPerOperation: true,
       callerIdPattern: '^[A-Za-z][A-Za-z0-9_-]{0,63}$',
       callerIdMustBeUnique: true,
+      idempotency: {
+        option: '--idempotency-key',
+        persistRequired: true,
+        scope: 'workspace_and_project',
+        replayFields: ['revision', 'currentRevision', 'projectAdvanced', 'idempotency.replayed'],
+        conflictCode: 'IDEMPOTENCY_KEY_CONFLICT',
+      },
       resultReferences: {
         syntax: '<callerId>#<JSON-pointer>',
         example: { $ref: 'addClipA#/detail/id' },
@@ -1037,6 +1085,12 @@ export function compactCapabilities() {
       },
     },
     semantics: {
+      sourceTime: {
+        sourceStartUnit: 'source_frames',
+        timelineUnit: 'project_frames',
+        secondsToSourceFrames: 'Math.round(seconds * sourceFps)',
+        sourceSpanFrames: 'Math.round(durationInFrames / projectFps * sourceFps * speed)',
+      },
       animatablePositionProperties: ['x', 'y'],
       movingStickerExample: [
         {

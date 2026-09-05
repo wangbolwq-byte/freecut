@@ -88,6 +88,42 @@ test('controlled Remotion task renders an opaque H.264 composition without alpha
   assert.equal(renderCall.options.pixelFormat, 'yuv420p')
 })
 
+test('controlled Remotion task infers GSAP imports and resolves them from the managed runtime', async (t) => {
+  const fixture = await createFixture({
+    renderMode: 'composition',
+    useGsap: true,
+  })
+  t.after(() => rm(fixture.root, { recursive: true, force: true }))
+  const runtimeNodeModules = path.join(fixture.root, 'runtime', 'node_modules')
+  await mkdir(path.join(runtimeNodeModules, 'gsap'), { recursive: true })
+  await writeFile(
+    path.join(runtimeNodeModules, 'gsap', 'package.json'),
+    `${JSON.stringify({ name: 'gsap', version: '3.13.0' })}\n`,
+  )
+  const calls = []
+
+  const result = await renderRemotionTask({
+    workspaceDirectory: fixture.workspace,
+    taskDirectory: fixture.taskDirectory,
+    browserExecutable: process.execPath,
+    runtimeNodeModules,
+    dependencies: fakeRendererDependencies(calls, { alpha: 255, codec: 'h264' }),
+    runNpm: async () => assert.fail('bundled GSAP must not invoke npm'),
+  })
+
+  assert.deepEqual(result.dependencies.resolved, [
+    { name: 'gsap', version: '3.13.0', source: 'runtime' },
+  ])
+  assert.equal(result.dependencies.networkAtRender, false)
+  assert.match(result.dependencyHash, /^sha256:[0-9a-f]{64}$/u)
+  const bundleCall = calls.find((call) => call.name === 'bundle')
+  const configuration = bundleCall.options.webpackOverride({
+    resolve: { modules: ['node_modules'] },
+    module: { rules: [] },
+  })
+  assert.deepEqual(configuration.resolve.modules, [runtimeNodeModules, 'node_modules'])
+})
+
 test('controlled Remotion task allows readable local imports beyond the task directory', async (t) => {
   const fixture = await createFixture({ renderMode: 'composition' })
   t.after(() => rm(fixture.root, { recursive: true, force: true }))
@@ -122,7 +158,7 @@ test('controlled Remotion task allows readable local imports beyond the task dir
   })
 })
 
-test('controlled Remotion validation rejects external imports and network capabilities', async (t) => {
+test('controlled Remotion validation infers public npm imports and rejects Node/network capabilities', async (t) => {
   const fixture = await createFixture()
   t.after(() => rm(fixture.root, { recursive: true, force: true }))
 
@@ -143,6 +179,26 @@ test('controlled Remotion validation rejects external imports and network capabi
 
   await writeFile(
     path.join(fixture.taskDirectory, 'src', 'Animation.tsx'),
+    'import { gsap } from "gsap"; export default () => <div>{gsap.version}</div>;\n',
+  )
+  const validation = await validateRemotionTask({
+    workspaceDirectory: fixture.workspace,
+    taskDirectory: fixture.taskDirectory,
+  })
+  assert.deepEqual(validation.npmPackages, ['gsap'])
+
+  await writeFile(
+    path.join(fixture.taskDirectory, 'src', 'Animation.tsx'),
+    'import { flushSync } from "react-dom"; export default () => <div>{typeof flushSync}</div>;\n',
+  )
+  const managedValidation = await validateRemotionTask({
+    workspaceDirectory: fixture.workspace,
+    taskDirectory: fixture.taskDirectory,
+  })
+  assert.deepEqual(managedValidation.npmPackages, [])
+
+  await writeFile(
+    path.join(fixture.taskDirectory, 'src', 'Animation.tsx'),
     'export default () => { fetch("https://example.test"); return null };\n',
   )
   await assert.rejects(
@@ -154,6 +210,36 @@ test('controlled Remotion validation rejects external imports and network capabi
       error instanceof RemotionTaskError &&
       error.code === 'REMOTION_SOURCE_CAPABILITY_FORBIDDEN' &&
       /fetch/.test(error.message),
+  )
+})
+
+test('controlled Remotion validation infers literal dynamic imports only', async (t) => {
+  const fixture = await createFixture({ renderMode: 'composition' })
+  t.after(() => rm(fixture.root, { recursive: true, force: true }))
+
+  await writeFile(
+    path.join(fixture.taskDirectory, 'src', 'Animation.tsx'),
+    'export const loadGsap = () => import("gsap"); export default () => null;\n',
+  )
+  const validation = await validateRemotionTask({
+    workspaceDirectory: fixture.workspace,
+    taskDirectory: fixture.taskDirectory,
+  })
+  assert.deepEqual(validation.npmPackages, ['gsap'])
+
+  await writeFile(
+    path.join(fixture.taskDirectory, 'src', 'Animation.tsx'),
+    'const name = "gsap"; export const loadGsap = () => import(name); export default () => null;\n',
+  )
+  await assert.rejects(
+    validateRemotionTask({
+      workspaceDirectory: fixture.workspace,
+      taskDirectory: fixture.taskDirectory,
+    }),
+    (error) =>
+      error instanceof RemotionTaskError &&
+      error.code === 'REMOTION_DYNAMIC_IMPORT_FORBIDDEN' &&
+      /string literal/.test(error.message),
   )
 })
 
@@ -223,6 +309,7 @@ test(
     const fixture = await createFixture({
       renderMode: 'composition',
       externalAsset: true,
+      useGsap: true,
     })
     t.after(() => rm(fixture.root, { recursive: true, force: true }))
 
@@ -245,7 +332,12 @@ test(
   },
 )
 
-async function createFixture({ renderMode = 'transparent-overlay', externalAsset = false } = {}) {
+async function createFixture({
+  renderMode = 'transparent-overlay',
+  externalAsset = false,
+  useGsap = false,
+  dependencies,
+} = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'freecut-remotion-'))
   const workspace = path.join(root, 'autocut')
   const taskDirectory = path.join(workspace, 'projects', 'demo', 'remotion', 'lower-third')
@@ -277,6 +369,7 @@ async function createFixture({ renderMode = 'transparent-overlay', externalAsset
           durationInFrames: 30,
         },
         inputProps: { title: 'AutoCut' },
+        ...(dependencies ? { dependencies } : {}),
         output:
           renderMode === 'composition' ? 'renders/lower-third.mp4' : 'renders/lower-third.webm',
       },
@@ -289,12 +382,16 @@ async function createFixture({ renderMode = 'transparent-overlay', externalAsset
     [
       'import React from "react";',
       `import {AbsoluteFill, Img, useCurrentFrame} from "remotion";`,
+      ...(useGsap ? ['import {gsap} from "gsap";'] : []),
       ...(externalAssetImport
         ? [`import backgroundUrl from ${JSON.stringify(externalAssetImport)};`]
         : []),
       'export default function Animation({title}: {title: string}) {',
       '  const frame = useCurrentFrame();',
-      `  return <AbsoluteFill style={{opacity: frame > 0 ? 0.8 : 0.2}}>${externalAssetImport ? '<Img src={backgroundUrl} />' : ''}{title}</AbsoluteFill>;`,
+      ...(useGsap
+        ? ['  const opacity = gsap.parseEase("power2.out")(frame / 29);']
+        : ['  const opacity = frame > 0 ? 0.8 : 0.2;']),
+      `  return <AbsoluteFill style={{opacity}}>${externalAssetImport ? '<Img src={backgroundUrl} />' : ''}{title}</AbsoluteFill>;`,
       '}',
       '',
     ].join('\n'),

@@ -68,6 +68,7 @@ import {
   assertAtomicReplace,
   assertPortableId,
   createProjectResource,
+  editProjectResource,
   getMediaResource,
   getProjectResource,
   listMediaResources,
@@ -529,6 +530,33 @@ async function main() {
       maxBytes: 16 * 1024 * 1024,
     })
     const body = validate(lifecycleEditRequestSchema, raw)
+    if (body.idempotencyKey) {
+      const result = await editProjectResource(workspace, id, body, async (current) => {
+        const edited = await queue.enqueue(
+          () =>
+            session.page.evaluate((payload) => window.freecut.editProject(payload), {
+              project: current.project,
+              ops: body.ops,
+              media: collectAddClipMedia(workspace, body.ops),
+            }),
+          { timeoutMs: editTimeoutMs, kind: 'edit' },
+        )
+        assertEditSucceeded(edited, current.revision)
+        return { ...edited, project: await browserNormalize(edited.project) }
+      })
+      if (!result.idempotency.replayed) {
+        result.warnings.push(
+          ...reconcileProjectMediaLinksAfterCommit(workspace, result.project, id),
+        )
+        publishCurrentProjectChange(id, 'headless-api', [
+          ['projects', id, 'project.json'],
+          ['projects', id, 'media-links.json'],
+        ])
+      }
+      if (result.idempotency.replayed) res.setHeader('Idempotency-Replayed', 'true')
+      sendJson(res, 200, { ...result, apiVersion: HEADLESS_API_VERSION })
+      return
+    }
     const execute = async () => {
       const current = await getProjectResource(workspace, id)
       const media = collectAddClipMedia(workspace, body.ops)

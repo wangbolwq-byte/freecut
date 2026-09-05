@@ -38,6 +38,7 @@ import {
   assertAtomicReplace,
   commitStagedMedia,
   createProjectResource,
+  editProjectResource,
   getMediaResource,
   getProjectResource,
   listMediaResources,
@@ -99,7 +100,26 @@ async function run(argv = process.argv.slice(2), dependencies = {}) {
     if (receipt) await recordHostReceipt({ ...receipt, status: 'started' })
     try {
       const result = await runCommand(args, dependencies, contract)
-      if (receipt) await recordHostReceipt({ ...receipt, status: 'succeeded' })
+      if (receipt)
+        await recordHostReceipt({
+          ...receipt,
+          status: result?.ok === false ? 'failed' : 'succeeded',
+          result: {
+            revision: result?.revision,
+            ...(result?.audit ? { audit: result.audit } : {}),
+            ...(result?.idempotency
+              ? { idempotency: result.idempotency, currentRevision: result.currentRevision }
+              : {}),
+          },
+          ...(result?.ok === false
+            ? {
+                error: result.error ?? {
+                  code: 'AUTOCUT_OPERATION_FAILED',
+                  message: 'Operation did not pass.',
+                },
+              }
+            : {}),
+        })
       return result
     } catch (error) {
       if (receipt) {
@@ -148,11 +168,16 @@ async function runCommand(args, dependencies, contract) {
         { path: '--mode', message: 'must equal remix', code: 'invalid_value' },
       ])
     const current = await getProjectResource(workspace, args.id)
-    return envelope({
+    const audit = auditRemixProject(current.project, {
       revision: current.revision,
-      audit: auditRemixProject(current.project, {
-        ...(args['track-id'] ? { trackId: args['track-id'] } : {}),
-      }),
+      ...(args['track-id'] ? { trackId: args['track-id'] } : {}),
+    })
+    return envelope({
+      ok: audit.ok,
+      executionStatus: 'completed',
+      revision: current.revision,
+      audit,
+      ...(!audit.ok ? { error: { code: 'PROJECT_AUDIT_FAILED', message: audit.summary } } : {}),
     })
   }
   if (group === 'media' && action === 'list')
@@ -311,34 +336,35 @@ async function runCommand(args, dependencies, contract) {
         persist: Boolean(args.persist),
         expectedRevision: args['expected-revision'],
         force: Boolean(args.force),
+        idempotencyKey: args['idempotency-key'],
       })
-      const current = await getProjectResource(workspace, args.id)
-      const result = await withAutoCutBrowserSession({ workspace, args }, async (page) => {
-        const edited = await page.evaluate((payload) => window.autocut.editProject(payload), {
-          project: current.project,
-          ops: body.ops,
-          media: collectAddClipMedia(workspace, body.ops),
+      const edit = (current) =>
+        withAutoCutBrowserSession({ workspace, args }, async (page) => {
+          const edited = await page.evaluate((payload) => window.autocut.editProject(payload), {
+            project: current.project,
+            ops: body.ops,
+            media: collectAddClipMedia(workspace, body.ops),
+          })
+          if (edited?.ok === false) throw projectEditFailure(edited, current.revision)
+          if (!body.persist) return edited
+          return {
+            ...edited,
+            project: await page.evaluate(
+              (value) => window.autocut.normalizeProject(value),
+              edited.project,
+            ),
+          }
         })
-        if (edited?.ok === false) throw projectEditFailure(edited, current.revision)
-        if (!body.persist) return edited
-        return {
-          ...edited,
-          project: await page.evaluate(
-            (value) => window.autocut.normalizeProject(value),
-            edited.project,
-          ),
-        }
-      })
-      if (!body.persist)
-        return envelope({ ...result, persisted: false, baseRevision: current.revision })
-      const saved = await saveProjectResource(workspace, args.id, result.project, body)
-      return envelope({
-        ...result,
-        project: saved.project,
-        persisted: true,
-        revision: saved.revision,
-        warnings: saved.warnings,
-      })
+      if (!body.persist) {
+        const current = await getProjectResource(workspace, args.id)
+        return envelope({
+          ...(await edit(current)),
+          persisted: false,
+          baseRevision: current.revision,
+          idempotency: { protected: false, replayed: false },
+        })
+      }
+      return envelope(await editProjectResource(workspace, args.id, body, edit))
     }
     if (group === 'media' && action === 'probe') {
       const body = validate(mediaProbeRequestSchema, {

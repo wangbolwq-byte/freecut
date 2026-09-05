@@ -36,6 +36,7 @@ test('packaged AutoCut runtime includes standalone browser dependencies', async 
     '@babel/parser': '7.29.7',
     '@remotion/bundler': '4.0.499',
     '@remotion/renderer': '4.0.499',
+    gsap: '3.13.0',
     playwright: '1.60.0',
     'playwright-core': '1.60.0',
     pngjs: '7.0.0',
@@ -64,10 +65,19 @@ test('packaged AutoCut runtime includes standalone browser dependencies', async 
   )
   assert.equal(typeof packagedBundler.bundle, 'function')
   assert.equal(typeof packagedRenderer.renderMedia, 'function')
+  const packagedGsap = await import(
+    pathToFileURL(path.join(outputRoot, 'node_modules', 'gsap', 'index.js')).href
+  )
+  assert.equal(typeof packagedGsap.gsap.parseEase, 'function')
   const runtimeManifest = JSON.parse(
     await readFile(path.join(outputRoot, 'runtime-manifest.json'), 'utf8'),
   )
   assert.equal(runtimeManifest.entrypoints.remotionRenderer, 'headless/lib/remotion-renderer.mjs')
+  const notices = await readFile(path.join(outputRoot, 'THIRD_PARTY_NOTICES.md'), 'utf8')
+  assert.match(
+    notices,
+    /gsap@3\.13\.0 — Standard 'no charge' license: https:\/\/gsap\.com\/standard-license\./u,
+  )
   const packagedRendererCli = path.join(outputRoot, 'bin', 'remotion-render')
   const packagedEnvironment = { ...process.env, AUTOCUT_NODE: process.execPath }
   const packagedHelp = await execFileAsync(packagedRendererCli, ['--help'], {

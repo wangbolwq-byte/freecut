@@ -13,29 +13,26 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises'
+import { isBuiltin } from 'node:module'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { parse as parseJavascript } from '@babel/parser'
 import pngjs from 'pngjs'
+import {
+  AUTOCUT_RUNTIME_NODE_MODULES,
+  externalImportPackageName,
+  isValidPublicPackageName,
+  parseRemotionDependencyMap,
+  prepareRemotionTaskDependencies,
+} from './remotion-dependency-manager.mjs'
 
 const { PNG } = pngjs
 const execFileAsync = promisify(execFile)
-const RUNTIME_NODE_MODULES = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '..',
-  '..',
-  'node_modules',
-)
 const TASK_FILE = 'task.json'
 const SOURCE_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js', '.mjs', '.json', '.css']
 const CODE_EXTENSIONS = new Set(['.tsx', '.ts', '.jsx', '.js', '.mjs'])
-const ALLOWED_EXTERNAL_IMPORTS = new Set([
-  'react',
-  'react/jsx-runtime',
-  'react/jsx-dev-runtime',
-  'remotion',
-])
+const MANAGED_EXTERNAL_PACKAGES = new Set(['react', 'react-dom', 'remotion'])
+const FORBIDDEN_EXTERNAL_PACKAGES = new Set(['@remotion/bundler', '@remotion/renderer'])
 const FORBIDDEN_SOURCE_PATTERNS = [
   [/\bfetch\s*\(/u, 'fetch'],
   [/\bXMLHttpRequest\b/u, 'XMLHttpRequest'],
@@ -63,7 +60,19 @@ export class RemotionTaskError extends Error {
 export async function renderRemotionTask(input) {
   const taskDirectory = await resolveTaskDirectory(input)
   const task = await readTask(taskDirectory)
-  const sourceInventory = await validateSourceTree(taskDirectory, task)
+  const sourceValidation = await validateSourceTree(taskDirectory, task)
+  const dependencyResolution = await prepareRemotionTaskDependencies({
+    taskDirectory,
+    packageNames: sourceValidation.externalPackages,
+    dependencies: task.dependencies,
+    ...(input.runtimeNodeModules ? { runtimeNodeModules: input.runtimeNodeModules } : {}),
+    ...(input.nodeExecutable ? { nodeExecutable: input.nodeExecutable } : {}),
+    ...(input.npmCliPath ? { npmCliPath: input.npmCliPath } : {}),
+    ...(input.runNpm ? { runNpm: input.runNpm } : {}),
+    ...(input.installTimeoutInMilliseconds
+      ? { installTimeoutInMilliseconds: input.installTimeoutInMilliseconds }
+      : {}),
+  })
   const browserExecutable = await resolveBrowserExecutable(input.browserExecutable)
   const dependencies = input.dependencies ?? (await loadRemotionDependencies())
   const temporaryDirectory = await mkdtemp(path.join(taskDirectory, '.autocut-render-'))
@@ -101,9 +110,9 @@ export async function renderRemotionTask(input) {
         resolve: {
           ...configuration.resolve,
           modules: [
-            RUNTIME_NODE_MODULES,
+            ...dependencyResolution.nodeModulesPaths,
             ...(configuration.resolve?.modules ?? []).filter(
-              (entry) => entry !== RUNTIME_NODE_MODULES,
+              (entry) => !dependencyResolution.nodeModulesPaths.includes(entry),
             ),
           ],
         },
@@ -223,7 +232,9 @@ export async function renderRemotionTask(input) {
           }
         : {}),
       representativeFrames,
-      sourceHash: hashInventory(sourceInventory),
+      sourceHash: hashInventory(sourceValidation.inventory),
+      dependencyHash: dependencyResolution.dependencyHash,
+      dependencies: dependencyResolution.evidence,
       outputHash: `sha256:${createHash('sha256').update(outputBytes).digest('hex')}`,
     }
   } finally {
@@ -264,7 +275,7 @@ async function enforceOfflineBundle(serveUrl) {
 
 async function probeWebmAlpha(filePath) {
   const compositorDirectory = path.join(
-    RUNTIME_NODE_MODULES,
+    AUTOCUT_RUNTIME_NODE_MODULES,
     '@remotion',
     `compositor-${process.platform}-${process.arch}`,
   )
@@ -353,11 +364,13 @@ function withControlledEsbuildOptions(rule) {
 export async function validateRemotionTask(input) {
   const taskDirectory = await resolveTaskDirectory(input)
   const task = await readTask(taskDirectory)
-  const sourceInventory = await validateSourceTree(taskDirectory, task)
+  const sourceValidation = await validateSourceTree(taskDirectory, task)
   return {
     taskDirectory,
     task,
-    sourceHash: hashInventory(sourceInventory),
+    dependencies: task.dependencies,
+    npmPackages: sourceValidation.externalPackages,
+    sourceHash: hashInventory(sourceValidation.inventory),
   }
 }
 
@@ -420,6 +433,7 @@ async function readTask(taskDirectory) {
       'componentExport',
       'composition',
       'inputProps',
+      'dependencies',
       'output',
     ],
     TASK_FILE,
@@ -477,6 +491,7 @@ async function readTask(taskDirectory) {
   const inputProps = value.inputProps ?? {}
   assertRecord(inputProps, 'inputProps')
   assertJsonValue(inputProps, 'inputProps')
+  const dependencies = parseRemotionDependencyMap(value.dependencies)
   const defaultOutputExtension = renderMode === 'composition' ? '.mp4' : '.webm'
   const output =
     value.output === undefined
@@ -499,6 +514,7 @@ async function readTask(taskDirectory) {
     componentExport,
     composition,
     inputProps,
+    dependencies,
     output,
   }
 }
@@ -525,6 +541,7 @@ async function validateSourceTree(taskDirectory, task) {
   }
 
   const inventory = new Map()
+  const externalPackages = new Set()
   const pending = [sourceEntry]
   while (pending.length > 0) {
     const filePath = pending.pop()
@@ -556,28 +573,43 @@ async function validateSourceTree(taskDirectory, task) {
       )
     }
     for (const imported of imports) {
-      if (imported.dynamic) {
+      if (imported.dynamic && imported.specifier === undefined) {
         throw taskError(
           'REMOTION_DYNAMIC_IMPORT_FORBIDDEN',
-          `Dynamic import is not allowed in ${relativeDisplay(taskDirectory, filePath)}`,
+          `Dynamic import must use a string literal in ${relativeDisplay(taskDirectory, filePath)}`,
         )
       }
-      if (!imported.specifier.startsWith('.') && !imported.specifier.startsWith('/')) {
-        if (!ALLOWED_EXTERNAL_IMPORTS.has(imported.specifier)) {
+      const specifier = imported.specifier
+      if (!specifier.startsWith('.') && !specifier.startsWith('/')) {
+        if (specifier.startsWith('node:') || isBuiltin(specifier)) {
           throw taskError(
             'REMOTION_IMPORT_FORBIDDEN',
-            `Unsupported Remotion import "${imported.specifier}" in ${relativeDisplay(taskDirectory, filePath)}`,
+            `Node built-in import "${specifier}" is not available in controlled Remotion source`,
           )
         }
+        const packageName = externalImportPackageName(specifier)
+        if (!packageName || !isValidPublicPackageName(packageName)) {
+          throw taskError(
+            'REMOTION_IMPORT_FORBIDDEN',
+            `Invalid public npm import "${specifier}" in ${relativeDisplay(taskDirectory, filePath)}`,
+          )
+        }
+        if (FORBIDDEN_EXTERNAL_PACKAGES.has(packageName)) {
+          throw taskError(
+            'REMOTION_IMPORT_FORBIDDEN',
+            `Host-only Remotion import "${specifier}" is not available in controlled source`,
+          )
+        }
+        if (!MANAGED_EXTERNAL_PACKAGES.has(packageName)) externalPackages.add(packageName)
         continue
       }
-      if (imported.specifier.startsWith('/')) {
+      if (specifier.startsWith('/')) {
         throw taskError(
           'REMOTION_IMPORT_OUTSIDE_TASK',
           `Absolute import is not allowed in ${relativeDisplay(taskDirectory, filePath)}`,
         )
       }
-      pending.push(await resolveLocalImport(taskDirectory, filePath, imported.specifier))
+      pending.push(await resolveLocalImport(taskDirectory, filePath, specifier))
     }
   }
 
@@ -589,12 +621,15 @@ async function validateSourceTree(taskDirectory, task) {
     path.join(taskDirectory, TASK_FILE),
     await readFile(path.join(taskDirectory, TASK_FILE)),
   )
-  return [...inventory.entries()]
-    .map(([filePath, bytes]) => ({
-      path: relativeDisplay(taskDirectory, filePath),
-      bytes,
-    }))
-    .sort((left, right) => left.path.localeCompare(right.path))
+  return {
+    inventory: [...inventory.entries()]
+      .map(([filePath, bytes]) => ({
+        path: relativeDisplay(taskDirectory, filePath),
+        bytes,
+      }))
+      .sort((left, right) => left.path.localeCompare(right.path)),
+    externalPackages: [...externalPackages].sort((left, right) => left.localeCompare(right)),
+  }
 }
 
 function collectModuleImports(ast) {
@@ -611,14 +646,14 @@ function collectModuleImports(ast) {
     }
     if (value.type === 'ImportExpression') {
       imports.push({
-        specifier: typeof value.source?.value === 'string' ? value.source.value : '<dynamic>',
+        specifier: typeof value.source?.value === 'string' ? value.source.value : undefined,
         dynamic: true,
       })
     }
     if (value.type === 'CallExpression' && value.callee?.type === 'Import') {
       const argument = value.arguments?.[0]
       imports.push({
-        specifier: typeof argument?.value === 'string' ? argument.value : '<dynamic>',
+        specifier: typeof argument?.value === 'string' ? argument.value : undefined,
         dynamic: true,
       })
     }

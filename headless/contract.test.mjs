@@ -265,6 +265,7 @@ test('validation errors and capabilities are machine-readable and bounded', () =
     nativeAnimation: true,
     remotionTransparentAsset: true,
     remotionComposition: true,
+    remotionNpmDependencies: true,
     remotionRenderModes: ['transparent-overlay', 'composition'],
   })
   assert.ok(result.schemas.render)
@@ -285,6 +286,13 @@ test('compact capabilities are complete, parseable, and remain below 16 KiB', ()
   assert.equal(result.canonicalCommands.remotionRender, 'remotion-render --task <task.json>')
   assert.match(result.canonicalCommands.renderSubmit, /render submit/)
   assert.match(result.canonicalCommands.renderStatus, /render status/)
+  assert.deepEqual(result.remotionDependencies, {
+    inferredFromImports: true,
+    taskDeclarationRequired: false,
+    installScripts: false,
+    registry: 'https://registry.npmjs.org/',
+    bundled: { gsap: '3.13.0' },
+  })
   assert.equal(result.authoritativeProjectPaths.timelineItems, 'project.timeline.items')
   assert.deepEqual(result.semantics.animatablePositionProperties, ['x', 'y'])
   assert.equal(result.semantics.zeroDbMeaning, 'unity gain, not mute')

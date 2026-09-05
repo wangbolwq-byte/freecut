@@ -2,10 +2,13 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
+import net from 'node:net'
+import http from 'node:http'
 import path from 'node:path'
 import test from 'node:test'
 import { promisify } from 'node:util'
 import { run } from './agent.mjs'
+import { createProjectResource } from './lib/lifecycle-store.mjs'
 import {
   AUTOCUT_AGENT_COMMAND_CONTRACTS,
   commandHelp,
@@ -14,6 +17,195 @@ import {
 } from './lib/agent-command-contracts.mjs'
 
 const execFileAsync = promisify(execFile)
+
+test('persisted edit CLI replays the same key without another browser edit', async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), 'autocut-edit-cli-'))
+  t.after(() => rm(workspace, { recursive: true, force: true }))
+  const endpoint =
+    process.platform === 'win32'
+      ? `\\\\.\\pipe\\autocut-edit-${process.pid}-${Date.now()}`
+      : path.join(workspace, 'broker.sock')
+  const calls = []
+  const server = net.createServer((socket) => {
+    socket.setEncoding('utf8')
+    let input = ''
+    socket.on('data', (chunk) => {
+      input += chunk
+      if (!input.includes('\n')) return
+      const request = JSON.parse(input.slice(0, input.indexOf('\n')))
+      calls.push(request.operation)
+      let result = {}
+      if (request.operation === 'editProject')
+        result = {
+          ok: true,
+          applied: 1,
+          results: [{ callerId: 'titleA', detail: { id: 'created-title' } }],
+          project: {
+            ...request.payload.project,
+            timeline: {
+              ...request.payload.project.timeline,
+              items: [
+                { id: 'created-title', type: 'text', text: 'A', from: 0, durationInFrames: 30 },
+              ],
+            },
+          },
+        }
+      if (request.operation === 'normalizeProject') result = request.payload
+      socket.end(`${JSON.stringify({ ok: true, result })}\n`)
+    })
+  })
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(endpoint, resolve)
+  })
+  t.after(() => new Promise((resolve) => server.close(resolve)))
+  const harness = http.createServer((_request, response) =>
+    response.end('<html>Headless fixture</html>'),
+  )
+  await new Promise((resolve) => harness.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise((resolve) => harness.close(resolve)))
+  const created = await createProjectResource(workspace, {
+    id: 'edit-demo',
+    name: 'Edit',
+    metadata: { fps: 30 },
+    timeline: { tracks: [], items: [] },
+  })
+  const opsFile = path.join(workspace, 'operations.json')
+  await writeFile(
+    opsFile,
+    JSON.stringify([
+      { callerId: 'titleA', op: 'addText', text: 'A', from: 0, durationInFrames: 30 },
+    ]),
+  )
+  const argv = [
+    path.join(import.meta.dirname, 'agent.mjs'),
+    'project',
+    'edit',
+    '--workspace',
+    workspace,
+    '--id',
+    'edit-demo',
+    '--ops',
+    opsFile,
+    '--persist',
+    '--expected-revision',
+    created.revision,
+    '--idempotency-key',
+    'cli-batch-one',
+  ]
+  const env = {
+    ...process.env,
+    AUTOCUT_BROKER_ENDPOINT: endpoint,
+    AUTOCUT_BROKER_TOKEN: 'test-token',
+    AUTOCUT_HEADLESS_URL: `http://127.0.0.1:${harness.address().port}/headless.html`,
+  }
+  const first = JSON.parse((await execFileAsync(process.execPath, argv, { env })).stdout)
+  const replay = JSON.parse((await execFileAsync(process.execPath, argv, { env })).stdout)
+  assert.equal(first.idempotency.replayed, false)
+  assert.equal(replay.idempotency.replayed, true)
+  assert.equal(replay.revision, first.revision)
+  assert.equal(replay.project.timeline.items.length, 1)
+  assert.equal(calls.filter((operation) => operation === 'editProject').length, 1)
+  assert.equal(calls.filter((operation) => operation === 'normalizeProject').length, 1)
+})
+
+test('audit CLI preserves full structured failure on stdout and exits nonzero', async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), 'autocut-audit-result-'))
+  t.after(() => rm(workspace, { recursive: true, force: true }))
+  const created = await createProjectResource(workspace, {
+    id: 'audit-demo',
+    name: 'Audit',
+    metadata: { fps: 30 },
+    timeline: {
+      tracks: [{ id: 'main', kind: 'video' }],
+      items: [
+        { id: 'first', type: 'video', trackId: 'main', from: 0, durationInFrames: 30 },
+        { id: 'second', type: 'video', trackId: 'main', from: 60, durationInFrames: 30 },
+      ],
+    },
+  })
+  const argv = ['project', 'audit', '--workspace', workspace, '--id', 'audit-demo']
+  const result = await run(argv)
+  assert.equal(result.ok, false)
+  assert.equal(result.audit.ok, result.ok)
+  assert.equal(result.audit.revision, created.revision)
+  assert.equal(result.error.code, 'PROJECT_AUDIT_FAILED')
+  await assert.rejects(
+    execFileAsync(process.execPath, [path.join(import.meta.dirname, 'agent.mjs'), ...argv]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.equal(error.stderr, '')
+      const output = JSON.parse(error.stdout)
+      assert.equal(output.executionStatus, 'completed')
+      assert.equal(output.audit.issues[0].code, 'timeline_gap')
+      return true
+    },
+  )
+})
+
+test('audit Host receipt records rule failure rather than successful execution as successful audit', async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), 'autocut-audit-receipt-'))
+  t.after(() => rm(workspace, { recursive: true, force: true }))
+  const endpoint =
+    process.platform === 'win32'
+      ? `\\\\.\\pipe\\autocut-audit-${process.pid}-${Date.now()}`
+      : path.join(workspace, 'broker.sock')
+  const receipts = []
+  const server = net.createServer((socket) => {
+    socket.setEncoding('utf8')
+    let input = ''
+    socket.on('data', (chunk) => {
+      input += chunk
+      if (!input.includes('\n')) return
+      receipts.push(JSON.parse(input.slice(0, input.indexOf('\n'))).payload)
+      socket.end(`${JSON.stringify({ ok: true, result: {} })}\n`)
+    })
+  })
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(endpoint, resolve)
+  })
+  t.after(() => new Promise((resolve) => server.close(resolve)))
+  await createProjectResource(workspace, {
+    id: 'audit-demo',
+    timeline: {
+      tracks: [{ id: 'main', kind: 'video' }],
+      items: [
+        { id: 'a', type: 'video', trackId: 'main', from: 0, durationInFrames: 30 },
+        { id: 'b', type: 'video', trackId: 'main', from: 45, durationInFrames: 30 },
+      ],
+    },
+  })
+  await assert.rejects(
+    execFileAsync(
+      process.execPath,
+      [
+        path.join(import.meta.dirname, 'agent.mjs'),
+        'project',
+        'audit',
+        '--workspace',
+        workspace,
+        '--id',
+        'audit-demo',
+      ],
+      {
+        env: {
+          ...process.env,
+          AUTOCUT_BROKER_ENDPOINT: endpoint,
+          AUTOCUT_BROKER_TOKEN: 'test-token',
+        },
+      },
+    ),
+    (error) => error.code === 1,
+  )
+  assert.deepEqual(
+    receipts.map((entry) => entry.status),
+    ['started', 'failed'],
+  )
+  assert.equal(receipts[1].error.code, 'PROJECT_AUDIT_FAILED')
+  assert.equal(receipts[1].result.audit.status, 'failed')
+  assert.equal(receipts[1].result.audit.readOnly, true)
+})
 
 test('every AutoCut Agent leaf command exposes help from the canonical contract', async () => {
   for (const contract of Object.values(AUTOCUT_AGENT_COMMAND_CONTRACTS)) {

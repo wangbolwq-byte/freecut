@@ -17,6 +17,7 @@ const RUNTIME_DEPENDENCIES = {
   '@babel/parser': '7.29.7',
   '@remotion/bundler': '4.0.499',
   '@remotion/renderer': '4.0.499',
+  gsap: '3.13.0',
   playwright: '1.60.0',
   'playwright-core': '1.60.0',
   pngjs: '7.0.0',
@@ -72,10 +73,12 @@ async function main(argv = process.argv.slice(2)) {
       '# AutoCut runtime notices',
       '',
       `This runtime was built from FreeCut dev commit ${config.commit}.`,
-      'Runtime dependency license texts are included below the licenses directory.',
+      'Available runtime dependency license texts are included below the licenses directory.',
+      'Package-declared license identifiers or references are recorded here for every dependency.',
       '',
       ...runtimePackages.map(
-        (runtimePackage) => `- ${runtimePackage.name}@${runtimePackage.version}`,
+        (runtimePackage) =>
+          `- ${runtimePackage.name}@${runtimePackage.version} — ${runtimePackage.license}`,
       ),
       '',
     ].join('\n'),
@@ -93,7 +96,7 @@ function resolvePackageConfig(options) {
         path.join(REPO_ROOT, 'build', 'autocut-runtime', platformArch),
       ),
     ),
-    version: resolveOption(options.version, () => process.env.AUTOCUT_VERSION?.trim() || '0.1.6'),
+    version: resolveOption(options.version, () => process.env.AUTOCUT_VERSION?.trim() || '0.1.7'),
     commit: resolveOption(options.commit, readCurrentCommit),
   }
 }
@@ -159,6 +162,10 @@ async function collectRuntimePackages() {
     packages.set(relativeRoot, {
       name: packageJson.name ?? current.name,
       version: packageJson.version,
+      license:
+        typeof packageJson.license === 'string' && packageJson.license.trim()
+          ? packageJson.license.trim()
+          : 'license metadata unavailable',
       root: current.root,
       relativeRoot,
     })

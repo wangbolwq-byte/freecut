@@ -103,3 +103,21 @@ test('capabilities publish lifecycle constraints', () => {
   assert.equal(result.lifecycle.writerMode, 'exclusive')
   assert.ok(result.lifecycle.routes.includes('POST /v1/projects/:id/edit'))
 })
+
+test('idempotency keys are explicit, bounded, persisted-edit only and advertised', () => {
+  const request = {
+    ops: [{ callerId: 'title', op: 'addText', text: 'Title', from: 0 }],
+    persist: true,
+    force: true,
+    idempotencyKey: 'scene-1:titles.v1',
+  }
+  assert.equal(lifecycleEditRequestSchema.safeParse(request).success, true)
+  for (const idempotencyKey of ['', '../bad', 'a'.repeat(129)])
+    assert.equal(
+      lifecycleEditRequestSchema.safeParse({ ...request, idempotencyKey }).success,
+      false,
+    )
+  assert.equal(lifecycleEditRequestSchema.safeParse({ ...request, persist: false }).success, false)
+  assert.equal(capabilities().semantics.idempotency.forceBypassesConflict, false)
+  assert.equal(capabilities().semantics.sourceTime.sourceStartUnit, 'source_frames')
+})

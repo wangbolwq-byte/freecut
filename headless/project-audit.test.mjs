@@ -245,11 +245,166 @@ test('remix audit reports motion, transition, audio, music, and GPU coverage as 
     ],
   )
   assert.equal(facts.audio.zeroDbMeaning, 'unity_gain')
-  assert.equal(facts.audio.backgroundMusicCoverage.frames, 120)
+  assert.equal(facts.audio.unlinkedAudioCoverage.frames, 120)
+  assert.equal(facts.audio.roleClassification, 'unknown_without_explicit_production_manifest')
+  assert.equal(facts.audio.backgroundMusicCoverage, undefined)
   assert.deepEqual(facts.gpuEffects[0].coverage, { from: 0, to: 90 })
-  assert.ok(facts.findings.some((finding) => finding.code === 'background_music_undercoverage'))
+  assert.equal(
+    facts.findings.some((finding) => finding.code === 'background_music_undercoverage'),
+    false,
+  )
   assert.equal(
     facts.findings.some((finding) => finding.code === 'static_overlay_position'),
     false,
   )
+})
+
+test('source ranges use source FPS and speed rather than timeline frames as source frames', () => {
+  const project = createProject([
+    {
+      id: 'clip-a',
+      type: 'video',
+      trackId: 'video-track',
+      mediaId: 'source',
+      from: 0,
+      durationInFrames: 30,
+      sourceStart: 600,
+      sourceFps: 60,
+      speed: 2,
+      sourceDuration: 3600,
+    },
+    {
+      id: 'clip-b',
+      type: 'video',
+      trackId: 'video-track',
+      mediaId: 'source',
+      from: 30,
+      durationInFrames: 30,
+      sourceStart: 680,
+      sourceFps: 60,
+      sourceDuration: 3600,
+    },
+  ])
+  project.metadata = { fps: 30 }
+  const result = auditRemixProject(project)
+  const range = result.semanticFacts.sourceRanges[0]
+  assert.deepEqual(range.frames, { from: 600, to: 720 })
+  assert.deepEqual(range.seconds, { from: 10, to: 12 })
+  assert.equal(range.sourceDurationSeconds, 60)
+  assert.ok(
+    Math.abs(
+      result.issues.find((entry) => entry.code === 'source_range_overlap').details.overlapRatio -
+        2 / 3,
+    ) < 1e-12,
+  )
+})
+
+test('linked audio/video at different source frame rates compare their seconds', () => {
+  const common = { mediaId: 'source', linkedGroupId: 'pair', from: 0, durationInFrames: 30 }
+  const project = createProject([
+    {
+      ...common,
+      id: 'video',
+      type: 'video',
+      trackId: 'video-track',
+      sourceFps: 60,
+      sourceStart: 600,
+      sourceEnd: 660,
+    },
+    {
+      ...common,
+      id: 'audio',
+      type: 'audio',
+      trackId: 'audio-track',
+      sourceFps: 30,
+      sourceStart: 300,
+      sourceEnd: 330,
+    },
+  ])
+  project.metadata = { fps: 30 }
+  assert.equal(auditRemixProject(project).ok, true)
+})
+
+test('bounds include the frames playback requires at the selected speed, including reverse', () => {
+  const result = auditRemixProject(
+    createProject([
+      {
+        id: 'fast',
+        type: 'video',
+        trackId: 'video-track',
+        from: 0,
+        durationInFrames: 30,
+        sourceStart: 600,
+        sourceEnd: 660,
+        sourceFps: 60,
+        speed: 2,
+        sourceDuration: 700,
+      },
+      {
+        id: 'reverse',
+        type: 'video',
+        trackId: 'other',
+        from: 0,
+        durationInFrames: 30,
+        sourceStart: 0,
+        sourceEnd: 60,
+        sourceFps: 60,
+        speed: 2,
+        sourceDuration: 700,
+        isReversed: true,
+      },
+    ]),
+  )
+  assert.equal(result.errorCount, 2)
+  assert.ok(result.issues.every((entry) => entry.code === 'source_range_out_of_bounds'))
+})
+
+test('audit reports a truthful read-only rule outcome with messages and a bounded scope', () => {
+  const project = createProject([
+    { id: 'a', type: 'video', trackId: 'video-track', from: 0, durationInFrames: 30 },
+    { id: 'b', type: 'video', trackId: 'video-track', from: 60, durationInFrames: 30 },
+  ])
+  const before = JSON.stringify(project)
+  const result = auditRemixProject(project, { revision: 'sha256:original' })
+  assert.equal(result.status, 'failed')
+  assert.equal(result.executionStatus, 'completed')
+  assert.equal(result.readOnly, true)
+  assert.equal(result.revision, 'sha256:original')
+  assert.equal(result.errorCount, 1)
+  assert.deepEqual(result.issues[0].trackIds, ['video-track'])
+  assert.match(result.issues[0].message, /gap/)
+  assert.match(result.issues[0].repairHint, /track/)
+  assert.ok(result.notChecked.includes('rendered_output'))
+  assert.equal(JSON.stringify(project), before)
+  assert.equal(auditRemixProject(project, { trackId: 'missing' }).status, 'failed')
+})
+
+test('static overlays and hard cuts are observations, and unlinked narration/SFX are not called BGM', () => {
+  const project = createProject([
+    { id: 'a', type: 'video', trackId: 'video-track', from: 0, durationInFrames: 30 },
+    { id: 'b', type: 'video', trackId: 'video-track', from: 30, durationInFrames: 30 },
+    { id: 'overlay', type: 'image', trackId: 'overlay-track', from: 0, durationInFrames: 60 },
+    { id: 'narration', type: 'audio', trackId: 'audio-track', from: 0, durationInFrames: 25 },
+    { id: 'click', type: 'audio', trackId: 'audio-track', from: 30, durationInFrames: 2 },
+  ])
+  const result = auditRemixProject(project)
+  assert.equal(result.status, 'passed')
+  assert.equal(result.errorCount, 0)
+  assert.deepEqual(
+    result.semanticFacts.findings.map(({ severity, requiresAction }) => ({
+      severity,
+      requiresAction,
+    })),
+    [
+      { severity: 'observation', requiresAction: false },
+      { severity: 'observation', requiresAction: false },
+    ],
+  )
+  assert.deepEqual(result.semanticFacts.audio.tracks[0].unlinkedAudioItemIds, [
+    'narration',
+    'click',
+  ])
+  assert.equal(result.semanticFacts.audio.tracks[0].contentRole, 'unknown')
+  assert.equal(result.semanticFacts.audio.unlinkedAudioCoverage.frames, 27)
+  assert.match(result.summary, /not been verified/)
 })

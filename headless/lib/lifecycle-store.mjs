@@ -213,6 +213,177 @@ export async function saveProjectResource(
   })
 }
 
+// The caller holds the workspace writer lock. The resource lock also serializes
+// callers within this process; the journal survives process/response loss.
+export async function editProjectResource(workspace, id, request, edit, hooks = {}) {
+  return withResourceLock(`project:${id}`, async () => {
+    const current = await getProjectResource(workspace, id)
+    const key = request.idempotencyKey
+    const intentRevision = revisionOf(Buffer.from(canonicalJson({ version: 1, ops: request.ops })))
+    const journalFile = key
+      ? path.join(
+          path.dirname(projectFile(workspace, id)),
+          '.edit-receipts',
+          `${revisionOf(Buffer.from(key)).slice(7)}.json`,
+        )
+      : undefined
+    let journal
+    if (journalFile) {
+      try {
+        journal = JSON.parse(await fs.promises.readFile(journalFile, 'utf8'))
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw editRecoveryError(key, current.revision)
+      }
+    }
+    if (journal) {
+      if (
+        journal.key !== key ||
+        journal.version !== 1 ||
+        !['started', 'prepared', 'committed'].includes(journal.status)
+      )
+        throw editRecoveryError(key, current.revision)
+      if (journal.intentRevision !== intentRevision) {
+        const error = new HttpError(
+          409,
+          'IDEMPOTENCY_KEY_CONFLICT',
+          'This idempotency key already identifies different edit operations. Use a new key for a new logical edit.',
+        )
+        error.details = {
+          idempotencyKey: key,
+          currentRevision: current.revision,
+          persisted: false,
+          projectUnchanged: true,
+        }
+        throw error
+      }
+      if (journal.status !== 'started') {
+        const targetBytes = Buffer.from(`${JSON.stringify(journal.result?.project, null, 2)}\n`)
+        if (
+          journal.result?.project?.id !== id ||
+          revisionOf(targetBytes) !== journal.result?.revision ||
+          typeof journal.baseRevision !== 'string'
+        )
+          throw editRecoveryError(key, current.revision)
+        if (journal.status === 'prepared') {
+          if (current.revision === journal.baseRevision) {
+            await atomicWriteFile(projectFile(workspace, id), targetBytes, {
+              beforeCommit: async () =>
+                checkRevision(
+                  (await getProjectResource(workspace, id)).revision,
+                  journal.baseRevision,
+                  false,
+                ),
+            })
+          } else if (current.revision !== journal.result.revision) {
+            // Never overwrite a newer project when commit history is ambiguous.
+            throw editRecoveryError(key, current.revision)
+          }
+          journal.result.warnings = await repairProjectIndex(workspace)
+          journal.status = 'committed'
+          await atomicWriteFile(journalFile, Buffer.from(`${JSON.stringify(journal, null, 2)}\n`))
+          return editReceipt(journal, journal.result.revision, true, true)
+        }
+        return editReceipt(journal, current.revision, true, false)
+      }
+    }
+
+    checkRevision(current.revision, request.expectedRevision, request.force === true)
+    if (journalFile && !journal) {
+      journal = {
+        version: 1,
+        status: 'started',
+        key,
+        intentRevision,
+        baseRevision: current.revision,
+      }
+      await atomicWriteFile(journalFile, Buffer.from(`${JSON.stringify(journal, null, 2)}\n`))
+    }
+    const edited = await edit(current)
+    const project = {
+      ...edited.project,
+      id,
+      createdAt: current.project.createdAt,
+      updatedAt: Date.now(),
+    }
+    const bytes = Buffer.from(`${JSON.stringify(project, null, 2)}\n`)
+    const result = {
+      ...edited,
+      project,
+      persisted: true,
+      baseRevision: current.revision,
+      revision: revisionOf(bytes),
+      warnings: [],
+    }
+    if (journalFile) {
+      journal = {
+        version: 1,
+        status: 'prepared',
+        key,
+        intentRevision,
+        baseRevision: current.revision,
+        result,
+      }
+      await atomicWriteFile(journalFile, Buffer.from(`${JSON.stringify(journal, null, 2)}\n`))
+      await hooks.afterPrepare?.()
+    }
+    await atomicWriteFile(projectFile(workspace, id), bytes, {
+      beforeCommit: async () =>
+        checkRevision((await getProjectResource(workspace, id)).revision, current.revision, false),
+    })
+    await hooks.afterProjectCommit?.()
+    result.warnings = await repairProjectIndex(workspace)
+    if (journalFile) {
+      journal.status = 'committed'
+      await atomicWriteFile(journalFile, Buffer.from(`${JSON.stringify(journal, null, 2)}\n`))
+      return editReceipt(journal, result.revision, false, false)
+    }
+    return {
+      ...result,
+      currentRevision: result.revision,
+      projectAdvanced: false,
+      idempotency: { protected: false, replayed: false },
+    }
+  })
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object')
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(',')}}`
+  return JSON.stringify(value)
+}
+
+async function repairProjectIndex(workspace) {
+  try {
+    await withResourceLock('projects:index', () => rebuildIndex(workspace))
+    return []
+  } catch {
+    return ['INDEX_REPAIR_REQUIRED']
+  }
+}
+
+function editReceipt(journal, currentRevision, replayed, recovered) {
+  return {
+    ...journal.result,
+    currentRevision,
+    projectAdvanced: currentRevision !== journal.result.revision,
+    idempotency: { protected: true, key: journal.key, replayed, recovered },
+  }
+}
+
+function editRecoveryError(key, currentRevision) {
+  const error = new HttpError(
+    409,
+    'IDEMPOTENCY_RECOVERY_REQUIRED',
+    'The edit journal cannot be safely recovered against the current project. Inspect the journal and project; do not reapply this batch with a new key.',
+  )
+  error.details = { idempotencyKey: key, currentRevision, persisted: false, projectUnchanged: true }
+  return error
+}
+
 function localPidIsAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return null
   try {

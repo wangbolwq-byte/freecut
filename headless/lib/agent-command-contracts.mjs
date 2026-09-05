@@ -66,7 +66,8 @@ export const AUTOCUT_AGENT_COMMAND_CONTRACTS = Object.freeze({
   }),
   'project audit': command({
     path: ['project', 'audit'],
-    summary: 'Audit a persisted project for remix and timeline integrity problems.',
+    summary:
+      'Read-only remix integrity audit. ok=false and exit 1 mean rules failed, not execution failure. Facts are observations, not errors; passing does not verify visual, audio, or render quality.',
     options: ['--id', '--mode', '--track-id'],
     required: ['--id'],
     examples: [
@@ -143,8 +144,9 @@ export const AUTOCUT_AGENT_COMMAND_CONTRACTS = Object.freeze({
   }),
   'project edit': command({
     path: ['project', 'edit'],
-    summary: 'Apply an operations JSON file as one atomic revision-safe edit.',
-    options: ['--id', '--ops', '--persist', '--expected-revision', '--force'],
+    summary:
+      'Apply an operations JSON file as one atomic revision-safe edit. Use a stable idempotency key to safely replay the same batch after response loss. sourceStart/sourceEnd are source frames, not seconds; from/durationInFrames use project FPS.',
+    options: ['--id', '--ops', '--persist', '--expected-revision', '--force', '--idempotency-key'],
     flags: ['--persist', '--force'],
     required: ['--id', '--ops'],
     internalOptions: [...BROWSER_OPTIONS, ...WRITER_OPTIONS],
@@ -157,6 +159,12 @@ export const AUTOCUT_AGENT_COMMAND_CONTRACTS = Object.freeze({
       {
         description: 'Read the current project and revision before retrying.',
         command: 'autocut-agent project get --id <project-id>',
+      },
+      {
+        description:
+          'Persist a replay-safe batch. Retry with identical key and operations; use a new key for a new logical edit.',
+        command:
+          'autocut-agent project edit --id <project-id> --ops <operations.json> --persist --expected-revision <revision> --idempotency-key <stable-batch-key>',
       },
     ],
   }),

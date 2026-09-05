@@ -93,6 +93,10 @@ test('AutoCut agent exposes compact capabilities and project edit help without a
   assert.equal(compact.compact, true)
   assert.ok(Buffer.byteLength(JSON.stringify(compact), 'utf8') < 16 * 1024)
   assert.equal(compact.canonicalCommands.remotionRender, 'remotion-render --task <task.json>')
+  assert.equal(compact.features.remotionNpmDependencies, true)
+  assert.equal(compact.remotionDependencies.inferredFromImports, true)
+  assert.equal(compact.remotionDependencies.taskDeclarationRequired, false)
+  assert.deepEqual(compact.remotionDependencies.bundled, { gsap: '3.13.0' })
 
   const help = await run(['project', 'edit', '--help'])
   assert.equal(help.ok, true)
