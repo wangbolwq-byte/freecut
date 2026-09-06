@@ -58,6 +58,8 @@ function makeContext(overrides: Partial<FrameOcclusionContext> = {}): FrameOcclu
     adjustmentLayers: [],
     getCurrentItem: <T extends TimelineItem>(item: T) => item,
     getCurrentKeyframes: () => undefined,
+    isVideoSourceKnownOpaque: () => true,
+    isImageSourceKnownOpaque: () => true,
     ...overrides,
   }
 }
@@ -75,9 +77,31 @@ describe('isItemFullyOccluding', () => {
     expect(isItemFullyOccluding(makeVideoItem(), 0, makeContext())).toBe(true)
   })
 
+  it('returns false for a video source that can contain alpha', () => {
+    const ctx = makeContext({ isVideoSourceKnownOpaque: () => false })
+    expect(isItemFullyOccluding(makeVideoItem(), 0, ctx)).toBe(false)
+  })
+
+  it('returns false while video source opacity is unknown', () => {
+    const ctx = makeContext({ isVideoSourceKnownOpaque: undefined })
+    expect(isItemFullyOccluding(makeVideoItem(), 0, ctx)).toBe(false)
+  })
+
   it('returns true for a full-cover opaque image', () => {
     const image = { ...makeVideoItem(), type: 'image' } as unknown as ImageItem
     expect(isItemFullyOccluding(image, 0, makeContext())).toBe(true)
+  })
+
+  it('returns false for an image source that can contain alpha', () => {
+    const image = { ...makeVideoItem(), type: 'image' } as unknown as ImageItem
+    const ctx = makeContext({ isImageSourceKnownOpaque: () => false })
+    expect(isItemFullyOccluding(image, 0, ctx)).toBe(false)
+  })
+
+  it('returns false while image source opacity is unknown', () => {
+    const image = { ...makeVideoItem(), type: 'image' } as unknown as ImageItem
+    const ctx = makeContext({ isImageSourceKnownOpaque: undefined })
+    expect(isItemFullyOccluding(image, 0, ctx)).toBe(false)
   })
 
   it('returns false for non-opaque item types (text)', () => {

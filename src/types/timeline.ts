@@ -385,10 +385,22 @@ export type TimelineItem =
   | CompositionItem
   | SubtitleSegmentItem
 
+export type TimelineTrackRole =
+  | 'primary-visual'
+  | 'overlay'
+  | 'motion-graphics'
+  | 'captions'
+  | 'narration'
+  | 'dialogue'
+  | 'music'
+  | 'sound-effects'
+  | 'ambience'
+
 export interface TimelineTrack {
   id: string
   name: string
   kind?: 'video' | 'audio'
+  role?: TimelineTrackRole
   height: number
   locked: boolean
   syncLock?: boolean // Defaults to true - controls whether ripple edits propagate to this track

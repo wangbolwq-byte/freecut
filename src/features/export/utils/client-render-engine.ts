@@ -32,7 +32,11 @@ import type { ItemEffect } from '@/types/effects'
 import type { ResolvedTransform } from '@/types/transform'
 import { createLogger } from '@/shared/logging/logger'
 import { blobUrlManager } from '@/infrastructure/browser/blob-url-manager'
-import { resolveMediaUrl, resolveProxyUrl } from '@/features/export/deps/media-library'
+import {
+  getMediaMetadataById,
+  resolveMediaUrl,
+  resolveProxyUrl,
+} from '@/features/export/deps/media-library'
 import { VideoSourcePool } from '@/features/export/deps/player-contract'
 import { recordPreviewCompositionRender } from '@/shared/logging/preview-scrub-performance'
 import { recordPreviewCanvasPool } from '@/shared/logging/preview-scrub-performance'
@@ -775,6 +779,14 @@ export async function createCompositionRenderer(
     getCurrentKeyframes,
     getPreviewTransformOverride,
     getPreviewCornerPinOverride,
+    isVideoSourceKnownOpaque: (item) => {
+      return (
+        videoExtractors.get(item.id)?.isSourceKnownOpaque?.() === true ||
+        getMediaMetadataById(item.mediaId)?.transparency === 'opaque'
+      )
+    },
+    isImageSourceKnownOpaque: (item) =>
+      getMediaMetadataById(item.mediaId)?.transparency === 'opaque',
     videoExtractors,
     videoElements,
     useMediabunny,
@@ -1904,6 +1916,8 @@ export async function createCompositionRenderer(
         getCurrentKeyframes,
         getPreviewEffectsOverride,
         getLiveItemSnapshot,
+        isVideoSourceKnownOpaque: itemRenderContext.isVideoSourceKnownOpaque,
+        isImageSourceKnownOpaque: itemRenderContext.isImageSourceKnownOpaque,
       }
       const isFullyOccluding = (baseItem: TimelineItem, trackOrder: number): boolean =>
         isItemFullyOccluding(baseItem, trackOrder, occlusionContext)

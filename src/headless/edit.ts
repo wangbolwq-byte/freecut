@@ -11,6 +11,7 @@ import type { Project } from '@/types/project'
 import type {
   TimelineItem,
   TimelineTrack,
+  TimelineTrackRole,
   TextItem,
   VideoItem,
   AudioItem,
@@ -109,6 +110,13 @@ export interface HeadlessEditResult {
   project: Project
   applied: number
   results: Array<{ callerId?: string; op: string; ok: boolean; detail?: unknown; error?: string }>
+  summary: {
+    projectId: string
+    itemCount: number
+    trackCount: number
+    durationInFrames: number
+    durationInSeconds: number
+  }
 }
 
 export interface HeadlessEditFailureResult {
@@ -238,6 +246,21 @@ function getOrCreateTrack(kind: 'video' | 'audio'): string {
   return track.id
 }
 
+function getOrCreateTextTrack(): string {
+  const all = tracks()
+  const existing = all.find(
+    (track) => !track.isGroup && (track.kind ?? 'video') === 'video' && track.name === 'Text',
+  )
+  if (existing) return existing.id
+  const orders = all.map((track) => track.order)
+  const track = {
+    ...createClassicTrack({ tracks: all, kind: 'video', order: Math.min(0, ...orders) - 1 }),
+    name: 'Text',
+  }
+  setTracks([...all, track])
+  return track.id
+}
+
 /** The requested track if it exists, else find-or-create one of the given kind. */
 function resolveOrCreateTrack(preferred: unknown, kind: 'video' | 'audio'): string {
   const requested = asString(preferred)
@@ -290,7 +313,7 @@ function buildTextItem(op: EditOp): TextItem {
   return {
     id: asString(op.id) ?? newId(),
     type: 'text',
-    trackId: resolveTrackId(op.trackId, 'video'),
+    trackId: asString(op.trackId) ? resolveTrackId(op.trackId, 'video') : getOrCreateTextTrack(),
     from: asNumber(op.from, 0)!,
     durationInFrames: asNumber(op.durationInFrames, 90)!,
     label: asString(op.label) ?? 'Text',
@@ -310,13 +333,49 @@ function buildTextItem(op: EditOp): TextItem {
   }
 }
 
+function itemPlacementDetail(
+  id: string,
+  requested: { readonly from?: number; readonly trackId?: string } = {},
+): Record<string, unknown> {
+  const item = requireItem(id)
+  const adjusted =
+    (requested.from !== undefined && requested.from !== item.from) ||
+    (requested.trackId !== undefined && requested.trackId !== item.trackId)
+  const requestedPlacement = {
+    ...(requested.from !== undefined ? { from: requested.from } : {}),
+    ...(requested.trackId !== undefined ? { trackId: requested.trackId } : {}),
+  }
+  const actualPlacement = { from: item.from, trackId: item.trackId }
+  return {
+    id: item.id,
+    type: item.type,
+    trackId: item.trackId,
+    from: item.from,
+    durationInFrames: item.durationInFrames,
+    placementReceipt: {
+      status: adjusted ? 'adjusted' : 'exact',
+      requested: requestedPlacement,
+      actual: actualPlacement,
+    },
+    ...(adjusted
+      ? {
+          placementAdjusted: true,
+          requestedPlacement,
+        }
+      : {}),
+  }
+}
+
 /** Apply a single op by driving the real timeline action modules. Throws on bad input. */
 function applyOp(op: EditOp): unknown {
   switch (op.op) {
     case 'addText': {
       const item = buildTextItem(op)
       addItem(item)
-      return { id: item.id }
+      return itemPlacementDetail(item.id, {
+        from: item.from,
+        ...(asString(op.trackId) ? { trackId: asString(op.trackId)! } : {}),
+      })
     }
     case 'addItem': {
       const item = op.item as TimelineItem | undefined
@@ -324,7 +383,10 @@ function applyOp(op: EditOp): unknown {
       const withId: TimelineItem = { ...item, id: item.id || newId() }
       requireTrack(withId.trackId, 'item.trackId')
       addItem(withId)
-      return { id: withId.id }
+      return itemPlacementDetail(withId.id, {
+        from: withId.from,
+        trackId: withId.trackId,
+      })
     }
     case 'updateItem': {
       const id = asString(op.id)
@@ -343,7 +405,7 @@ function applyOp(op: EditOp): unknown {
       const destination = asString(op.trackId)
       if (destination) requireTrack(destination)
       moveItem(id, from, destination)
-      return { id, from }
+      return itemPlacementDetail(id, { from, ...(destination ? { trackId: destination } : {}) })
     }
     case 'removeItems': {
       const ids = Array.isArray(op.ids)
@@ -408,9 +470,13 @@ function applyOp(op: EditOp): unknown {
       const order =
         asNumber(op.order) ??
         (kind === 'video' ? Math.min(0, ...orders) - 1 : Math.max(0, ...orders) + 1)
-      const track = createClassicTrack({ tracks: all, kind, order })
+      const role = asString(op.role) as TimelineTrackRole | undefined
+      const track = {
+        ...createClassicTrack({ tracks: all, kind, order }),
+        ...(role ? { role } : {}),
+      }
       setTracks([...all, track])
-      return { trackId: track.id, name: track.name }
+      return { trackId: track.id, name: track.name, ...(track.role ? { role: track.role } : {}) }
     }
     case 'updateTrack': {
       const id = asString(op.id)
@@ -431,6 +497,9 @@ function applyOp(op: EditOp): unknown {
       const next: TimelineTrack = {
         ...existing,
         ...(asString(raw.name) !== undefined && { name: asString(raw.name)! }),
+        ...(asString(raw.role) !== undefined && {
+          role: asString(raw.role)! as TimelineTrackRole,
+        }),
         ...(asBoolean(raw.locked) !== undefined && { locked: asBoolean(raw.locked)! }),
         ...(asBoolean(raw.syncLock) !== undefined && { syncLock: asBoolean(raw.syncLock)! }),
         ...(asBoolean(raw.visible) !== undefined && { visible: asBoolean(raw.visible)! }),
@@ -469,7 +538,7 @@ function applyOp(op: EditOp): unknown {
       const from = asNumber(op.from, 0)!
       const projectFps = useTimelineSettingsStore.getState().fps || 30
       const requestedSourceStart = asNumber(op.sourceStart, 0)!
-      const created: Array<{ id: string; type: string }> = []
+      const createdIds: string[] = []
       const label = media.fileName ?? mediaId
 
       if (media.mimeType.startsWith('image/')) {
@@ -489,7 +558,7 @@ function applyOp(op: EditOp): unknown {
           ...(media.height ? { sourceHeight: media.height } : {}),
         }
         addItem(item)
-        created.push({ id: item.id, type: 'image' })
+        createdIds.push(item.id)
       } else if (media.mimeType.startsWith('audio/')) {
         const durationInFrames =
           asNumber(op.durationInFrames) ??
@@ -508,7 +577,7 @@ function applyOp(op: EditOp): unknown {
           ...sf,
         }
         addItem(item)
-        created.push({ id: item.id, type: 'audio' })
+        createdIds.push(item.id)
       } else if (media.mimeType.startsWith('video/')) {
         const durationInFrames =
           asNumber(op.durationInFrames) ??
@@ -531,7 +600,7 @@ function applyOp(op: EditOp): unknown {
           ...sf,
         }
         addItem(video)
-        created.push({ id: video.id, type: 'video' })
+        createdIds.push(video.id)
         // Linked audio companion (as the app creates on import) so audio renders.
         if (media.audioCodec) {
           const audio: AudioItem = {
@@ -548,12 +617,14 @@ function applyOp(op: EditOp): unknown {
             ...sf,
           }
           addItem(audio)
-          created.push({ id: audio.id, type: 'audio' })
+          createdIds.push(audio.id)
         }
       } else {
         throw new Error(`addClip: unsupported media mimeType ${media.mimeType}`)
       }
-      return { created }
+      return {
+        created: createdIds.map((id) => itemPlacementDetail(id, { from })),
+      }
     }
     case 'addKeyframe': {
       const itemId = asString(op.itemId)
@@ -755,6 +826,11 @@ export async function editProject(
   }
 
   const timeline = buildTimelineFromStores()
+  const durationInFrames = timeline.items.reduce(
+    (maximum, item) => Math.max(maximum, item.from + item.durationInFrames),
+    0,
+  )
+  const fps = workingProject.metadata.fps || 30
   log.info('Headless edit complete', { applied: results.length })
 
   return {
@@ -762,5 +838,12 @@ export async function editProject(
     project: { ...workingProject, updatedAt: Date.now(), timeline },
     applied: results.length,
     results,
+    summary: {
+      projectId: workingProject.id,
+      itemCount: timeline.items.length,
+      trackCount: timeline.tracks.length,
+      durationInFrames,
+      durationInSeconds: durationInFrames / fps,
+    },
   }
 }

@@ -1,4 +1,4 @@
-import type { TimelineItem } from '@/types/timeline'
+import type { ImageItem, TimelineItem, VideoItem } from '@/types/timeline'
 import type { ItemKeyframes } from '@/types/keyframe'
 import type { ItemEffect } from '@/types/effects'
 import { hasMediaCrop } from '@/shared/utils/media-crop'
@@ -20,6 +20,10 @@ export interface FrameOcclusionContext {
   getCurrentKeyframes: (itemId: string) => ItemKeyframes | undefined
   getPreviewEffectsOverride?: (itemId: string) => ItemEffect[] | undefined
   getLiveItemSnapshot?: (itemId: string) => TimelineItem | undefined
+  /** True only after the decoder proves that a video's source cannot carry alpha. */
+  isVideoSourceKnownOpaque?: (item: VideoItem) => boolean
+  /** True only when imported image metadata proves that the source cannot carry alpha. */
+  isImageSourceKnownOpaque?: (item: ImageItem) => boolean
 }
 
 /**
@@ -56,6 +60,11 @@ export function isItemFullyOccluding(
   const item = getCurrentItem(baseItem)
   // Only videos and images can be fully opaque
   if (item.type !== 'video' && item.type !== 'image') return false
+  // Container metadata, rather than the item transform, determines whether a
+  // video can contain transparent pixels. Unknown and alpha-capable sources
+  // must retain the layers below them.
+  if (item.type === 'video' && !ctx.isVideoSourceKnownOpaque?.(item)) return false
+  if (item.type === 'image' && !ctx.isImageSourceKnownOpaque?.(item)) return false
 
   // Items in transitions are blended, not fully occluding
   if (transitionClipIds.has(item.id)) return false

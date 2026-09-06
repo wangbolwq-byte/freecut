@@ -415,6 +415,8 @@ function isSubCompFullyOccludingItem(
 ): boolean {
   if (localFrame < item.from || localFrame >= item.from + item.durationInFrames) return false
   if (item.type !== 'video' && item.type !== 'image') return false
+  if (item.type === 'video' && !rctx.isVideoSourceKnownOpaque?.(item)) return false
+  if (item.type === 'image' && !rctx.isImageSourceKnownOpaque?.(item)) return false
   if (item.blendMode && item.blendMode !== 'normal') return false
   if (hasCornerPin(item.cornerPin)) return false
   // Use the same preview-override path as the renderer above. Otherwise a

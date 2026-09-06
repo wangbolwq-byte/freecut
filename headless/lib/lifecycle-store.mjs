@@ -397,6 +397,8 @@ export async function updateMediaMetadata(
       ...('codec' in details ? { codec: details.codec } : {}),
       ...('bitrate' in details ? { bitrate: details.bitrate } : {}),
       ...('audioCodec' in details ? { audioCodec: details.audioCodec } : {}),
+      ...('audioPresence' in details ? { audioPresence: details.audioPresence } : {}),
+      ...('transparency' in details ? { transparency: details.transparency } : {}),
       ...('audioCodecSupported' in details
         ? { audioCodecSupported: details.audioCodecSupported }
         : {}),
@@ -489,12 +491,19 @@ export async function commitStagedMedia(staged, probe, { projectId, workspace })
     ...(metadata.type === 'video'
       ? {
           audioCodec: metadata.audioCodec,
+          audioPresence: metadata.audioPresence,
+          transparency: metadata.transparency,
           audioCodecSupported: metadata.audioCodecSupported,
           videoCodecSupported: metadata.videoCodecSupported,
           keyframeTimestamps: metadata.keyframeTimestamps,
           gopInterval: metadata.gopInterval,
         }
-      : {}),
+      : metadata.type === 'image'
+        ? { transparency: metadata.transparency }
+        : {
+            audioPresence: metadata.type === 'audio' ? 'present' : 'absent',
+            transparency: 'opaque',
+          }),
     tags: [],
     createdAt: now,
     updatedAt: now,

@@ -225,6 +225,7 @@ function brokerResponseError(response) {
   const details = isRecord(response) && isRecord(response.error) ? response.error : {}
   const error = new Error(stringOr(details.message, 'AutoCut broker operation failed'))
   error.code = stringOr(details.code, 'AUTOCUT_BROKER_ERROR')
+  if (isRecord(details.details)) error.details = details.details
   return error
 }
 

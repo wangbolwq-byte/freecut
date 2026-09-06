@@ -28,6 +28,7 @@ interface MediabunnyVideoTrack {
   codec: string
   computePacketStats(count: number): Promise<{ averagePacketRate: number } | null>
   canDecode?: () => Promise<boolean>
+  canBeTransparent?: () => Promise<boolean>
 }
 
 interface MediabunnyAudioTrack {
@@ -137,6 +138,8 @@ export interface VideoMetadata {
   codec: string
   bitrate: number
   audioCodec?: string
+  audioPresence: 'present' | 'absent'
+  transparency: 'opaque' | 'may-have-alpha' | 'unknown'
   audioCodecSupported: boolean
   /** Whether the browser can decode this video track via WebCodecs. False for e.g. ProRes, which requires a proxy. */
   videoCodecSupported: boolean
@@ -159,6 +162,7 @@ export interface ImageMetadata {
   type: 'image'
   width: number
   height: number
+  transparency: 'opaque' | 'may-have-alpha' | 'unknown'
 }
 
 // Audio codecs that cannot be decoded in browser
@@ -482,6 +486,12 @@ async function extractVideoMetadata(
       : await extractKeyframeTimestamps(mb, videoTrack)
 
     const audioCodec = audioTrack?.codec
+    const transparency: VideoMetadata['transparency'] = videoTrack.canBeTransparent
+      ? await videoTrack.canBeTransparent().then(
+          (possible) => (possible ? 'may-have-alpha' : 'opaque'),
+          () => 'unknown',
+        )
+      : 'unknown'
     const audioCodecSupported = isAudioCodecSupported(audioCodec)
     // `videoCodecSupported` means "a browser <video> element can play this" — it routes
     // preview between the pooled <video> element and the live-decode canvas. ProRes is
@@ -512,6 +522,8 @@ async function extractVideoMetadata(
       codec: videoTrack.codec || 'unknown',
       bitrate: 0,
       audioCodec,
+      audioPresence: audioTrack ? 'present' : 'absent',
+      transparency,
       audioCodecSupported,
       videoCodecSupported,
       keyframeTimestamps,
@@ -595,6 +607,7 @@ async function extractImageMetadata(
       type: 'image',
       width: dims?.width ?? 800,
       height: dims?.height ?? 600,
+      transparency: 'may-have-alpha',
     }
   }
 
@@ -603,6 +616,12 @@ async function extractImageMetadata(
     type: 'image',
     width: bitmap.width,
     height: bitmap.height,
+    transparency:
+      mimeType === 'image/jpeg' || mimeType === 'image/jpg'
+        ? 'opaque'
+        : mimeType === 'image/png' || mimeType === 'image/webp'
+          ? 'may-have-alpha'
+          : 'unknown',
   }
   bitmap.close()
   return metadata

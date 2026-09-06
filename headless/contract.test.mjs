@@ -40,8 +40,12 @@ const samples = {
     presentation: 'slide',
     direction: 'from-left',
   },
-  addTrack: { op: 'addTrack', kind: 'audio', order: 2 },
-  updateTrack: { op: 'updateTrack', id: 'v', updates: { name: 'Video', locked: true } },
+  addTrack: { op: 'addTrack', kind: 'audio', role: 'narration', order: 2 },
+  updateTrack: {
+    op: 'updateTrack',
+    id: 'v',
+    updates: { name: 'Video', role: 'primary-visual', locked: true },
+  },
   removeTrack: { op: 'removeTrack', id: 'v' },
   addClip: { op: 'addClip', mediaId: 'm', from: 0, sourceStart: 12 },
   addKeyframe: {
@@ -80,6 +84,10 @@ test('every published edit discriminator has a valid strict schema', () => {
     assert.equal(editOpSchema.safeParse(EDIT_OPERATION_EXAMPLES[op]).success, true, `${op} example`)
   assert.equal(editOpSchema.safeParse({ ...samples.addText, surprise: true }).success, false)
   assert.equal(editOpSchema.safeParse({ op: 'invented' }).success, false)
+  assert.equal(
+    editOpSchema.safeParse({ op: 'addTrack', kind: 'video', role: 'continuous-overlay' }).success,
+    false,
+  )
   assert.equal(
     editOpSchema.safeParse({ op: 'addEffect', itemId: 'i', gpuEffectType: 'gpu-invented' }).success,
     false,

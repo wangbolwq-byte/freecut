@@ -1,4 +1,5 @@
 import type { AnimatableProperty, EasingType, EasingConfig } from './keyframe'
+import type { TimelineTrackRole } from './timeline'
 import type { AudioEqSettings } from './audio'
 import type { Transition } from './transition'
 import type { CropSettings } from './transform'
@@ -57,6 +58,7 @@ export interface ProjectTimeline {
     id: string
     name: string
     kind?: 'video' | 'audio'
+    role?: TimelineTrackRole
     height: number
     locked: boolean
     syncLock?: boolean

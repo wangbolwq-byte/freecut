@@ -551,6 +551,31 @@ export const LoadedEditor = memo(function LoadedEditor({
 
   // Track unsaved changes
   const isDirty = useTimelineStore((s: { isDirty: boolean }) => s.isDirty)
+  useEffect(() => {
+    const reportPresence = window.electronAutoCut?.reportEditorPresence
+    if (!reportPresence) return
+    void reportPresence({
+      projectId,
+      state: 'open',
+      hasUnsavedChanges: false,
+    }).catch((error) => logger.debug('Failed to report editor presence', error))
+    return () => {
+      void reportPresence({
+        projectId,
+        state: 'closed',
+        hasUnsavedChanges: false,
+      }).catch((error) => logger.debug('Failed to clear editor presence', error))
+    }
+  }, [projectId])
+  useEffect(() => {
+    const reportPresence = window.electronAutoCut?.reportEditorPresence
+    if (!reportPresence) return
+    void reportPresence({
+      projectId,
+      state: 'update',
+      hasUnsavedChanges: isDirty,
+    }).catch((error) => logger.debug('Failed to update editor presence', error))
+  }, [isDirty, projectId])
   const isTimelineLoading = useTimelineSettingsStore((s) => s.isTimelineLoading)
   const {
     autoSaveEnabled,

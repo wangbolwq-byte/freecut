@@ -121,6 +121,30 @@ test('remix audit rejects source ranges that move backward along the timeline', 
   assert.ok(result.issues.some((issue) => issue.code === 'source_range_not_monotonic'))
 })
 
+test('remix audit permits intentional gaps on sparse visual roles only', () => {
+  const project = {
+    id: 'track-role-project',
+    timeline: {
+      tracks: [
+        { id: 'primary', kind: 'video', role: 'primary-visual' },
+        { id: 'overlay', kind: 'video', role: 'overlay' },
+      ],
+      items: [
+        { id: 'primary-a', type: 'image', trackId: 'primary', from: 0, durationInFrames: 30 },
+        { id: 'primary-b', type: 'image', trackId: 'primary', from: 60, durationInFrames: 30 },
+        { id: 'overlay-a', type: 'image', trackId: 'overlay', from: 0, durationInFrames: 10 },
+        { id: 'overlay-b', type: 'image', trackId: 'overlay', from: 80, durationInFrames: 10 },
+      ],
+    },
+  }
+
+  const gaps = auditRemixProject(project).issues.filter((issue) => issue.code === 'timeline_gap')
+  assert.deepEqual(
+    gaps.map((issue) => issue.trackIds),
+    [['primary']],
+  )
+})
+
 test('remix audit reports motion, transition, audio, music, and GPU coverage as facts', () => {
   const project = {
     id: 'semantic-project',

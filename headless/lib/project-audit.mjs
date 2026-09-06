@@ -1,4 +1,5 @@
 const TIMED_MEDIA_TYPES = new Set(['video', 'audio'])
+const SPARSE_VISUAL_TRACK_ROLES = new Set(['overlay', 'motion-graphics', 'captions'])
 
 export function auditRemixProject(project, options = {}) {
   const timeline = project?.timeline ?? {}
@@ -20,7 +21,7 @@ export function auditRemixProject(project, options = {}) {
       const current = ordered[index]
       const previousEnd = (previous.from ?? 0) + (previous.durationInFrames ?? 0)
       const currentStart = current.from ?? 0
-      if (currentStart > previousEnd) {
+      if (currentStart > previousEnd && !SPARSE_VISUAL_TRACK_ROLES.has(track?.role)) {
         issues.push(
           issue('timeline_gap', [previous.id, current.id], { frames: currentStart - previousEnd }),
         )

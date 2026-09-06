@@ -313,6 +313,12 @@ async function main() {
     })
     check('edit applied all ops', edit.applied === 4)
     check('edit ops succeeded', edit.results?.every((result) => result.ok) === true)
+    check(
+      'edit reports exact placement for the requested caption frame',
+      edit.results?.[0]?.detail?.placementReceipt?.status === 'exact' &&
+        edit.results?.[0]?.detail?.placementReceipt?.requested?.from === 30 &&
+        edit.results?.[0]?.detail?.placementReceipt?.actual?.from === 30,
+    )
     const before = SAMPLE_PROJECT.timeline.items.length
     const after = edit.project?.timeline?.items?.length ?? 0
     check('edit added an item', after === before + 1, `items ${before} -> ${after}`)
@@ -335,6 +341,11 @@ async function main() {
     )
     const referencedId = referencedEdit.results?.[0]?.detail?.id
     check('caller result reference resolves generated id', Boolean(referencedId))
+    check(
+      'referenced move reports its actual persisted placement',
+      referencedEdit.results?.[1]?.detail?.placementReceipt?.status === 'exact' &&
+        referencedEdit.results?.[1]?.detail?.placementReceipt?.actual?.from === 12,
+    )
     check(
       'referenced operation moved the generated item',
       referencedEdit.project?.timeline?.items?.find((item) => item.id === referencedId)?.from ===

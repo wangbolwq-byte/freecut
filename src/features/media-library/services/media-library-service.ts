@@ -311,6 +311,8 @@ function buildGeneratedVideoMetadata(
     codec: metadata.codec,
     bitrate: metadata.bitrate ?? 0,
     audioCodec: metadata.audioCodec,
+    audioPresence: metadata.audioPresence,
+    transparency: metadata.transparency,
     audioCodecSupported: metadata.audioCodecSupported,
     videoCodecSupported: metadata.videoCodecSupported,
     keyframeTimestamps: metadata.keyframeTimestamps,
@@ -729,6 +731,14 @@ class MediaLibraryService {
             : 'unknown',
       bitrate: 'bitrate' in metadata ? (metadata.bitrate ?? 0) : 0,
       audioCodec: metadata.type === 'video' ? metadata.audioCodec : undefined,
+      audioPresence:
+        metadata.type === 'video'
+          ? metadata.audioPresence
+          : metadata.type === 'audio'
+            ? 'present'
+            : 'absent',
+      transparency:
+        metadata.type === 'video' || metadata.type === 'image' ? metadata.transparency : 'opaque',
       audioCodecSupported: metadata.type === 'video' ? metadata.audioCodecSupported : true,
       videoCodecSupported: metadata.type === 'video' ? metadata.videoCodecSupported : true,
       keyframeTimestamps: metadata.type === 'video' ? metadata.keyframeTimestamps : undefined,
@@ -1017,6 +1027,14 @@ class MediaLibraryService {
               : 'unknown',
         bitrate: 'bitrate' in metadata ? (metadata.bitrate ?? 0) : 0,
         audioCodec: metadata.type === 'video' ? metadata.audioCodec : undefined,
+        audioPresence:
+          metadata.type === 'video'
+            ? metadata.audioPresence
+            : metadata.type === 'audio'
+              ? 'present'
+              : 'absent',
+        transparency:
+          metadata.type === 'video' || metadata.type === 'image' ? metadata.transparency : 'opaque',
         audioCodecSupported: metadata.type === 'video' ? metadata.audioCodecSupported : true,
         videoCodecSupported: metadata.type === 'video' ? metadata.videoCodecSupported : true,
         keyframeTimestamps: metadata.type === 'video' ? metadata.keyframeTimestamps : undefined,
@@ -1290,6 +1308,14 @@ class MediaLibraryService {
             : 'unknown',
       bitrate: 'bitrate' in metadata ? (metadata.bitrate ?? 0) : 0,
       audioCodec: metadata.type === 'video' ? metadata.audioCodec : undefined,
+      audioPresence:
+        metadata.type === 'video'
+          ? metadata.audioPresence
+          : metadata.type === 'audio'
+            ? 'present'
+            : 'absent',
+      transparency:
+        metadata.type === 'video' || metadata.type === 'image' ? metadata.transparency : 'opaque',
       audioCodecSupported: metadata.type === 'video' ? metadata.audioCodecSupported : true,
       videoCodecSupported: metadata.type === 'video' ? metadata.videoCodecSupported : true,
       keyframeTimestamps: metadata.type === 'video' ? metadata.keyframeTimestamps : undefined,

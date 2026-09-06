@@ -226,6 +226,19 @@ const audioEq = z
 const trackUpdates = z
   .object({
     name: z.string().min(1).optional(),
+    role: z
+      .enum([
+        'primary-visual',
+        'overlay',
+        'motion-graphics',
+        'captions',
+        'narration',
+        'dialogue',
+        'music',
+        'sound-effects',
+        'ambience',
+      ])
+      .optional(),
     locked: z.boolean().optional(),
     syncLock: z.boolean().optional(),
     visible: z.boolean().optional(),
@@ -309,6 +322,19 @@ const opSchemas = [
     .object({
       op: z.literal('addTrack'),
       kind: z.enum(['video', 'audio']).optional(),
+      role: z
+        .enum([
+          'primary-visual',
+          'overlay',
+          'motion-graphics',
+          'captions',
+          'narration',
+          'dialogue',
+          'music',
+          'sound-effects',
+          'ambience',
+        ])
+        .optional(),
       order: finite.optional(),
     })
     .strict(),
@@ -451,7 +477,7 @@ export const EDIT_OPERATION_EXAMPLES = Object.freeze({
     direction: 'from-left',
     durationInFrames: 12,
   },
-  addTrack: { op: 'addTrack', kind: 'video' },
+  addTrack: { op: 'addTrack', kind: 'video', role: 'overlay' },
   updateTrack: { op: 'updateTrack', id: 'track-id', updates: { name: 'Overlay' } },
   removeTrack: { op: 'removeTrack', id: 'track-id' },
   addClip: {

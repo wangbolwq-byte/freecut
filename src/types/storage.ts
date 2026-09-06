@@ -78,6 +78,10 @@ export interface MediaMetadata {
    * Only present for video files with audio tracks
    */
   audioCodec?: string
+  /** Whether a video source contains an audio track. Missing legacy values are unknown. */
+  audioPresence?: 'present' | 'absent' | 'unknown'
+  /** Whether visual media is known opaque or may carry alpha. */
+  transparency?: 'opaque' | 'may-have-alpha' | 'unknown'
   /**
    * Whether the audio codec is supported for waveform generation
    * false for codecs like EC-3 (Dolby Digital Plus), AC-3, DTS that can't be decoded in browser

@@ -33,6 +33,14 @@ test('controlled Remotion task renders verified VP9 alpha inside its project dir
   assert.deepEqual(result.alphaSampleFrames, [0, 14, 29])
   assert.match(result.sourceHash, /^sha256:[0-9a-f]{64}$/)
   assert.match(result.outputHash, /^sha256:[0-9a-f]{64}$/)
+  assert.equal(result.representativeFrames.length, 3)
+  for (const sample of result.representativeFrames) {
+    assert.equal(
+      path.dirname(sample.path),
+      path.join(await realpath(fixture.taskDirectory), 'renders', 'representative'),
+    )
+    assert.ok((await readFile(sample.path)).byteLength > 0)
+  }
   assert.equal(
     result.outputPath,
     path.join(await realpath(fixture.taskDirectory), 'renders', 'lower-third.webm'),
@@ -200,6 +208,10 @@ test(
     assert.equal(result.codec, 'vp9')
     assert.equal(result.pixelFormat, 'yuva420p')
     assert.equal(result.alphaVerified, true)
+    assert.equal(result.representativeFrames.length, 3)
+    for (const sample of result.representativeFrames) {
+      assert.ok((await readFile(sample.path)).byteLength > 0)
+    }
     assert.ok((await readFile(result.outputPath)).byteLength > 0)
   },
 )
@@ -225,7 +237,10 @@ test(
     assert.equal(result.container, 'mp4')
     assert.equal(result.codec, 'h264')
     assert.equal(result.alphaVerified, undefined)
-    assert.ok(result.representativeFrames.length > 0)
+    assert.equal(result.representativeFrames.length, 3)
+    for (const sample of result.representativeFrames) {
+      assert.ok((await readFile(sample.path)).byteLength > 0)
+    }
     assert.ok((await readFile(result.outputPath)).byteLength > 0)
   },
 )

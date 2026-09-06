@@ -107,6 +107,8 @@ export interface ItemRenderContext {
   getCurrentKeyframes?: (itemId: string) => ItemKeyframes | undefined
   getPreviewTransformOverride?: (itemId: string) => Partial<ItemTransform> | undefined
   getPreviewCornerPinOverride?: (itemId: string) => TimelineItem['cornerPin'] | undefined
+  isVideoSourceKnownOpaque?: (item: VideoItem) => boolean
+  isImageSourceKnownOpaque?: (item: ImageItem) => boolean
 
   // Video state
   videoExtractors: Map<string, VideoFrameSource>

@@ -140,6 +140,8 @@ export async function renderRemotionTask(input) {
       serveUrl,
       sharedBrowserOptions,
       temporaryDirectory,
+      taskDirectory,
+      taskId: task.taskId,
       requireTransparency: task.renderMode === 'transparent-overlay',
     })
     const transparentOverlay = task.renderMode === 'transparent-overlay'
@@ -739,6 +741,8 @@ async function renderRepresentativeFrames({
   serveUrl,
   sharedBrowserOptions,
   temporaryDirectory,
+  taskDirectory,
+  taskId,
   requireTransparency,
 }) {
   const frames = [
@@ -746,6 +750,8 @@ async function renderRepresentativeFrames({
     Math.floor((composition.durationInFrames - 1) / 2),
     composition.durationInFrames - 1,
   ].filter((frame, index, values) => values.indexOf(frame) === index)
+  const representativeDirectory = path.join(taskDirectory, 'renders', 'representative')
+  await mkdir(representativeDirectory, { recursive: true })
   let foundTransparentPixel = false
   const samples = []
   for (const frame of frames) {
@@ -760,8 +766,11 @@ async function renderRepresentativeFrames({
       ...sharedBrowserOptions,
     })
     const bytes = await readFile(output)
+    const retainedPath = path.join(representativeDirectory, `${taskId}-${frame}.png`)
+    await writeFile(retainedPath, bytes)
     samples.push({
       frame,
+      path: retainedPath,
       hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
     })
     if (!requireTransparency) continue

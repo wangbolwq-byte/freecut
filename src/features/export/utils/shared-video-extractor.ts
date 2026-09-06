@@ -32,6 +32,7 @@ export interface VideoFrameSource {
   getLastFailureKind(): VideoFrameFailureKind
   getDimensions(): { width: number; height: number }
   getDuration(): number
+  isSourceKnownOpaque?(): boolean
   prewarmBatch(
     ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D,
     timestamps: number[],
@@ -216,6 +217,10 @@ class SharedItemVideoSource implements VideoFrameSource {
 
   getDuration(): number {
     return this.pool.getItemDuration(this.itemId, this.src)
+  }
+
+  isSourceKnownOpaque(): boolean {
+    return this.pool.isItemSourceKnownOpaque(this.itemId, this.src)
   }
 
   prewarmBatch(
@@ -432,6 +437,10 @@ export class SharedVideoExtractorPool {
   getItemDuration(itemId: string, src: string): number {
     const extractor = this.getExtractorForItem(itemId, src)
     return extractor?.getDuration() ?? this.sourceStates.get(src)?.duration ?? 0
+  }
+
+  isItemSourceKnownOpaque(itemId: string, src: string): boolean {
+    return this.getExtractorForItem(itemId, src)?.isSourceKnownOpaque() ?? false
   }
 
   /**

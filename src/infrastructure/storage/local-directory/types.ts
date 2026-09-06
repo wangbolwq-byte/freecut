@@ -109,4 +109,9 @@ export interface ElectronAutoCutBridge {
   readonly runtime: 'electron'
   readonly version: 1
   claimProject(token: string): Promise<ElectronDirectoryGrant>
+  reportEditorPresence?(input: {
+    projectId: string
+    state: 'open' | 'update' | 'closed'
+    hasUnsavedChanges: boolean
+  }): Promise<{ reported: true }>
 }

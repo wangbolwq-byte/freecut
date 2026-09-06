@@ -3,7 +3,15 @@ import type { CompositionInputProps } from '@/types/export'
 import type { AudioItem, CompositionItem, TimelineTrack, VideoItem } from '@/types/timeline'
 import { useCompositionsStore } from '@/features/export/deps/timeline-compositions'
 
-const { inputConstructor } = vi.hoisted(() => ({ inputConstructor: vi.fn() }))
+const { getMediaMetadataById, inputConstructor } = vi.hoisted(() => ({
+  getMediaMetadataById: vi.fn(),
+  inputConstructor: vi.fn(),
+}))
+
+vi.mock('@/features/export/deps/media-library', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/features/export/deps/media-library')>()),
+  getMediaMetadataById,
+}))
 
 vi.mock('mediabunny', () => {
   class UrlSource {
@@ -232,6 +240,23 @@ describe('extractAudioSegments', () => {
       mediaDependencyIds: [],
       mediaDependencyVersion: 0,
     })
+    getMediaMetadataById.mockReset()
+  })
+
+  it('does not schedule audio decoding for a video known to have no audio track', () => {
+    getMediaMetadataById.mockReturnValue({ audioPresence: 'absent' })
+    const video = makeVideoItem()
+    const composition: CompositionInputProps = {
+      fps: 30,
+      durationInFrames: 90,
+      width: 1920,
+      height: 1080,
+      tracks: [makeTrack({ id: 'track-v1', order: 0, kind: 'video', items: [video] })],
+      transitions: [],
+      keyframes: [],
+    }
+
+    expect(extractAudioSegments(composition, composition.fps)).toEqual([])
   })
 
   it('skips root video audio when a linked audio companion exists', () => {
@@ -308,6 +333,52 @@ describe('extractAudioSegments', () => {
 
     expect(segments).toHaveLength(1)
     expect(segments[0]).toMatchObject({ itemId: 'sub-audio', type: 'audio' })
+  })
+
+  it('does not schedule nested video audio when metadata proves the source is silent', () => {
+    getMediaMetadataById.mockReturnValue({ audioPresence: 'absent' })
+    const subVideo = makeVideoItem({ id: 'sub-video', trackId: 'sub-v1' })
+    const subComp = {
+      id: 'sub-comp-1',
+      name: 'Silent Compound Clip',
+      items: [subVideo],
+      tracks: [makeTrack({ id: 'sub-v1', order: 0, kind: 'video' })],
+      transitions: [],
+      keyframes: [],
+      fps: 30,
+      width: 1920,
+      height: 1080,
+      durationInFrames: 90,
+    }
+    useCompositionsStore.setState({
+      compositions: [subComp],
+      compositionById: { [subComp.id]: subComp },
+      mediaDependencyIds: [],
+      mediaDependencyVersion: 0,
+    })
+    const compositionItem: CompositionItem = {
+      id: 'comp-item-1',
+      type: 'composition',
+      compositionId: subComp.id,
+      trackId: 'root-v1',
+      from: 0,
+      durationInFrames: 90,
+      label: 'Silent Compound Clip',
+      compositionWidth: 1920,
+      compositionHeight: 1080,
+      transform: { x: 0, y: 0, rotation: 0, opacity: 1 },
+    }
+    const composition: CompositionInputProps = {
+      fps: 30,
+      durationInFrames: 90,
+      width: 1920,
+      height: 1080,
+      tracks: [makeTrack({ id: 'root-v1', order: 0, kind: 'video', items: [compositionItem] })],
+      transitions: [],
+      keyframes: [],
+    }
+
+    expect(extractAudioSegments(composition, composition.fps)).toEqual([])
   })
 
   it('expands linked audio companions around a cut-centered transition', () => {

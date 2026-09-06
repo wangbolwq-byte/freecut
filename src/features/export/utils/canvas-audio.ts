@@ -28,7 +28,11 @@ import {
 } from '@/features/export/deps/timeline-compositions'
 import { getPropertyKeyframes, interpolatePropertyValue } from '@/features/export/deps/keyframes'
 import { blobUrlManager } from '@/infrastructure/browser/blob-url-manager'
-import { getMediaAudioCodecById, resolveMediaUrl } from '@/features/export/deps/media-library'
+import {
+  getMediaAudioCodecById,
+  getMediaMetadataById,
+  resolveMediaUrl,
+} from '@/features/export/deps/media-library'
 import { ensureAc3DecoderRegistered, isAc3AudioCodec } from '@/shared/utils/ac3-decoder'
 import {
   getLinkedAudioCompanion,
@@ -81,6 +85,7 @@ export function clearAudioDecodeCache(): void {
 interface AudioSegment {
   itemId: string
   trackId: string
+  mediaId?: string
   src: string
   startFrame: number // Timeline position
   durationFrames: number
@@ -114,6 +119,13 @@ interface AudioSegment {
 interface AudioSegmentFailure {
   itemId: string
   trackId: string
+  mediaId?: string
+  type: 'video' | 'audio'
+  phase: 'decode-and-mix'
+  codec?: string
+  timelineRange: { fromFrame: number; toFrame: number }
+  sourceRange: { fromSeconds: number; toSeconds: number }
+  causeCode?: string
   message: string
 }
 
@@ -451,6 +463,7 @@ function buildManagedTransitionAudioSegments<TItem extends TransitionAudioItem>(
     expandedSegments.push({
       itemId: item.id,
       trackId: entry.trackId,
+      ...(item.mediaId ? { mediaId: item.mediaId } : {}),
       clip: item,
       src: item.src,
       startFrame: item.from - before,
@@ -528,6 +541,7 @@ function buildManagedTransitionAudioSegments<TItem extends TransitionAudioItem>(
   const toAudioSegment = (segment: ExpandedTransitionAudioSegment): AudioSegment => ({
     itemId: segment.itemId,
     trackId: segment.trackId,
+    ...(segment.mediaId ? { mediaId: segment.mediaId } : {}),
     src: segment.src,
     startFrame: segment.startFrame,
     durationFrames: segment.durationFrames,
@@ -734,6 +748,12 @@ function appendCompositionAudioSegments(params: {
 
     if (subItem.type !== 'video' && subItem.type !== 'audio') continue
     if (subItem.type === 'video' && linkedSubCompVideoIds.has(subItem.id)) continue
+    if (subItem.type === 'video' && subItem.embeddedAudioMuted) continue
+    if (
+      subItem.type === 'video' &&
+      getMediaMetadataById(subItem.mediaId)?.audioPresence === 'absent'
+    )
+      continue
     const src =
       (subItem.mediaId ? blobUrlManager.get(subItem.mediaId) : null) ??
       (subItem as VideoItem | AudioItem).src ??
@@ -773,6 +793,7 @@ function appendCompositionAudioSegments(params: {
     segments.push({
       itemId: subItem.id,
       trackId: track.id,
+      ...(subItem.mediaId ? { mediaId: subItem.mediaId } : {}),
       src,
       startFrame: effectiveStart,
       durationFrames: effectiveDuration,
@@ -877,6 +898,7 @@ export function extractAudioSegments(
         const videoItem = item as VideoItem
         if (linkedRootVideoIds.has(videoItem.id)) continue
         if (videoItem.embeddedAudioMuted) continue
+        if (getMediaMetadataById(videoItem.mediaId)?.audioPresence === 'absent') continue
         if (!videoItem.src) continue
         videoById.set(item.id, {
           item: videoItem,
@@ -941,6 +963,7 @@ export function extractAudioSegments(
         audioOnlySegments.push({
           itemId: item.id,
           trackId: track.id,
+          ...(item.mediaId ? { mediaId: item.mediaId } : {}),
           src: audioItem.src,
           startFrame: item.from,
           durationFrames: item.durationInFrames,
@@ -1180,6 +1203,12 @@ function getCachedAudioDecode(src: string, itemId: string): DecodedAudio | null 
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function getErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object' || !('code' in error)) return undefined
+  const code = error.code
+  return typeof code === 'string' ? code : undefined
 }
 
 async function recoverAudioDecode(params: {
@@ -2457,14 +2486,13 @@ export async function processAudio(
       throw new DOMException('Audio processing cancelled', 'AbortError')
     }
 
-    try {
-      // Calculate the time range we actually need from the source
-      // sourceStartFrame is in source-native FPS frames, so divide by sourceFps (not project fps)
-      const sourceStartTime = segment.sourceStartFrame / segment.sourceFps
-      // Account for speed: at 2x speed, we need twice as much source audio
-      const sourceDurationNeeded = (segment.durationFrames / fps) * segment.speed
-      const sourceEndTime = sourceStartTime + sourceDurationNeeded
+    // Calculate the time range we actually need from the source. Keeping it
+    // outside the try block also makes failures actionable at the Host boundary.
+    const sourceStartTime = segment.sourceStartFrame / segment.sourceFps
+    const sourceDurationNeeded = (segment.durationFrames / fps) * segment.speed
+    const sourceEndTime = sourceStartTime + sourceDurationNeeded
 
+    try {
       // Decode ONLY the needed range using mediabunny (huge performance improvement!)
       const decoded = await decodeAudioFromSource(
         segment.src,
@@ -2598,6 +2626,16 @@ export async function processAudio(
       const failure = {
         itemId: segment.itemId,
         trackId: segment.trackId,
+        ...(segment.mediaId ? { mediaId: segment.mediaId } : {}),
+        type: segment.type,
+        phase: 'decode-and-mix' as const,
+        ...(segment.audioCodec ? { codec: segment.audioCodec } : {}),
+        timelineRange: {
+          fromFrame: segment.startFrame,
+          toFrame: segment.startFrame + segment.durationFrames,
+        },
+        sourceRange: { fromSeconds: sourceStartTime, toSeconds: sourceEndTime },
+        ...(getErrorCode(error) ? { causeCode: getErrorCode(error)! } : {}),
         message: getErrorMessage(error),
       }
       failures.push(failure)

@@ -51,6 +51,7 @@ interface MediabunnyVideoTrack {
   displayWidth: number
   displayHeight: number
   canDecode?: () => Promise<boolean>
+  canBeTransparent?: () => Promise<boolean>
 }
 
 export interface DrawFrameCaptureResult {
@@ -87,6 +88,7 @@ export class VideoFrameExtractor {
   private lastRequestedTimestamp: number | null = null
   private sampleLoopError: unknown = null
   private lastFailureKind: 'none' | 'no-sample' | 'decode-error' = 'none'
+  private sourceMayBeTransparent: boolean | null = null
   /**
    * Cached VideoFrame from the current sample.  Kept alive between draws so
    * that repeated draws of the same sample (common during transitions past the
@@ -137,6 +139,23 @@ export class VideoFrameExtractor {
             'warn',
           )
           return false
+        }
+      }
+
+      // Occlusion culling may only skip layers below a video after the
+      // container has explicitly proved that its samples cannot carry alpha.
+      // WebM/VP9 animations commonly store alpha as Matroska block side data;
+      // treating every full-frame video as opaque drops the footage below a
+      // transparent overlay.
+      if (typeof this.videoTrack.canBeTransparent === 'function') {
+        try {
+          this.sourceMayBeTransparent = await this.videoTrack.canBeTransparent()
+        } catch (error) {
+          this.sourceMayBeTransparent = null
+          log.debug('Unable to prove source opacity; disabling occlusion culling for it', {
+            itemId: this.itemId,
+            error,
+          })
         }
       }
 
@@ -678,6 +697,10 @@ export class VideoFrameExtractor {
     return this.duration
   }
 
+  isSourceKnownOpaque(): boolean {
+    return this.sourceMayBeTransparent === false
+  }
+
   /**
    * Clean up resources
    */
@@ -695,6 +718,7 @@ export class VideoFrameExtractor {
     this.input = null
     this.videoTrack = null
     this.ready = false
+    this.sourceMayBeTransparent = null
     this.drawFailureCount = 0
     this.lastFailureKind = 'none'
   }
