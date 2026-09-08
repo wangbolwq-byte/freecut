@@ -49,6 +49,31 @@ refer to an ID created earlier, for example
 `{"$ref":"clip#/detail/created/0/id"}` in an ID-valued field. Imports are
 CLI-only: HTTP accepts neither server-local paths nor media uploads.
 
+Rendering also accepts `--expected-revision` (HTTP: `expectedRevision`). The renderer
+hashes the same project bytes it renders, rejects a stale revision with
+`REVISION_CONFLICT`, and returns `inputProjectRevision` in the output receipt.
+An edit after that read does not change the prepared render snapshot.
+
+## Desktop runtime packages
+
+After building the harness, package each target explicitly:
+
+```bash
+node scripts/package-autocut-runtime.mjs --platform-arch windows-x64 --version <version>
+node scripts/package-autocut-runtime.mjs --platform-arch macos-arm64 --version <version>
+```
+
+Runtime dependencies are selected from `package-lock.json` for the requested OS
+and CPU, including optional native packages. Missing target packages are downloaded
+from their locked tarball URLs and verified against their locked SHA-512; the build
+does not run their install scripts or modify the development `node_modules`.
+Verified downloads are cached under `build/.autocut-package-cache`.
+
+The Desktop resource packager and publisher validate the final ZIP with the same
+archive installer and AutoCut preparation checks used by the client, before publishing
+any object. Cross-platform installation checks do not execute the target's native
+code; run the packaged runtime test on the target OS to verify native module loading.
+
 The service publishes the same contract under `/v1`: project create/list/get/
 save/update/edit; media list/get/probe; capabilities; and strict render.
 `POST /v1/projects` and persisted edits require `Idempotency-Key`. The service

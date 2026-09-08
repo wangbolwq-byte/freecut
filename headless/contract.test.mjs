@@ -266,6 +266,7 @@ test('validation errors and capabilities are machine-readable and bounded', () =
     remotionTransparentAsset: true,
     remotionComposition: true,
     remotionNpmDependencies: true,
+    renderProjectRevisionV1: true,
     remotionRenderModes: ['transparent-overlay', 'composition'],
   })
   assert.ok(result.schemas.render)

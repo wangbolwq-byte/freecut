@@ -841,6 +841,7 @@ export const renderRequestSchema = z
     outSec: finite.positive().optional(),
     duration: finite.positive().optional(),
     audioOnly: z.boolean().optional(),
+    expectedRevision: revisionSchema.optional(),
   })
   .strict()
   .refine((v) => Boolean(v.project) !== Boolean(v.projectObject), {
@@ -914,6 +915,7 @@ export function capabilities() {
       remotionTransparentAsset: true,
       remotionComposition: true,
       remotionNpmDependencies: true,
+      renderProjectRevisionV1: true,
       remotionRenderModes: ['transparent-overlay', 'composition'],
     },
     agentGuidance: {
@@ -1030,6 +1032,7 @@ export function compactCapabilities() {
       remotionTransparentAsset: true,
       remotionComposition: true,
       remotionNpmDependencies: true,
+      renderProjectRevisionV1: true,
       remotionRenderModes: ['transparent-overlay', 'composition'],
     },
     operations: EDIT_OPERATION_NAMES,

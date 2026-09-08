@@ -52,6 +52,7 @@ const RENDER_OPTIONS = new Set([
   'duration',
   'audio-only',
   'allow-missing-media',
+  'expected-revision',
   'head',
   'build',
   'harness-url',
@@ -60,7 +61,7 @@ const RENDER_OPTIONS = new Set([
   'help',
   'json',
 ])
-const HELP = `Usage:\n  node headless/render.mjs --workspace <dir> --project <id|project.json> [options]\n  node headless/render.mjs --workspace <dir> --batch <jobs.json>\n  node headless/render.mjs --workspace <dir> --list [--json]\n\nOptions: --out --codec --container --resolution --fps --quality --preset --in --out-sec --duration --audio-only --allow-missing-media --head --build --harness-url --json\n`
+const HELP = `Usage:\n  node headless/render.mjs --workspace <dir> --project <id|project.json> [options]\n  node headless/render.mjs --workspace <dir> --batch <jobs.json>\n  node headless/render.mjs --workspace <dir> --list [--json]\n\nOptions: --out --codec --container --resolution --fps --quality --preset --in --out-sec --duration --audio-only --allow-missing-media --expected-revision --head --build --harness-url --json\n`
 
 async function main() {
   const args = parseArgs(process.argv.slice(2), { allowed: RENDER_OPTIONS })
@@ -111,10 +112,16 @@ async function main() {
       help: _help,
       json: _json,
       'allow-missing-media': _allowMissingMedia,
+      'expected-revision': expectedRevision,
       _: _positionals,
       ...job
     } = args
-    jobArgsList = [validate(renderRequestSchema, normalizeRenderInput(job))]
+    jobArgsList = [
+      validate(
+        renderRequestSchema,
+        normalizeRenderInput({ ...job, ...(expectedRevision ? { expectedRevision } : {}) }),
+      ),
+    ]
   }
 
   const { harnessUrl, mediaUrlOf, closeServers } = await startHarness({

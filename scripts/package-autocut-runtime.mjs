@@ -1,9 +1,11 @@
 import { execFileSync } from 'node:child_process'
-import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { collectRuntimePackages } from './autocut-runtime-dependencies.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(import.meta.url)
@@ -40,7 +42,11 @@ async function main(argv = process.argv.slice(2)) {
   const config = resolvePackageConfig(parseOptions(argv))
 
   await assertDirectory(path.join(REPO_ROOT, 'dist'))
-  const runtimePackages = await collectRuntimePackages()
+  const runtimePackages = await collectRuntimePackages({
+    repoRoot: REPO_ROOT,
+    dependencies: RUNTIME_DEPENDENCIES,
+    platformArch: config.platformArch,
+  })
   await stageRuntime(config.outputRoot, runtimePackages)
 
   const runtimeManifest = {
@@ -59,6 +65,9 @@ async function main(argv = process.argv.slice(2)) {
       editor: 'dist/index.html',
       headless: 'dist/headless.html',
       remotionRenderer: 'headless/lib/remotion-renderer.mjs',
+    },
+    features: {
+      renderProjectRevisionV1: true,
     },
   }
   await writeJson(path.join(config.outputRoot, 'runtime-manifest.json'), runtimeManifest)
@@ -129,7 +138,7 @@ async function stageRuntime(outputRoot, runtimePackages) {
       path.join(outputRoot, 'node_modules', runtimePackage.relativeRoot),
       {
         recursive: true,
-        filter: (source) => path.basename(source) !== 'node_modules',
+        filter: (source) => !['node_modules', '.autocut-integrity'].includes(path.basename(source)),
       },
     )
   }
@@ -138,66 +147,6 @@ async function stageRuntime(outputRoot, runtimePackages) {
     path.join(outputRoot, 'licenses', 'LICENSE.freecut.txt'),
   )
   await copyRuntimeLicenses(outputRoot, runtimePackages)
-}
-
-async function collectRuntimePackages() {
-  const nodeModulesRoot = path.join(REPO_ROOT, 'node_modules')
-  const packages = new Map()
-  const pending = Object.entries(RUNTIME_DEPENDENCIES).map(([name, version]) => ({
-    name,
-    expectedVersion: version,
-    root: path.join(nodeModulesRoot, name),
-  }))
-  while (pending.length > 0) {
-    const current = pending.pop()
-    const packageJsonPath = path.join(current.root, 'package.json')
-    const packageJson = JSON.parse(await readFile(packageJsonPath, 'utf8'))
-    if (current.expectedVersion && packageJson.version !== current.expectedVersion) {
-      throw new Error(
-        `Runtime dependency ${current.name} must be ${current.expectedVersion}, received ${packageJson.version}`,
-      )
-    }
-    const relativeRoot = path.relative(nodeModulesRoot, current.root)
-    if (relativeRoot.startsWith('..') || path.isAbsolute(relativeRoot)) {
-      throw new Error(`Runtime dependency escapes node_modules: ${current.name}`)
-    }
-    if (packages.has(relativeRoot)) continue
-    packages.set(relativeRoot, {
-      name: packageJson.name ?? current.name,
-      version: packageJson.version,
-      license:
-        typeof packageJson.license === 'string' && packageJson.license.trim()
-          ? packageJson.license.trim()
-          : 'license metadata unavailable',
-      root: current.root,
-      relativeRoot,
-    })
-    const dependencies = {
-      ...(packageJson.dependencies ?? {}),
-      ...(packageJson.optionalDependencies ?? {}),
-    }
-    for (const dependencyName of Object.keys(dependencies)) {
-      const dependencyRoot = await resolveInstalledDependency(current.root, dependencyName)
-      if (dependencyRoot) pending.push({ name: dependencyName, root: dependencyRoot })
-    }
-  }
-  return [...packages.values()].sort((left, right) =>
-    left.relativeRoot.localeCompare(right.relativeRoot),
-  )
-}
-
-async function resolveInstalledDependency(packageRoot, dependencyName) {
-  const nodeModulesRoot = path.join(REPO_ROOT, 'node_modules')
-  let current = packageRoot
-  while (current.startsWith(nodeModulesRoot)) {
-    const candidate = path.join(current, 'node_modules', dependencyName)
-    if (await isDirectory(candidate)) return candidate
-    const parent = path.dirname(current)
-    if (parent === current) break
-    current = parent
-  }
-  const rootCandidate = path.join(nodeModulesRoot, dependencyName)
-  return (await isDirectory(rootCandidate)) ? rootCandidate : undefined
 }
 
 async function copyRuntimeLicenses(outputRoot, runtimePackages) {
@@ -263,11 +212,6 @@ async function assertDirectory(directory) {
   if (!(await stat(directory).catch(() => null))?.isDirectory()) {
     throw new Error(`Required directory is missing: ${directory}`)
   }
-}
-
-async function isDirectory(directory) {
-  const { stat } = await import('node:fs/promises')
-  return (await stat(directory).catch(() => null))?.isDirectory() === true
 }
 
 function currentPlatformArch() {

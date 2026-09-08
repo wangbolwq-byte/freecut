@@ -3,10 +3,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { createHash } from 'node:crypto'
 import {
   AudioDecodeError,
   MissingMediaError,
   outputPathForContainer,
+  prepareJob,
   renderJob,
 } from './lib/render-core.mjs'
 
@@ -183,4 +185,56 @@ test('coded browser failures retain their stable error code', async (t) => {
 test('outputPathForContainer replaces stale requested extensions', () => {
   assert.equal(outputPathForContainer('render.mp4', 'webm'), 'render.webm')
   assert.equal(outputPathForContainer('render', 'webm'), 'render.webm')
+})
+
+test('render binds its output receipt to the exact project bytes read before rendering', async (t) => {
+  const dir = temporaryDirectory(t)
+  const projectFile = path.join(dir, 'project.json')
+  const project = {
+    id: 'project-1',
+    name: 'Project',
+    metadata: { fps: 30 },
+    timeline: { tracks: [], items: [] },
+  }
+  const text = `${JSON.stringify(project, null, 2)}\n`
+  fs.writeFileSync(projectFile, text)
+  const revision = `sha256:${createHash('sha256').update(text).digest('hex')}`
+  const prepared = prepareJob(
+    dir,
+    { project: projectFile, out: path.join(dir, 'render.mp4'), expectedRevision: revision },
+    () => undefined,
+  )
+  fs.writeFileSync(projectFile, JSON.stringify({ ...project, name: 'Changed' }))
+  const result = await renderJob(fakePage(summary()), prepared, { onWarn: () => {} })
+  assert.equal(result.inputProjectRevision, revision)
+  assert.equal(prepared.project.name, 'Project')
+  assert.throws(
+    () => prepareJob(dir, { project: projectFile, expectedRevision: revision }, () => undefined),
+    (error) =>
+      error.code === 'REVISION_CONFLICT' &&
+      error.expectedRevision === revision &&
+      error.actualRevision !== revision,
+  )
+})
+
+test('inline render jobs retain a snapshot and reject malformed revisions', (t) => {
+  const dir = temporaryDirectory(t)
+  const project = {
+    id: 'inline',
+    name: 'Inline',
+    metadata: { fps: 30 },
+    timeline: { tracks: [], items: [] },
+  }
+  const revision = `sha256:${createHash('sha256').update(JSON.stringify(project)).digest('hex')}`
+  const prepared = prepareJob(
+    dir,
+    { projectObject: project, expectedRevision: revision },
+    () => undefined,
+  )
+  project.name = 'Changed'
+  assert.equal(prepared.project.name, 'Inline')
+  assert.equal(prepared.inputProjectRevision, revision)
+  assert.throws(() =>
+    prepareJob(dir, { projectObject: project, expectedRevision: 'invalid' }, () => undefined),
+  )
 })

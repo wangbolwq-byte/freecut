@@ -6,9 +6,31 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
+import { resolveLockedRuntimePackages } from '../scripts/autocut-runtime-dependencies.mjs'
 
 const execFileAsync = promisify(execFile)
 const repoRoot = path.resolve(import.meta.dirname, '..')
+
+test('runtime dependency selection follows the requested platform and requires locked dependencies', () => {
+  const lock = {
+    packages: {
+      'node_modules/binding': {
+        version: '1',
+        optionalDependencies: { windows: '1', mac: '1' },
+        dependencies: { shared: '1' },
+      },
+      'node_modules/windows': { version: '1', os: ['win32'], cpu: ['x64'] },
+      'node_modules/mac': { version: '1', os: ['darwin'], cpu: ['arm64'] },
+      'node_modules/shared': { version: '1' },
+    },
+  }
+  const selected = (target) =>
+    resolveLockedRuntimePackages(lock, { binding: '1' }, target).map((entry) => entry.name)
+  assert.deepEqual(selected('windows-x64'), ['binding', 'shared', 'windows'])
+  assert.deepEqual(selected('macos-arm64'), ['binding', 'mac', 'shared'])
+  delete lock.packages['node_modules/shared']
+  assert.throws(() => selected('windows-x64'), /missing from package-lock.json: shared/)
+})
 
 test('packaged AutoCut runtime includes standalone browser dependencies', async (t) => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'autocut-runtime-package-'))
@@ -22,7 +44,7 @@ test('packaged AutoCut runtime includes standalone browser dependencies', async 
       '--output',
       outputRoot,
       '--platform-arch',
-      'macos-arm64',
+      process.platform === 'win32' ? 'windows-x64' : 'macos-arm64',
       '--version',
       '0.0.0-test',
       '--commit',
@@ -31,6 +53,10 @@ test('packaged AutoCut runtime includes standalone browser dependencies', async 
     { cwd: repoRoot },
   )
 
+  const manifest = JSON.parse(
+    await readFile(path.join(outputRoot, 'runtime-manifest.json'), 'utf8'),
+  )
+  assert.equal(manifest.features.renderProjectRevisionV1, true)
   const runtimePackage = JSON.parse(await readFile(path.join(outputRoot, 'package.json'), 'utf8'))
   assert.deepEqual(runtimePackage.dependencies, {
     '@babel/parser': '7.29.7',
@@ -78,9 +104,14 @@ test('packaged AutoCut runtime includes standalone browser dependencies', async 
     notices,
     /gsap@3\.13\.0 — Standard 'no charge' license: https:\/\/gsap\.com\/standard-license\./u,
   )
-  const packagedRendererCli = path.join(outputRoot, 'bin', 'remotion-render')
+  const packagedRendererCli =
+    process.platform === 'win32'
+      ? process.execPath
+      : path.join(outputRoot, 'bin', 'remotion-render')
+  const launcherArgs =
+    process.platform === 'win32' ? [path.join(outputRoot, 'headless', 'remotion-render.mjs')] : []
   const packagedEnvironment = { ...process.env, AUTOCUT_NODE: process.execPath }
-  const packagedHelp = await execFileAsync(packagedRendererCli, ['--help'], {
+  const packagedHelp = await execFileAsync(packagedRendererCli, [...launcherArgs, '--help'], {
     cwd: outputRoot,
     env: packagedEnvironment,
   })
@@ -89,7 +120,7 @@ test('packaged AutoCut runtime includes standalone browser dependencies', async 
   assert.deepEqual(packagedHelpPayload.help.requiredOptions, ['--task'])
   assert.equal(packagedHelpPayload.help.canonicalCommand, 'remotion-render --task <task.json>')
   await assert.rejects(
-    execFileAsync(packagedRendererCli, [], {
+    execFileAsync(packagedRendererCli, launcherArgs, {
       cwd: outputRoot,
       env: packagedEnvironment,
     }),

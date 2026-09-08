@@ -2,7 +2,7 @@
 // render service (serve.mjs): settings, range, media resolution, the
 // harness/media servers, and the per-page render call.
 import { execSync } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -207,9 +207,26 @@ export async function startHarness({ workspace, devUrl, build }) {
 /** Resolve everything needed to render one job (no browser involved). */
 export function prepareJob(workspace, jobArgs, mediaUrlOf) {
   jobArgs = validate(renderRequestSchema, normalizeRenderInput(jobArgs))
-  const { project, projectJsonPath } = jobArgs.projectObject
-    ? { project: jobArgs.projectObject, projectJsonPath: '(inline)' }
+  const { project, projectJsonPath, projectText } = jobArgs.projectObject
+    ? {
+        project: structuredClone(jobArgs.projectObject),
+        projectJsonPath: '(inline)',
+        projectText: JSON.stringify(jobArgs.projectObject),
+      }
     : loadProject(workspace, jobArgs.project)
+  const inputProjectRevision = `sha256:${createHash('sha256').update(projectText).digest('hex')}`
+  if (jobArgs.expectedRevision && jobArgs.expectedRevision !== inputProjectRevision) {
+    throw Object.assign(
+      new Error(
+        `Project revision conflict: expected ${jobArgs.expectedRevision}, actual ${inputProjectRevision}`,
+      ),
+      {
+        code: 'REVISION_CONFLICT',
+        expectedRevision: jobArgs.expectedRevision,
+        actualRevision: inputProjectRevision,
+      },
+    )
+  }
   const settings = buildSettings(project, jobArgs)
   const { hasRange, inPoint, outPoint } = computeRange(jobArgs, settings.fps)
 
@@ -234,6 +251,7 @@ export function prepareJob(workspace, jobArgs, mediaUrlOf) {
   return {
     project,
     projectJsonPath,
+    inputProjectRevision,
     settings,
     hasRange,
     inPoint,
@@ -387,7 +405,13 @@ export async function renderJob(
   const warnings = [...preparationWarnings, ...(summary.warnings ?? [])]
   for (const warning of warnings)
     warn(`  WARNING [${warning.code ?? 'UNKNOWN'}]: ${warningMessage(warning)}`)
-  return { ...summary, fileName: path.basename(outputPath), outputPath, warnings }
+  return {
+    ...summary,
+    fileName: path.basename(outputPath),
+    outputPath,
+    warnings,
+    inputProjectRevision: job.inputProjectRevision,
+  }
 }
 
 function normalizeHeadlessRenderError(error) {

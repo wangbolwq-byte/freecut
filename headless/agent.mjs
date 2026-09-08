@@ -268,6 +268,7 @@ async function runCommand(args, dependencies, contract) {
         ...(args.in ? { in: args.in } : {}),
         ...(args['out-sec'] ? { 'out-sec': args['out-sec'] } : {}),
         ...(args['audio-only'] ? { 'audio-only': true } : {}),
+        ...(args['expected-revision'] ? { expectedRevision: args['expected-revision'] } : {}),
       }),
     )
     return withAutoCutBrowserSession({ workspace, args }, async (page, mediaUrlOf) => {

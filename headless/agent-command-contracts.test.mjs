@@ -363,6 +363,20 @@ test('command validation errors are self-correcting without a schema lookup', as
         return true
       },
     )
+    await assert.rejects(
+      run([
+        'render',
+        '--workspace',
+        workspace,
+        '--project',
+        'demo',
+        '--expected-revision',
+        'invalid',
+      ]),
+      (error) =>
+        error.code === 'VALIDATION_ERROR' &&
+        error.fields.some((field) => field.path === 'expectedRevision'),
+    )
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }

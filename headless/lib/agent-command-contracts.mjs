@@ -227,6 +227,7 @@ export const AUTOCUT_AGENT_COMMAND_CONTRACTS = Object.freeze({
       '--out-sec',
       '--audio-only',
       '--allow-missing-media',
+      '--expected-revision',
     ],
     flags: ['--audio-only', '--allow-missing-media'],
     required: ['--project'],
