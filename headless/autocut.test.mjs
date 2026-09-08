@@ -10,6 +10,7 @@ import { createEditorUrl, run } from './agent.mjs'
 import { createAutoCutServer } from './autocut-server.mjs'
 import { AutoCutBrokerPage } from './lib/autocut-browser-session.mjs'
 import { createProjectResource, getProjectResource } from './lib/lifecycle-store.mjs'
+import { listenJsonLineServer } from './test-json-line-server.mjs'
 import { isMainModule } from './lib/main-module.mjs'
 
 test(
@@ -308,25 +309,11 @@ test('broker page sends only known operations and captures render downloads', as
   const sourceDownload = path.join(root, 'broker-render.webm')
   await writeFile(sourceDownload, 'rendered')
   const received = []
-  const server = net.createServer((socket) => {
-    socket.setEncoding('utf8')
-    let buffer = ''
-    socket.on('data', (chunk) => {
-      buffer += chunk
-      const newline = buffer.indexOf('\n')
-      if (newline === -1) return
-      const request = JSON.parse(buffer.slice(0, newline))
-      received.push(request)
-      const result =
-        request.operation === 'renderProject'
-          ? { summary: { effectiveSettings: { container: 'webm' } }, downloadPath: sourceDownload }
-          : { id: 'created' }
-      socket.end(`${JSON.stringify({ ok: true, result })}\n`)
-    })
-  })
-  await new Promise((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(endpoint, resolve)
+  const server = await listenJsonLineServer(endpoint, (request) => {
+    received.push(request)
+    return request.operation === 'renderProject'
+      ? { summary: { effectiveSettings: { container: 'webm' } }, downloadPath: sourceDownload }
+      : { id: 'created' }
   })
   const page = new AutoCutBrokerPage({ endpoint, token: 'secret' })
   try {
@@ -370,29 +357,15 @@ test('managed render submit returns after Host queueing and status uses the dura
       ? `\\\\.\\pipe\\autocut-managed-render-${process.pid}-${Date.now()}`
       : path.join(root, 'broker.sock')
   const requests = []
-  const server = net.createServer((socket) => {
-    socket.setEncoding('utf8')
-    let buffer = ''
-    socket.on('data', (chunk) => {
-      buffer += chunk
-      const newline = buffer.indexOf('\n')
-      if (newline === -1) return
-      const request = JSON.parse(buffer.slice(0, newline))
-      requests.push(request)
-      const result =
-        request.operation === 'renderSubmit'
-          ? { renderRef: 'autocut-render://render-1', status: 'queued', projectVersion: 'v1' }
-          : {
-              renderRef: 'autocut-render://render-1',
-              status: 'running',
-              progress: { percent: 48, message: 'rendering' },
-            }
-      socket.end(`${JSON.stringify({ ok: true, result })}\n`)
-    })
-  })
-  await new Promise((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(endpoint, resolve)
+  const server = await listenJsonLineServer(endpoint, (request) => {
+    requests.push(request)
+    return request.operation === 'renderSubmit'
+      ? { renderRef: 'autocut-render://render-1', status: 'queued', projectVersion: 'v1' }
+      : {
+          renderRef: 'autocut-render://render-1',
+          status: 'running',
+          progress: { percent: 48, message: 'rendering' },
+        }
   })
   const previousEndpoint = process.env.AUTOCUT_BROKER_ENDPOINT
   const previousToken = process.env.AUTOCUT_BROKER_TOKEN

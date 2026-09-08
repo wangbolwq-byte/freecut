@@ -600,31 +600,36 @@ async function extractImageMetadata(
   mimeType: string,
 ): Promise<ImageMetadata> {
   const blob = await mediaSourceBlob(source)
-  if (mimeType === 'image/svg+xml') {
-    const text = await blob.text()
-    const dims = parseSvgDimensions(text)
-    return {
-      type: 'image',
-      width: dims?.width ?? 800,
-      height: dims?.height ?? 600,
-      transparency: 'may-have-alpha',
-    }
-  }
+  if (mimeType === 'image/svg+xml') return extractSvgMetadata(blob)
+  return extractBitmapMetadata(blob, mimeType)
+}
 
+async function extractSvgMetadata(blob: Blob): Promise<ImageMetadata> {
+  const dims = parseSvgDimensions(await blob.text())
+  return {
+    type: 'image',
+    width: dims?.width ?? 800,
+    height: dims?.height ?? 600,
+    transparency: 'may-have-alpha',
+  }
+}
+
+async function extractBitmapMetadata(blob: Blob, mimeType: string): Promise<ImageMetadata> {
   const bitmap = await createImageBitmap(blob)
   const metadata: ImageMetadata = {
     type: 'image',
     width: bitmap.width,
     height: bitmap.height,
-    transparency:
-      mimeType === 'image/jpeg' || mimeType === 'image/jpg'
-        ? 'opaque'
-        : mimeType === 'image/png' || mimeType === 'image/webp'
-          ? 'may-have-alpha'
-          : 'unknown',
+    transparency: imageTransparency(mimeType),
   }
   bitmap.close()
   return metadata
+}
+
+function imageTransparency(mimeType: string): ImageMetadata['transparency'] {
+  if (['image/jpeg', 'image/jpg'].includes(mimeType)) return 'opaque'
+  if (['image/png', 'image/webp'].includes(mimeType)) return 'may-have-alpha'
+  return 'unknown'
 }
 
 /**

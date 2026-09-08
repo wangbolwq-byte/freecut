@@ -99,6 +99,77 @@ import {
 } from '@/features/media-library/deps/composition-runtime'
 export { FileAccessError } from './file-access'
 
+type ProcessedMediaMetadata = Awaited<
+  ReturnType<typeof mediaProcessorService.processMedia>
+>['metadata']
+
+function codecMetadata(
+  metadata: ProcessedMediaMetadata,
+): Pick<
+  MediaMetadata,
+  | 'codec'
+  | 'bitrate'
+  | 'audioCodec'
+  | 'audioPresence'
+  | 'transparency'
+  | 'audioCodecSupported'
+  | 'videoCodecSupported'
+  | 'keyframeTimestamps'
+  | 'gopInterval'
+> {
+  if (metadata.type === 'video') return videoCodecMetadata(metadata)
+  if (metadata.type === 'audio') return audioCodecMetadata(metadata)
+  return imageCodecMetadata(metadata)
+}
+
+function videoCodecMetadata(
+  metadata: Extract<ProcessedMediaMetadata, { type: 'video' }>,
+): ReturnType<typeof codecMetadata> {
+  return {
+    codec: metadata.codec,
+    bitrate: metadata.bitrate ?? 0,
+    audioCodec: metadata.audioCodec,
+    audioPresence: metadata.audioPresence,
+    transparency: metadata.transparency,
+    audioCodecSupported: metadata.audioCodecSupported,
+    videoCodecSupported: metadata.videoCodecSupported,
+    keyframeTimestamps: metadata.keyframeTimestamps,
+    gopInterval: metadata.gopInterval,
+  }
+}
+
+function audioCodecMetadata(
+  metadata: Extract<ProcessedMediaMetadata, { type: 'audio' }>,
+): ReturnType<typeof codecMetadata> {
+  return {
+    codec: metadata.codec || 'unknown',
+    bitrate: metadata.bitrate ?? 0,
+    audioCodec: undefined,
+    audioPresence: 'present',
+    transparency: 'opaque',
+    audioCodecSupported: true,
+    videoCodecSupported: true,
+    keyframeTimestamps: undefined,
+    gopInterval: undefined,
+  }
+}
+
+function imageCodecMetadata(
+  metadata: Extract<ProcessedMediaMetadata, { type: 'image' }>,
+): ReturnType<typeof codecMetadata> {
+  return {
+    codec: 'unknown',
+    bitrate: 0,
+    audioCodec: undefined,
+    audioPresence: 'absent',
+    transparency: metadata.transparency,
+    audioCodecSupported: true,
+    videoCodecSupported: true,
+    keyframeTimestamps: undefined,
+    gopInterval: undefined,
+  }
+}
+
 const IMPORT_BACKGROUND_WARM_DELAY_MS = 600
 const IMPORT_BACKGROUND_HEAVY_DELAY_MS = 2200
 const PAGE_URL_IMPORT_HOSTS = [
@@ -723,26 +794,7 @@ class MediaLibraryService {
       width: 'width' in metadata ? metadata.width : 0,
       height: 'height' in metadata ? metadata.height : 0,
       fps: metadata.type === 'video' ? metadata.fps : 0,
-      codec:
-        metadata.type === 'video'
-          ? metadata.codec
-          : metadata.type === 'audio'
-            ? metadata.codec || 'unknown'
-            : 'unknown',
-      bitrate: 'bitrate' in metadata ? (metadata.bitrate ?? 0) : 0,
-      audioCodec: metadata.type === 'video' ? metadata.audioCodec : undefined,
-      audioPresence:
-        metadata.type === 'video'
-          ? metadata.audioPresence
-          : metadata.type === 'audio'
-            ? 'present'
-            : 'absent',
-      transparency:
-        metadata.type === 'video' || metadata.type === 'image' ? metadata.transparency : 'opaque',
-      audioCodecSupported: metadata.type === 'video' ? metadata.audioCodecSupported : true,
-      videoCodecSupported: metadata.type === 'video' ? metadata.videoCodecSupported : true,
-      keyframeTimestamps: metadata.type === 'video' ? metadata.keyframeTimestamps : undefined,
-      gopInterval: metadata.type === 'video' ? metadata.gopInterval : undefined,
+      ...codecMetadata(metadata),
       tags: [],
       createdAt,
       updatedAt: createdAt,
@@ -1019,26 +1071,7 @@ class MediaLibraryService {
         width: 'width' in metadata ? metadata.width : 0,
         height: 'height' in metadata ? metadata.height : 0,
         fps: metadata.type === 'video' ? metadata.fps : 0,
-        codec:
-          metadata.type === 'video'
-            ? metadata.codec
-            : metadata.type === 'audio'
-              ? metadata.codec || 'unknown'
-              : 'unknown',
-        bitrate: 'bitrate' in metadata ? (metadata.bitrate ?? 0) : 0,
-        audioCodec: metadata.type === 'video' ? metadata.audioCodec : undefined,
-        audioPresence:
-          metadata.type === 'video'
-            ? metadata.audioPresence
-            : metadata.type === 'audio'
-              ? 'present'
-              : 'absent',
-        transparency:
-          metadata.type === 'video' || metadata.type === 'image' ? metadata.transparency : 'opaque',
-        audioCodecSupported: metadata.type === 'video' ? metadata.audioCodecSupported : true,
-        videoCodecSupported: metadata.type === 'video' ? metadata.videoCodecSupported : true,
-        keyframeTimestamps: metadata.type === 'video' ? metadata.keyframeTimestamps : undefined,
-        gopInterval: metadata.type === 'video' ? metadata.gopInterval : undefined,
+        ...codecMetadata(metadata),
         tags: [],
         createdAt,
         updatedAt: createdAt,
@@ -1300,26 +1333,7 @@ class MediaLibraryService {
       width: 'width' in metadata ? metadata.width : 0,
       height: 'height' in metadata ? metadata.height : 0,
       fps: metadata.type === 'video' ? metadata.fps : 30,
-      codec:
-        metadata.type === 'video'
-          ? metadata.codec
-          : metadata.type === 'audio'
-            ? metadata.codec || 'unknown'
-            : 'unknown',
-      bitrate: 'bitrate' in metadata ? (metadata.bitrate ?? 0) : 0,
-      audioCodec: metadata.type === 'video' ? metadata.audioCodec : undefined,
-      audioPresence:
-        metadata.type === 'video'
-          ? metadata.audioPresence
-          : metadata.type === 'audio'
-            ? 'present'
-            : 'absent',
-      transparency:
-        metadata.type === 'video' || metadata.type === 'image' ? metadata.transparency : 'opaque',
-      audioCodecSupported: metadata.type === 'video' ? metadata.audioCodecSupported : true,
-      videoCodecSupported: metadata.type === 'video' ? metadata.videoCodecSupported : true,
-      keyframeTimestamps: metadata.type === 'video' ? metadata.keyframeTimestamps : undefined,
-      gopInterval: metadata.type === 'video' ? metadata.gopInterval : undefined,
+      ...codecMetadata(metadata),
       thumbnailId,
       tags: [],
       createdAt: Date.now(),

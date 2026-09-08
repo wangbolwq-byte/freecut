@@ -1,10 +1,13 @@
 import { execFileSync } from 'node:child_process'
 import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const require = createRequire(import.meta.url)
+const gsapVersion = require('gsap/package.json').version
 const TOP_LEVEL_HEADLESS_FILES = [
   'agent.mjs',
   'autocut-agent.mjs',
@@ -17,7 +20,7 @@ const RUNTIME_DEPENDENCIES = {
   '@babel/parser': '7.29.7',
   '@remotion/bundler': '4.0.499',
   '@remotion/renderer': '4.0.499',
-  gsap: '3.13.0',
+  gsap: gsapVersion,
   playwright: '1.60.0',
   'playwright-core': '1.60.0',
   pngjs: '7.0.0',

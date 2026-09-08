@@ -531,76 +531,10 @@ async function main() {
     })
     const body = validate(lifecycleEditRequestSchema, raw)
     if (body.idempotencyKey) {
-      const result = await editProjectResource(workspace, id, body, async (current) => {
-        const edited = await queue.enqueue(
-          () =>
-            session.page.evaluate((payload) => window.freecut.editProject(payload), {
-              project: current.project,
-              ops: body.ops,
-              media: collectAddClipMedia(workspace, body.ops),
-            }),
-          { timeoutMs: editTimeoutMs, kind: 'edit' },
-        )
-        assertEditSucceeded(edited, current.revision)
-        return { ...edited, project: await browserNormalize(edited.project) }
-      })
-      if (!result.idempotency.replayed) {
-        result.warnings.push(
-          ...reconcileProjectMediaLinksAfterCommit(workspace, result.project, id),
-        )
-        publishCurrentProjectChange(id, 'headless-api', [
-          ['projects', id, 'project.json'],
-          ['projects', id, 'media-links.json'],
-        ])
-      }
-      if (result.idempotency.replayed) res.setHeader('Idempotency-Replayed', 'true')
-      sendJson(res, 200, { ...result, apiVersion: HEADLESS_API_VERSION })
+      await handleJournalProjectEdit(res, id, body)
       return
     }
-    const execute = async () => {
-      const current = await getProjectResource(workspace, id)
-      const media = collectAddClipMedia(workspace, body.ops)
-      const result = await queue.enqueue(
-        () =>
-          session.page.evaluate((payload) => window.freecut.editProject(payload), {
-            project: current.project,
-            ops: body.ops,
-            media,
-          }),
-        { timeoutMs: editTimeoutMs, kind: 'edit' },
-      )
-      assertEditSucceeded(result, current.revision)
-      if (!body.persist)
-        return {
-          status: 200,
-          response: {
-            ...result,
-            apiVersion: HEADLESS_API_VERSION,
-            persisted: false,
-            baseRevision: current.revision,
-          },
-        }
-      const project = await browserNormalize(result.project)
-      const resource = await saveProjectResource(workspace, id, project, body)
-      resource.warnings.push(
-        ...reconcileProjectMediaLinksAfterCommit(workspace, resource.project, id),
-      )
-      publishCurrentProjectChange(id, 'headless-api', [
-        ['projects', id, 'project.json'],
-        ['projects', id, 'media-links.json'],
-      ])
-      return {
-        status: 200,
-        response: {
-          ...result,
-          apiVersion: HEADLESS_API_VERSION,
-          project: resource.project,
-          persisted: true,
-          revision: resource.revision,
-          warnings: resource.warnings,
-        },
-      }
-    }
+    const execute = () => executeProjectEdit(id, body)
     if (!body.persist) {
       const result = await execute()
       sendJson(res, result.status, result.response)
@@ -619,6 +553,84 @@ async function main() {
     if (result.replayed) res.setHeader('Idempotency-Replayed', 'true')
     sendJson(res, result.status, result.response)
   }
+
+  const handleJournalProjectEdit = async (res, id, body) => {
+    const result = await editProjectResource(workspace, id, body, (current) =>
+      editCurrentProject(current, body),
+    )
+    if (!result.idempotency.replayed) {
+      reconcileCommittedProjectEdit(id, result)
+    }
+    if (result.idempotency.replayed) res.setHeader('Idempotency-Replayed', 'true')
+    sendJson(res, 200, { ...result, apiVersion: HEADLESS_API_VERSION })
+  }
+
+  const editCurrentProject = async (current, body) => {
+    const edited = await queue.enqueue(
+      () =>
+        session.page.evaluate((payload) => window.freecut.editProject(payload), {
+          project: current.project,
+          ops: body.ops,
+          media: collectAddClipMedia(workspace, body.ops),
+        }),
+      { timeoutMs: editTimeoutMs, kind: 'edit' },
+    )
+    assertEditSucceeded(edited, current.revision)
+    return { ...edited, project: await browserNormalize(edited.project) }
+  }
+
+  const executeProjectEdit = async (id, body) => {
+    const current = await getProjectResource(workspace, id)
+    const result = await queue.enqueue(
+      () =>
+        session.page.evaluate((payload) => window.freecut.editProject(payload), {
+          project: current.project,
+          ops: body.ops,
+          media: collectAddClipMedia(workspace, body.ops),
+        }),
+      { timeoutMs: editTimeoutMs, kind: 'edit' },
+    )
+    assertEditSucceeded(result, current.revision)
+    if (!body.persist) return unpersistedEditResult(result, current.revision)
+    return persistProjectEdit(id, body, result)
+  }
+
+  const persistProjectEdit = async (id, body, result) => {
+    const project = await browserNormalize(result.project)
+    const resource = await saveProjectResource(workspace, id, project, body)
+    reconcileCommittedProjectEdit(id, resource)
+    return {
+      status: 200,
+      response: {
+        ...result,
+        apiVersion: HEADLESS_API_VERSION,
+        project: resource.project,
+        persisted: true,
+        revision: resource.revision,
+        warnings: resource.warnings,
+      },
+    }
+  }
+
+  const reconcileCommittedProjectEdit = (id, resource) => {
+    resource.warnings.push(
+      ...reconcileProjectMediaLinksAfterCommit(workspace, resource.project, id),
+    )
+    publishCurrentProjectChange(id, 'headless-api', [
+      ['projects', id, 'project.json'],
+      ['projects', id, 'media-links.json'],
+    ])
+  }
+
+  const unpersistedEditResult = (result, baseRevision) => ({
+    status: 200,
+    response: {
+      ...result,
+      apiVersion: HEADLESS_API_VERSION,
+      persisted: false,
+      baseRevision,
+    },
+  })
 
   const handleV1MediaProbe = async (req, res, id) => {
     const body = validate(

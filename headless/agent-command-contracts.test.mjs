@@ -2,13 +2,13 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
-import net from 'node:net'
 import http from 'node:http'
 import path from 'node:path'
 import test from 'node:test'
 import { promisify } from 'node:util'
 import { run } from './agent.mjs'
 import { createProjectResource } from './lib/lifecycle-store.mjs'
+import { listenJsonLineServer } from './test-json-line-server.mjs'
 import {
   AUTOCUT_AGENT_COMMAND_CONTRACTS,
   commandHelp,
@@ -26,37 +26,25 @@ test('persisted edit CLI replays the same key without another browser edit', asy
       ? `\\\\.\\pipe\\autocut-edit-${process.pid}-${Date.now()}`
       : path.join(workspace, 'broker.sock')
   const calls = []
-  const server = net.createServer((socket) => {
-    socket.setEncoding('utf8')
-    let input = ''
-    socket.on('data', (chunk) => {
-      input += chunk
-      if (!input.includes('\n')) return
-      const request = JSON.parse(input.slice(0, input.indexOf('\n')))
-      calls.push(request.operation)
-      let result = {}
-      if (request.operation === 'editProject')
-        result = {
-          ok: true,
-          applied: 1,
-          results: [{ callerId: 'titleA', detail: { id: 'created-title' } }],
-          project: {
-            ...request.payload.project,
-            timeline: {
-              ...request.payload.project.timeline,
-              items: [
-                { id: 'created-title', type: 'text', text: 'A', from: 0, durationInFrames: 30 },
-              ],
-            },
+  const server = await listenJsonLineServer(endpoint, (request) => {
+    calls.push(request.operation)
+    if (request.operation === 'editProject') {
+      return {
+        ok: true,
+        applied: 1,
+        results: [{ callerId: 'titleA', detail: { id: 'created-title' } }],
+        project: {
+          ...request.payload.project,
+          timeline: {
+            ...request.payload.project.timeline,
+            items: [
+              { id: 'created-title', type: 'text', text: 'A', from: 0, durationInFrames: 30 },
+            ],
           },
-        }
-      if (request.operation === 'normalizeProject') result = request.payload
-      socket.end(`${JSON.stringify({ ok: true, result })}\n`)
-    })
-  })
-  await new Promise((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(endpoint, resolve)
+        },
+      }
+    }
+    return request.operation === 'normalizeProject' ? request.payload : {}
   })
   t.after(() => new Promise((resolve) => server.close(resolve)))
   const harness = http.createServer((_request, response) =>
@@ -151,19 +139,9 @@ test('audit Host receipt records rule failure rather than successful execution a
       ? `\\\\.\\pipe\\autocut-audit-${process.pid}-${Date.now()}`
       : path.join(workspace, 'broker.sock')
   const receipts = []
-  const server = net.createServer((socket) => {
-    socket.setEncoding('utf8')
-    let input = ''
-    socket.on('data', (chunk) => {
-      input += chunk
-      if (!input.includes('\n')) return
-      receipts.push(JSON.parse(input.slice(0, input.indexOf('\n'))).payload)
-      socket.end(`${JSON.stringify({ ok: true, result: {} })}\n`)
-    })
-  })
-  await new Promise((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(endpoint, resolve)
+  const server = await listenJsonLineServer(endpoint, (request) => {
+    receipts.push(request.payload)
+    return {}
   })
   t.after(() => new Promise((resolve) => server.close(resolve)))
   await createProjectResource(workspace, {

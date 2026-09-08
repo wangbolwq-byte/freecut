@@ -520,99 +520,9 @@ async function readTask(taskDirectory) {
 }
 
 async function validateSourceTree(taskDirectory, task) {
-  const sourceEntryCandidate = resolveContained(
-    taskDirectory,
-    task.entryPoint,
-    'REMOTION_SOURCE_OUTSIDE_TASK',
-    'Remotion source entry',
-  )
-  const sourceEntry = await realpath(sourceEntryCandidate).catch(() => sourceEntryCandidate)
-  if (!isContainedPath(taskDirectory, sourceEntry)) {
-    throw taskError(
-      'REMOTION_SOURCE_OUTSIDE_TASK',
-      'Remotion source entry must stay inside the task directory',
-    )
-  }
-  if (!(await isFile(sourceEntry))) {
-    throw taskError(
-      'REMOTION_SOURCE_MISSING',
-      `Remotion source entry was not found: ${task.entryPoint}`,
-    )
-  }
-
-  const inventory = new Map()
-  const externalPackages = new Set()
-  const pending = [sourceEntry]
-  while (pending.length > 0) {
-    const filePath = pending.pop()
-    if (inventory.has(filePath)) continue
-    await assertNotSymlink(filePath)
-    const bytes = await readFile(filePath)
-    inventory.set(filePath, bytes)
-    const extension = path.extname(filePath).toLowerCase()
-    if (!CODE_EXTENSIONS.has(extension)) {
-      if (extension === '.css') {
-        pending.push(...(await validateCss(taskDirectory, bytes.toString('utf8'), filePath)))
-      }
-      continue
-    }
-    const source = bytes.toString('utf8')
-    validateCode(source, filePath)
-    let imports
-    try {
-      imports = collectModuleImports(
-        parseJavascript(source, {
-          sourceType: 'module',
-          plugins: ['typescript', 'jsx', 'dynamicImport'],
-        }),
-      )
-    } catch (error) {
-      throw taskError(
-        'REMOTION_SOURCE_INVALID',
-        `Unable to parse imports in ${relativeDisplay(taskDirectory, filePath)}: ${error instanceof Error ? error.message : String(error)}`,
-      )
-    }
-    for (const imported of imports) {
-      if (imported.dynamic && imported.specifier === undefined) {
-        throw taskError(
-          'REMOTION_DYNAMIC_IMPORT_FORBIDDEN',
-          `Dynamic import must use a string literal in ${relativeDisplay(taskDirectory, filePath)}`,
-        )
-      }
-      const specifier = imported.specifier
-      if (!specifier.startsWith('.') && !specifier.startsWith('/')) {
-        if (specifier.startsWith('node:') || isBuiltin(specifier)) {
-          throw taskError(
-            'REMOTION_IMPORT_FORBIDDEN',
-            `Node built-in import "${specifier}" is not available in controlled Remotion source`,
-          )
-        }
-        const packageName = externalImportPackageName(specifier)
-        if (!packageName || !isValidPublicPackageName(packageName)) {
-          throw taskError(
-            'REMOTION_IMPORT_FORBIDDEN',
-            `Invalid public npm import "${specifier}" in ${relativeDisplay(taskDirectory, filePath)}`,
-          )
-        }
-        if (FORBIDDEN_EXTERNAL_PACKAGES.has(packageName)) {
-          throw taskError(
-            'REMOTION_IMPORT_FORBIDDEN',
-            `Host-only Remotion import "${specifier}" is not available in controlled source`,
-          )
-        }
-        if (!MANAGED_EXTERNAL_PACKAGES.has(packageName)) externalPackages.add(packageName)
-        continue
-      }
-      if (specifier.startsWith('/')) {
-        throw taskError(
-          'REMOTION_IMPORT_OUTSIDE_TASK',
-          `Absolute import is not allowed in ${relativeDisplay(taskDirectory, filePath)}`,
-        )
-      }
-      pending.push(await resolveLocalImport(taskDirectory, filePath, specifier))
-    }
-  }
-
+  const sourceEntry = await resolveSourceEntry(taskDirectory, task.entryPoint)
+  await assertSourceEntry(taskDirectory, task.entryPoint, sourceEntry)
+  const { inventory, externalPackages } = await collectSourceTree(taskDirectory, sourceEntry)
   const publicDirectory = path.join(taskDirectory, 'public')
   if (await isDirectory(publicDirectory)) {
     await collectDirectoryFiles(publicDirectory, inventory)
@@ -622,14 +532,163 @@ async function validateSourceTree(taskDirectory, task) {
     await readFile(path.join(taskDirectory, TASK_FILE)),
   )
   return {
-    inventory: [...inventory.entries()]
-      .map(([filePath, bytes]) => ({
-        path: relativeDisplay(taskDirectory, filePath),
-        bytes,
-      }))
-      .sort((left, right) => left.path.localeCompare(right.path)),
+    inventory: sourceInventory(taskDirectory, inventory),
     externalPackages: [...externalPackages].sort((left, right) => left.localeCompare(right)),
   }
+}
+
+async function resolveSourceEntry(taskDirectory, entryPoint) {
+  const candidate = resolveContained(
+    taskDirectory,
+    entryPoint,
+    'REMOTION_SOURCE_OUTSIDE_TASK',
+    'Remotion source entry',
+  )
+  return realpath(candidate).catch(() => candidate)
+}
+
+async function assertSourceEntry(taskDirectory, entryPoint, sourceEntry) {
+  if (!isContainedPath(taskDirectory, sourceEntry)) {
+    throw taskError(
+      'REMOTION_SOURCE_OUTSIDE_TASK',
+      'Remotion source entry must stay inside the task directory',
+    )
+  }
+  if (!(await isFile(sourceEntry))) {
+    throw taskError('REMOTION_SOURCE_MISSING', `Remotion source entry was not found: ${entryPoint}`)
+  }
+}
+
+async function collectSourceTree(taskDirectory, sourceEntry) {
+  const inventory = new Map()
+  const externalPackages = new Set()
+  const pending = [sourceEntry]
+  while (pending.length > 0) {
+    const filePath = pending.pop()
+    if (inventory.has(filePath)) continue
+    const references = await collectSourceFileReferences(taskDirectory, filePath, inventory)
+    pending.push(...references.localPaths)
+    for (const packageName of references.externalPackages) {
+      externalPackages.add(packageName)
+    }
+  }
+  return { inventory, externalPackages }
+}
+
+async function collectSourceFileReferences(taskDirectory, filePath, inventory) {
+  await assertNotSymlink(filePath)
+  const bytes = await readFile(filePath)
+  inventory.set(filePath, bytes)
+  const extension = path.extname(filePath).toLowerCase()
+  if (!CODE_EXTENSIONS.has(extension)) {
+    return sourceAssetReferences(taskDirectory, filePath, extension, bytes)
+  }
+  return sourceCodeReferences(taskDirectory, filePath, bytes)
+}
+
+async function sourceAssetReferences(taskDirectory, filePath, extension, bytes) {
+  if (extension !== '.css') return { localPaths: [], externalPackages: [] }
+  const localPaths = await validateCss(taskDirectory, bytes.toString('utf8'), filePath)
+  return { localPaths, externalPackages: [] }
+}
+
+async function sourceCodeReferences(taskDirectory, filePath, bytes) {
+  const source = bytes.toString('utf8')
+  validateCode(source, filePath)
+  const imports = parseSourceImports(taskDirectory, filePath, source)
+  const references = await Promise.all(
+    imports.map((imported) => classifySourceImport(taskDirectory, filePath, imported)),
+  )
+  return {
+    localPaths: references.flatMap((reference) => reference.localPaths),
+    externalPackages: references.flatMap((reference) => reference.externalPackages),
+  }
+}
+
+function parseSourceImports(taskDirectory, filePath, source) {
+  try {
+    return collectModuleImports(
+      parseJavascript(source, {
+        sourceType: 'module',
+        plugins: ['typescript', 'jsx', 'dynamicImport'],
+      }),
+    )
+  } catch (error) {
+    throw taskError(
+      'REMOTION_SOURCE_INVALID',
+      `Unable to parse imports in ${relativeDisplay(taskDirectory, filePath)}: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
+}
+
+async function classifySourceImport(taskDirectory, filePath, imported) {
+  assertStaticImportSpecifier(taskDirectory, filePath, imported)
+  const specifier = imported.specifier
+  if (isExternalSpecifier(specifier)) {
+    return classifyExternalImport(taskDirectory, filePath, specifier)
+  }
+  if (specifier.startsWith('/')) {
+    throw taskError(
+      'REMOTION_IMPORT_OUTSIDE_TASK',
+      `Absolute import is not allowed in ${relativeDisplay(taskDirectory, filePath)}`,
+    )
+  }
+  const localPath = await resolveLocalImport(taskDirectory, filePath, specifier)
+  return { localPaths: [localPath], externalPackages: [] }
+}
+
+function assertStaticImportSpecifier(taskDirectory, filePath, imported) {
+  if (!imported.dynamic) return
+  if (imported.specifier !== undefined) return
+  throw taskError(
+    'REMOTION_DYNAMIC_IMPORT_FORBIDDEN',
+    `Dynamic import must use a string literal in ${relativeDisplay(taskDirectory, filePath)}`,
+  )
+}
+
+function isExternalSpecifier(specifier) {
+  return !specifier.startsWith('.') && !specifier.startsWith('/')
+}
+
+function classifyExternalImport(taskDirectory, filePath, specifier) {
+  const packageName = externalImportPackageName(specifier)
+  assertAllowedExternalImport(taskDirectory, filePath, specifier, packageName)
+  const externalPackages = MANAGED_EXTERNAL_PACKAGES.has(packageName) ? [] : [packageName]
+  return { localPaths: [], externalPackages }
+}
+
+function assertAllowedExternalImport(taskDirectory, filePath, specifier, packageName) {
+  if (isNodeBuiltinImport(specifier)) {
+    throw taskError(
+      'REMOTION_IMPORT_FORBIDDEN',
+      `Node built-in import "${specifier}" is not available in controlled Remotion source`,
+    )
+  }
+  assertValidPublicImport(taskDirectory, filePath, specifier, packageName)
+  if (FORBIDDEN_EXTERNAL_PACKAGES.has(packageName)) {
+    throw taskError(
+      'REMOTION_IMPORT_FORBIDDEN',
+      `Host-only Remotion import "${specifier}" is not available in controlled source`,
+    )
+  }
+}
+
+function assertValidPublicImport(taskDirectory, filePath, specifier, packageName) {
+  if (packageName && isValidPublicPackageName(packageName)) return
+  throw taskError(
+    'REMOTION_IMPORT_FORBIDDEN',
+    `Invalid public npm import "${specifier}" in ${relativeDisplay(taskDirectory, filePath)}`,
+  )
+}
+
+function isNodeBuiltinImport(specifier) {
+  return specifier.startsWith('node:') || isBuiltin(specifier)
+}
+
+function sourceInventory(taskDirectory, inventory) {
+  return [...inventory.entries()]
+    .map(([filePath, bytes]) => ({ path: relativeDisplay(taskDirectory, filePath), bytes }))
+    .sort((left, right) => left.path.localeCompare(right.path))
 }
 
 function collectModuleImports(ast) {

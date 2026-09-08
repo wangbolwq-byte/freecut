@@ -88,55 +88,80 @@ async function run(argv = process.argv.slice(2), dependencies = {}) {
   if (resolved.kind === 'help') return envelope({ help: resolved.help })
   if (resolved.kind === 'unknown') throw unknownCommandUsageError(resolved)
   const contract = resolved.contract
-  let args
+  const args = parseCommandArgs(commandArgv, contract)
   try {
-    args = parseCliArgs(commandArgv, contract)
-    assertCommandArgs(args, contract)
-  } catch (error) {
-    throw contextualizeCommandError(error, contract)
-  }
-  try {
-    const receipt = createHostReceipt(args, contract)
-    if (receipt) await recordHostReceipt({ ...receipt, status: 'started' })
-    try {
-      const result = await runCommand(args, dependencies, contract)
-      if (receipt)
-        await recordHostReceipt({
-          ...receipt,
-          status: result?.ok === false ? 'failed' : 'succeeded',
-          result: {
-            revision: result?.revision,
-            ...(result?.audit ? { audit: result.audit } : {}),
-            ...(result?.idempotency
-              ? { idempotency: result.idempotency, currentRevision: result.currentRevision }
-              : {}),
-          },
-          ...(result?.ok === false
-            ? {
-                error: result.error ?? {
-                  code: 'AUTOCUT_OPERATION_FAILED',
-                  message: 'Operation did not pass.',
-                },
-              }
-            : {}),
-        })
-      return result
-    } catch (error) {
-      if (receipt) {
-        await recordHostReceipt({
-          ...receipt,
-          status: 'failed',
-          error: {
-            code: error?.code ?? 'AUTOCUT_OPERATION_FAILED',
-            message: error instanceof Error ? error.message : String(error),
-          },
-        })
-      }
-      throw error
-    }
+    return await runWithHostReceipt(args, dependencies, contract)
   } catch (error) {
     throw contextualizeCommandError(error, contract, args)
   }
+}
+
+function parseCommandArgs(commandArgv, contract) {
+  try {
+    const args = parseCliArgs(commandArgv, contract)
+    assertCommandArgs(args, contract)
+    return args
+  } catch (error) {
+    throw contextualizeCommandError(error, contract)
+  }
+}
+
+async function runWithHostReceipt(args, dependencies, contract) {
+  const receipt = createHostReceipt(args, contract)
+  if (receipt) await recordHostReceipt({ ...receipt, status: 'started' })
+  try {
+    const result = await runCommand(args, dependencies, contract)
+    await recordCompletedHostReceipt(receipt, result)
+    return result
+  } catch (error) {
+    await recordFailedHostReceipt(receipt, error)
+    throw error
+  }
+}
+
+async function recordCompletedHostReceipt(receipt, result) {
+  if (!receipt) return
+  const failed = Reflect.get(Object(result), 'ok') === false
+  await recordHostReceipt({
+    ...receipt,
+    status: failed ? 'failed' : 'succeeded',
+    result: hostReceiptResult(result),
+    ...(failed ? { error: hostReceiptResultError(result) } : {}),
+  })
+}
+
+function hostReceiptResult(result) {
+  const value = Object(result)
+  const receiptResult = { revision: Reflect.get(value, 'revision') }
+  const audit = Reflect.get(value, 'audit')
+  if (audit) receiptResult.audit = audit
+  const idempotency = Reflect.get(value, 'idempotency')
+  if (idempotency) {
+    receiptResult.idempotency = idempotency
+    receiptResult.currentRevision = Reflect.get(value, 'currentRevision')
+  }
+  return receiptResult
+}
+
+function hostReceiptResultError(result) {
+  return (
+    Reflect.get(Object(result), 'error') ?? {
+      code: 'AUTOCUT_OPERATION_FAILED',
+      message: 'Operation did not pass.',
+    }
+  )
+}
+
+async function recordFailedHostReceipt(receipt, error) {
+  if (!receipt) return
+  await recordHostReceipt({
+    ...receipt,
+    status: 'failed',
+    error: {
+      code: Reflect.get(Object(error), 'code') ?? 'AUTOCUT_OPERATION_FAILED',
+      message: error instanceof Error ? error.message : String(error),
+    },
+  })
 }
 
 async function runCommand(args, dependencies, contract) {
@@ -423,9 +448,7 @@ async function runCommand(args, dependencies, contract) {
 }
 
 async function managedRenderRequest(workspace, args, contract) {
-  const outputPath = args.out
-    ? path.resolve(workspace, args.out)
-    : path.join(workspace, 'exports', `${args.project}-render`)
+  const outputPath = managedRenderOutputPath(workspace, args)
   assertContainedOutput(workspace, outputPath, contract)
   const current = await getProjectResource(workspace, args.project)
   const normalized = validate(
@@ -433,16 +456,8 @@ async function managedRenderRequest(workspace, args, contract) {
     normalizeRenderInput({
       project: args.project,
       out: outputPath,
-      ...(args.codec ? { codec: args.codec } : {}),
-      ...(args.container ? { container: args.container } : {}),
-      ...(args.resolution ? { resolution: args.resolution } : {}),
-      ...(args.fps ? { fps: args.fps } : {}),
-      ...(args.quality ? { quality: args.quality } : {}),
       preset: args.preset ?? 'balanced',
-      ...(args.duration ? { duration: args.duration } : {}),
-      ...(args.in ? { in: args.in } : {}),
-      ...(args['out-sec'] ? { 'out-sec': args['out-sec'] } : {}),
-      ...(args['audio-only'] ? { 'audio-only': true } : {}),
+      ...presentRenderOptions(args),
     }),
   )
   const { project: _project, projectObject: _projectObject, out: _out, ...settings } = normalized
@@ -450,33 +465,78 @@ async function managedRenderRequest(workspace, args, contract) {
     projectId: args.project,
     expectedRevision: current.revision,
     outputPath,
-    settings: {
-      ...settings,
-      ...(args['allow-missing-media'] ? { allowMissingMedia: true } : {}),
-    },
+    settings: managedRenderSettings(settings, args),
   }
 }
 
+function managedRenderOutputPath(workspace, args) {
+  if (args.out) return path.resolve(workspace, args.out)
+  return path.join(workspace, 'exports', `${args.project}-render`)
+}
+
+function presentRenderOptions(args) {
+  const optionNames = [
+    'codec',
+    'container',
+    'resolution',
+    'fps',
+    'quality',
+    'duration',
+    'in',
+    'out-sec',
+  ]
+  const values = Object.fromEntries(
+    optionNames.flatMap((name) => (args[name] ? [[name, args[name]]] : [])),
+  )
+  if (args['audio-only']) values['audio-only'] = true
+  return values
+}
+
+function managedRenderSettings(settings, args) {
+  if (args['allow-missing-media']) return { ...settings, allowMissingMedia: true }
+  return settings
+}
+
 function createHostReceipt(args, contract, env = process.env) {
-  if (!env.AUTOCUT_BROKER_ENDPOINT?.trim() || !env.AUTOCUT_BROKER_TOKEN?.trim()) return undefined
+  if (!hasBrokerCredentials(env)) return undefined
   const [group, action] = args._
-  const tracksProject =
-    (group === 'project' && ['create', 'save', 'update', 'edit', 'audit'].includes(action)) ||
-    (group === 'media' && ['import', 'probe'].includes(action)) ||
-    (group === 'render' && !action && !env.AUTOCUT_MANAGED_RENDER_TASK_ID?.trim())
-  if (!tracksProject) return undefined
-  const projectId =
-    group === 'project'
-      ? (args.id ?? (action === 'create' ? undefined : args.project))
-      : group === 'media'
-        ? args.project
-        : args.project
+  if (!tracksProjectCommand(group, action, env)) return undefined
+  const projectId = receiptProjectId(group, action, args)
   if (!projectId) return undefined
   return {
     receiptId: crypto.randomUUID(),
     command: contract.key,
     projectId,
   }
+}
+
+function hasBrokerCredentials(env) {
+  return (
+    isNonEmptyString(Reflect.get(env, 'AUTOCUT_BROKER_ENDPOINT')) &&
+    isNonEmptyString(Reflect.get(env, 'AUTOCUT_BROKER_TOKEN'))
+  )
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim() !== ''
+}
+
+function tracksProjectCommand(group, action, env) {
+  if (group === 'project') return ['create', 'save', 'update', 'edit', 'audit'].includes(action)
+  if (group === 'media') return ['import', 'probe'].includes(action)
+  if (group !== 'render') return false
+  return tracksStandaloneRender(action, env)
+}
+
+function tracksStandaloneRender(action, env) {
+  if (action) return false
+  return !String(env.AUTOCUT_MANAGED_RENDER_TASK_ID ?? '').trim()
+}
+
+function receiptProjectId(group, action, args) {
+  if (group !== 'project') return args.project
+  if (args.id) return args.id
+  return action === 'create' ? undefined : args.project
 }
 
 async function recordHostReceipt(receipt) {

@@ -216,134 +216,199 @@ export async function saveProjectResource(
 // The caller holds the workspace writer lock. The resource lock also serializes
 // callers within this process; the journal survives process/response loss.
 export async function editProjectResource(workspace, id, request, edit, hooks = {}) {
-  return withResourceLock(`project:${id}`, async () => {
-    const current = await getProjectResource(workspace, id)
-    const key = request.idempotencyKey
-    const intentRevision = revisionOf(Buffer.from(canonicalJson({ version: 1, ops: request.ops })))
-    const journalFile = key
-      ? path.join(
-          path.dirname(projectFile(workspace, id)),
-          '.edit-receipts',
-          `${revisionOf(Buffer.from(key)).slice(7)}.json`,
-        )
-      : undefined
-    let journal
-    if (journalFile) {
-      try {
-        journal = JSON.parse(await fs.promises.readFile(journalFile, 'utf8'))
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw editRecoveryError(key, current.revision)
-      }
-    }
-    if (journal) {
-      if (
-        journal.key !== key ||
-        journal.version !== 1 ||
-        !['started', 'prepared', 'committed'].includes(journal.status)
-      )
-        throw editRecoveryError(key, current.revision)
-      if (journal.intentRevision !== intentRevision) {
-        const error = new HttpError(
-          409,
-          'IDEMPOTENCY_KEY_CONFLICT',
-          'This idempotency key already identifies different edit operations. Use a new key for a new logical edit.',
-        )
-        error.details = {
-          idempotencyKey: key,
-          currentRevision: current.revision,
-          persisted: false,
-          projectUnchanged: true,
-        }
-        throw error
-      }
-      if (journal.status !== 'started') {
-        const targetBytes = Buffer.from(`${JSON.stringify(journal.result?.project, null, 2)}\n`)
-        if (
-          journal.result?.project?.id !== id ||
-          revisionOf(targetBytes) !== journal.result?.revision ||
-          typeof journal.baseRevision !== 'string'
-        )
-          throw editRecoveryError(key, current.revision)
-        if (journal.status === 'prepared') {
-          if (current.revision === journal.baseRevision) {
-            await atomicWriteFile(projectFile(workspace, id), targetBytes, {
-              beforeCommit: async () =>
-                checkRevision(
-                  (await getProjectResource(workspace, id)).revision,
-                  journal.baseRevision,
-                  false,
-                ),
-            })
-          } else if (current.revision !== journal.result.revision) {
-            // Never overwrite a newer project when commit history is ambiguous.
-            throw editRecoveryError(key, current.revision)
-          }
-          journal.result.warnings = await repairProjectIndex(workspace)
-          journal.status = 'committed'
-          await atomicWriteFile(journalFile, Buffer.from(`${JSON.stringify(journal, null, 2)}\n`))
-          return editReceipt(journal, journal.result.revision, true, true)
-        }
-        return editReceipt(journal, current.revision, true, false)
-      }
-    }
+  return withResourceLock(`project:${id}`, () =>
+    editProjectWithJournal(workspace, id, request, edit, hooks),
+  )
+}
 
-    checkRevision(current.revision, request.expectedRevision, request.force === true)
-    if (journalFile && !journal) {
-      journal = {
-        version: 1,
-        status: 'started',
-        key,
-        intentRevision,
-        baseRevision: current.revision,
-      }
-      await atomicWriteFile(journalFile, Buffer.from(`${JSON.stringify(journal, null, 2)}\n`))
-    }
-    const edited = await edit(current)
-    const project = {
-      ...edited.project,
-      id,
-      createdAt: current.project.createdAt,
-      updatedAt: Date.now(),
-    }
-    const bytes = Buffer.from(`${JSON.stringify(project, null, 2)}\n`)
-    const result = {
-      ...edited,
-      project,
-      persisted: true,
-      baseRevision: current.revision,
-      revision: revisionOf(bytes),
-      warnings: [],
-    }
-    if (journalFile) {
-      journal = {
-        version: 1,
-        status: 'prepared',
-        key,
-        intentRevision,
-        baseRevision: current.revision,
-        result,
-      }
-      await atomicWriteFile(journalFile, Buffer.from(`${JSON.stringify(journal, null, 2)}\n`))
-      await hooks.afterPrepare?.()
-    }
-    await atomicWriteFile(projectFile(workspace, id), bytes, {
-      beforeCommit: async () =>
-        checkRevision((await getProjectResource(workspace, id)).revision, current.revision, false),
+async function editProjectWithJournal(workspace, id, request, edit, hooks) {
+  const current = await getProjectResource(workspace, id)
+  const context = editJournalContext(workspace, id, request, current)
+  let journal = await readEditJournal(context)
+  const replay = await replayEditJournal(context, journal)
+  if (replay) return replay
+  checkRevision(current.revision, request.expectedRevision, request.force === true)
+  journal = await startEditJournal(context, journal)
+  const prepared = await prepareEditedProject(context, journal, edit, hooks)
+  return commitEditedProject(context, prepared, hooks)
+}
+
+function editJournalContext(workspace, id, request, current) {
+  const key = request.idempotencyKey
+  const intentRevision = revisionOf(Buffer.from(canonicalJson({ version: 1, ops: request.ops })))
+  const journalFile = key
+    ? path.join(
+        path.dirname(projectFile(workspace, id)),
+        '.edit-receipts',
+        `${revisionOf(Buffer.from(key)).slice(7)}.json`,
+      )
+    : undefined
+  return { workspace, id, request, current, key, intentRevision, journalFile }
+}
+
+async function readEditJournal(context) {
+  if (!context.journalFile) return undefined
+  try {
+    return JSON.parse(await fs.promises.readFile(context.journalFile, 'utf8'))
+  } catch (error) {
+    if (error.code === 'ENOENT') return undefined
+    throw editRecoveryError(context.key, context.current.revision)
+  }
+}
+
+async function replayEditJournal(context, journal) {
+  if (!journal) return undefined
+  assertEditJournalIdentity(context, journal)
+  assertEditJournalIntent(context, journal)
+  if (journal.status === 'started') return undefined
+  return replayCompletedEditJournal(context, journal)
+}
+
+function assertEditJournalIdentity(context, journal) {
+  if (journal.key !== context.key) throw editRecoveryError(context.key, context.current.revision)
+  if (journal.version !== 1) throw editRecoveryError(context.key, context.current.revision)
+  if (!['started', 'prepared', 'committed'].includes(journal.status)) {
+    throw editRecoveryError(context.key, context.current.revision)
+  }
+}
+
+function assertEditJournalIntent(context, journal) {
+  if (journal.intentRevision === context.intentRevision) return
+  const error = new HttpError(
+    409,
+    'IDEMPOTENCY_KEY_CONFLICT',
+    'This idempotency key already identifies different edit operations. Use a new key for a new logical edit.',
+  )
+  error.details = {
+    idempotencyKey: context.key,
+    currentRevision: context.current.revision,
+    persisted: false,
+    projectUnchanged: true,
+  }
+  throw error
+}
+
+async function replayCompletedEditJournal(context, journal) {
+  const targetBytes = Buffer.from(`${JSON.stringify(journal.result?.project, null, 2)}\n`)
+  assertEditJournalResult(context, journal, targetBytes)
+  if (journal.status === 'prepared') {
+    return recoverPreparedEditJournal(context, journal, targetBytes)
+  }
+  return editReceipt(journal, context.current.revision, true, false)
+}
+
+function assertEditJournalResult(context, journal, targetBytes) {
+  assertJournalProjectId(context, journal)
+  assertJournalRevision(context, journal, targetBytes)
+  if (typeof journal.baseRevision !== 'string') {
+    throw editRecoveryError(context.key, context.current.revision)
+  }
+}
+
+function assertJournalProjectId(context, journal) {
+  const project = Reflect.get(Object(journal.result), 'project')
+  if (Reflect.get(Object(project), 'id') !== context.id) {
+    throw editRecoveryError(context.key, context.current.revision)
+  }
+}
+
+function assertJournalRevision(context, journal, targetBytes) {
+  if (revisionOf(targetBytes) !== Reflect.get(Object(journal.result), 'revision')) {
+    throw editRecoveryError(context.key, context.current.revision)
+  }
+}
+
+async function recoverPreparedEditJournal(context, journal, targetBytes) {
+  if (context.current.revision === journal.baseRevision) {
+    await atomicWriteFile(projectFile(context.workspace, context.id), targetBytes, {
+      beforeCommit: () => assertCurrentRevision(context, journal.baseRevision),
     })
-    await hooks.afterProjectCommit?.()
-    result.warnings = await repairProjectIndex(workspace)
-    if (journalFile) {
-      journal.status = 'committed'
-      await atomicWriteFile(journalFile, Buffer.from(`${JSON.stringify(journal, null, 2)}\n`))
-      return editReceipt(journal, result.revision, false, false)
-    }
-    return {
-      ...result,
-      currentRevision: result.revision,
-      projectAdvanced: false,
-      idempotency: { protected: false, replayed: false },
-    }
+  } else if (context.current.revision !== journal.result.revision) {
+    throw editRecoveryError(context.key, context.current.revision)
+  }
+  journal.result.warnings = await repairProjectIndex(context.workspace)
+  journal.status = 'committed'
+  await writeEditJournal(context.journalFile, journal)
+  return editReceipt(journal, journal.result.revision, true, true)
+}
+
+async function assertCurrentRevision(context, expectedRevision) {
+  const latest = await getProjectResource(context.workspace, context.id)
+  checkRevision(latest.revision, expectedRevision, false)
+}
+
+async function startEditJournal(context, journal) {
+  if (!context.journalFile) return journal
+  if (journal) return journal
+  const started = {
+    version: 1,
+    status: 'started',
+    key: context.key,
+    intentRevision: context.intentRevision,
+    baseRevision: context.current.revision,
+  }
+  await writeEditJournal(context.journalFile, started)
+  return started
+}
+
+async function prepareEditedProject(context, journal, edit, hooks) {
+  const edited = await edit(context.current)
+  const project = {
+    ...edited.project,
+    id: context.id,
+    createdAt: context.current.project.createdAt,
+    updatedAt: Date.now(),
+  }
+  const bytes = Buffer.from(`${JSON.stringify(project, null, 2)}\n`)
+  const result = {
+    ...edited,
+    project,
+    persisted: true,
+    baseRevision: context.current.revision,
+    revision: revisionOf(bytes),
+    warnings: [],
+  }
+  if (!context.journalFile) return { journal, result, bytes }
+  const preparedJournal = {
+    version: 1,
+    status: 'prepared',
+    key: context.key,
+    intentRevision: context.intentRevision,
+    baseRevision: context.current.revision,
+    result,
+  }
+  await writeEditJournal(context.journalFile, preparedJournal)
+  await invokeHook(hooks.afterPrepare)
+  return { journal: preparedJournal, result, bytes }
+}
+
+async function commitEditedProject(context, prepared, hooks) {
+  await atomicWriteFile(projectFile(context.workspace, context.id), prepared.bytes, {
+    beforeCommit: () => assertCurrentRevision(context, context.current.revision),
   })
+  await invokeHook(hooks.afterProjectCommit)
+  prepared.result.warnings = await repairProjectIndex(context.workspace)
+  if (!context.journalFile) return unprotectedEditReceipt(prepared.result)
+  prepared.journal.status = 'committed'
+  await writeEditJournal(context.journalFile, prepared.journal)
+  return editReceipt(prepared.journal, prepared.result.revision, false, false)
+}
+
+async function invokeHook(hook) {
+  if (hook) await hook()
+}
+
+function unprotectedEditReceipt(result) {
+  return {
+    ...result,
+    currentRevision: result.revision,
+    projectAdvanced: false,
+    idempotency: { protected: false, replayed: false },
+  }
+}
+
+function writeEditJournal(journalFile, journal) {
+  return atomicWriteFile(journalFile, Buffer.from(`${JSON.stringify(journal, null, 2)}\n`))
 }
 
 function canonicalJson(value) {
@@ -554,46 +619,71 @@ export async function updateMediaMetadata(
   probe,
   { expectedRevision, force = false } = {},
 ) {
-  return withResourceLock(`media:${id}`, async () => {
-    const current = await getMediaResource(workspace, id)
-    checkRevision(current.revision, expectedRevision, force)
-    const details = probe.metadata ?? probe
-    const next = {
-      ...current.metadata,
-      mimeType: probe.mimeType ?? current.metadata.mimeType,
-      ...('duration' in details ? { duration: details.duration } : {}),
-      ...('width' in details ? { width: details.width } : {}),
-      ...('height' in details ? { height: details.height } : {}),
-      ...(details.type === 'video' || 'fps' in details ? { fps: details.fps ?? 0 } : {}),
-      ...('codec' in details ? { codec: details.codec } : {}),
-      ...('bitrate' in details ? { bitrate: details.bitrate } : {}),
-      ...('audioCodec' in details ? { audioCodec: details.audioCodec } : {}),
-      ...('audioPresence' in details ? { audioPresence: details.audioPresence } : {}),
-      ...('transparency' in details ? { transparency: details.transparency } : {}),
-      ...('audioCodecSupported' in details
-        ? { audioCodecSupported: details.audioCodecSupported }
-        : {}),
-      ...('videoCodecSupported' in details
-        ? { videoCodecSupported: details.videoCodecSupported }
-        : {}),
-      ...('keyframeTimestamps' in details
-        ? { keyframeTimestamps: details.keyframeTimestamps }
-        : {}),
-      ...('gopInterval' in details ? { gopInterval: details.gopInterval } : {}),
-      updatedAt: Date.now(),
-    }
-    delete next.fileHandle
-    delete next.opfsPath
-    const bytes = Buffer.from(`${JSON.stringify(next, null, 2)}\n`)
-    const target = resolveContained(path.join(workspace, 'media'), path.join(id, 'metadata.json'))
-    await atomicWriteFile(target, bytes, {
-      beforeCommit: async () => {
-        const latest = await getMediaResource(workspace, id)
-        checkRevision(latest.revision, current.revision, false)
-      },
-    })
-    return { ...(await getMediaResource(workspace, id)), revision: revisionOf(bytes) }
+  return withResourceLock(`media:${id}`, () =>
+    updateLockedMediaMetadata(workspace, id, probe, expectedRevision, force),
+  )
+}
+
+async function updateLockedMediaMetadata(workspace, id, probe, expectedRevision, force) {
+  const current = await getMediaResource(workspace, id)
+  checkRevision(current.revision, expectedRevision, force)
+  const next = updatedMediaMetadata(current.metadata, probe)
+  const bytes = Buffer.from(`${JSON.stringify(next, null, 2)}\n`)
+  const target = resolveContained(path.join(workspace, 'media'), path.join(id, 'metadata.json'))
+  await atomicWriteFile(target, bytes, {
+    beforeCommit: () => assertMediaRevision(workspace, id, current.revision),
   })
+  return { ...(await getMediaResource(workspace, id)), revision: revisionOf(bytes) }
+}
+
+function updatedMediaMetadata(current, probe) {
+  const details = probe.metadata ?? probe
+  const next = {
+    ...current,
+    mimeType: probe.mimeType ?? current.mimeType,
+    updatedAt: Date.now(),
+  }
+  copyPresentFields(next, details, [
+    'duration',
+    'width',
+    'height',
+    'codec',
+    'bitrate',
+    'audioCodec',
+    'audioPresence',
+    'transparency',
+    'audioCodecSupported',
+    'videoCodecSupported',
+    'keyframeTimestamps',
+    'gopInterval',
+  ])
+  copyMediaFps(next, details)
+  delete next.fileHandle
+  delete next.opfsPath
+  return next
+}
+
+function copyPresentFields(target, source, fields) {
+  for (const field of fields) {
+    if (field in source) target[field] = source[field]
+  }
+}
+
+function copyMediaFps(target, details) {
+  if (details.type === 'video') {
+    target.fps = definedOr(details.fps, 0)
+    return
+  }
+  if ('fps' in details) target.fps = definedOr(details.fps, 0)
+}
+
+function definedOr(value, fallback) {
+  return value === undefined ? fallback : value
+}
+
+async function assertMediaRevision(workspace, id, expectedRevision) {
+  const latest = await getMediaResource(workspace, id)
+  checkRevision(latest.revision, expectedRevision, false)
 }
 
 export async function stageLocalMedia(
@@ -644,61 +734,84 @@ export async function stageLocalMedia(
 }
 
 export async function commitStagedMedia(staged, probe, { projectId, workspace }) {
-  const metadata = probe.metadata
   const now = Date.now()
-  const value = {
+  const value = stagedMediaMetadata(staged, probe, now)
+  const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`)
+  await atomicWriteFile(path.join(staged.dir, 'metadata.json'), bytes)
+  await associateStagedMediaWithProject({ workspace, projectId, staged, now })
+  return getMediaResource(workspace, staged.id)
+}
+
+function stagedMediaMetadata(staged, probe, now) {
+  const metadata = probe.metadata
+  return {
     id: staged.id,
     storageType: 'workspace',
     fileName: staged.fileName,
     fileSize: staged.fileSize,
     fileLastModified: staged.fileLastModified,
     mimeType: probe.mimeType,
-    duration: 'duration' in metadata ? metadata.duration : 0,
-    width: 'width' in metadata ? metadata.width : 0,
-    height: 'height' in metadata ? metadata.height : 0,
-    fps: metadata.type === 'video' ? metadata.fps : 0,
+    duration: numericMediaField(metadata, 'duration'),
+    width: numericMediaField(metadata, 'width'),
+    height: numericMediaField(metadata, 'height'),
+    fps: numericMediaField(metadata, 'fps'),
     codec: metadata.codec ?? 'unknown',
     bitrate: metadata.bitrate ?? 0,
-    ...(metadata.type === 'video'
-      ? {
-          audioCodec: metadata.audioCodec,
-          audioPresence: metadata.audioPresence,
-          transparency: metadata.transparency,
-          audioCodecSupported: metadata.audioCodecSupported,
-          videoCodecSupported: metadata.videoCodecSupported,
-          keyframeTimestamps: metadata.keyframeTimestamps,
-          gopInterval: metadata.gopInterval,
-        }
-      : metadata.type === 'image'
-        ? { transparency: metadata.transparency }
-        : {
-            audioPresence: metadata.type === 'audio' ? 'present' : 'absent',
-            transparency: 'opaque',
-          }),
+    ...stagedMediaTypeMetadata(metadata),
     tags: [],
     createdAt: now,
     updatedAt: now,
   }
-  const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`)
-  await atomicWriteFile(path.join(staged.dir, 'metadata.json'), bytes)
-  if (projectId) {
-    assertPortableId(projectId, 'project id')
-    await getProjectResource(workspace, projectId)
-    const linksFile = resolveContained(
-      path.join(workspace, 'projects'),
-      path.join(projectId, 'media-links.json'),
-    )
-    let links = { version: '1.0', mediaIds: [] }
-    try {
-      links = JSON.parse(await fs.promises.readFile(linksFile, 'utf8'))
-    } catch (e) {
-      if (e.code !== 'ENOENT') throw e
-    }
-    if (!links.mediaIds.some((entry) => entry.id === staged.id))
-      links.mediaIds.push({ id: staged.id, addedAt: now })
-    await atomicWriteFile(linksFile, Buffer.from(`${JSON.stringify(links, null, 2)}\n`))
+}
+
+function numericMediaField(metadata, field) {
+  const value = Reflect.get(metadata, field)
+  return typeof value === 'number' ? value : 0
+}
+
+function stagedMediaTypeMetadata(metadata) {
+  if (metadata.type === 'video') return stagedVideoMetadata(metadata)
+  if (metadata.type === 'image') return { transparency: metadata.transparency }
+  return {
+    audioPresence: metadata.type === 'audio' ? 'present' : 'absent',
+    transparency: 'opaque',
   }
-  return getMediaResource(workspace, staged.id)
+}
+
+function stagedVideoMetadata(metadata) {
+  return {
+    audioCodec: metadata.audioCodec,
+    audioPresence: metadata.audioPresence,
+    transparency: metadata.transparency,
+    audioCodecSupported: metadata.audioCodecSupported,
+    videoCodecSupported: metadata.videoCodecSupported,
+    keyframeTimestamps: metadata.keyframeTimestamps,
+    gopInterval: metadata.gopInterval,
+  }
+}
+
+async function associateStagedMediaWithProject({ workspace, projectId, staged, now }) {
+  if (!projectId) return
+  assertPortableId(projectId, 'project id')
+  await getProjectResource(workspace, projectId)
+  const linksFile = resolveContained(
+    path.join(workspace, 'projects'),
+    path.join(projectId, 'media-links.json'),
+  )
+  const links = await readMediaLinks(linksFile)
+  if (!links.mediaIds.some((entry) => entry.id === staged.id)) {
+    links.mediaIds.push({ id: staged.id, addedAt: now })
+  }
+  await atomicWriteFile(linksFile, Buffer.from(`${JSON.stringify(links, null, 2)}\n`))
+}
+
+async function readMediaLinks(linksFile) {
+  try {
+    return JSON.parse(await fs.promises.readFile(linksFile, 'utf8'))
+  } catch (error) {
+    if (error.code === 'ENOENT') return { version: '1.0', mediaIds: [] }
+    throw error
+  }
 }
 
 export async function rollbackStagedMedia(staged) {

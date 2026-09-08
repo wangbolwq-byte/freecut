@@ -256,89 +256,18 @@ export function auditRemixProject(project, options = {}) {
 
 function collectSemanticFacts({ timeline, tracks, items, uncoveredCuts }) {
   const itemById = new Map(items.map((item) => [item.id, item]))
-  const positionAnimations = (timeline.keyframes ?? []).flatMap((entry) => {
-    const properties = (entry.properties ?? []).filter(
-      (property) => property.property === 'x' || property.property === 'y',
-    )
-    if (properties.length === 0) return []
-    const axes = Object.fromEntries(
-      properties.map((property) => {
-        const values = (property.keyframes ?? []).map((keyframe) => keyframe.value)
-        return [
-          property.property,
-          {
-            keyframes: property.keyframes ?? [],
-            displacement: values.length > 0 ? Math.max(...values) - Math.min(...values) : 0,
-          },
-        ]
-      }),
-    )
-    const displacement = Math.hypot(axes.x?.displacement ?? 0, axes.y?.displacement ?? 0)
-    return [{ itemId: entry.itemId, axes, displacement, hasActualMotion: displacement > 0 }]
-  })
+  const positionAnimations = (timeline.keyframes ?? []).map(positionAnimationFact).filter(Boolean)
   const animationByItem = new Map(positionAnimations.map((entry) => [entry.itemId, entry]))
   const overlayPositions = items
     .filter((item) => item.type === 'image' || item.type === 'lottie')
-    .map((item) => ({
-      itemId: item.id,
-      itemType: item.type,
-      from: item.from ?? 0,
-      to: (item.from ?? 0) + (item.durationInFrames ?? 0),
-      positionAnimation: animationByItem.get(item.id) ?? null,
-    }))
-  const transitions = (timeline.transitions ?? []).map((transition) => {
-    const left = itemById.get(transition.leftClipId)
-    const right = itemById.get(transition.rightClipId)
-    const cutFrame =
-      right?.from ??
-      (left?.from ?? 0) + (left?.durationInFrames ?? transition.durationInFrames ?? 0)
-    const duration = transition.durationInFrames ?? 0
-    const alignment = transition.alignment ?? 0.5
-    const beforeCut = Math.round(duration * alignment)
-    return {
-      id: transition.id,
-      type: transition.type,
-      presentation: transition.presentation,
-      leftClipId: transition.leftClipId,
-      rightClipId: transition.rightClipId,
-      durationInFrames: duration,
-      coverage: {
-        from: cutFrame - beforeCut,
-        to: cutFrame - beforeCut + duration,
-      },
-    }
-  })
+    .map((item) => overlayPositionFact(item, animationByItem))
+  const transitions = (timeline.transitions ?? []).map((transition) =>
+    transitionFact(transition, itemById),
+  )
   const audioTracks = [...tracks.values()]
     .filter((track) => (track.kind ?? 'video') === 'audio')
-    .map((track) => {
-      const trackItems = items.filter((item) => item.trackId === track.id && item.type === 'audio')
-      const sourceAudioItems = trackItems.filter((item) => item.linkedGroupId)
-      const unlinkedItems = trackItems.filter((item) => !item.linkedGroupId)
-      return {
-        trackId: track.id,
-        name: track.name,
-        muted: track.muted === true,
-        volumeDb: track.volume ?? 0,
-        sourceAudioItemIds: sourceAudioItems.map((item) => item.id),
-        unlinkedAudioItemIds: unlinkedItems.map((item) => item.id),
-        contentRole: 'unknown',
-        coverage: intervalCoverage(trackItems),
-        unlinkedAudioCoverage: intervalCoverage(unlinkedItems),
-      }
-    })
-  const gpuEffects = items.flatMap((item) =>
-    (item.effects ?? [])
-      .filter((effect) => effect.enabled !== false)
-      .map((effect) => ({
-        itemId: item.id,
-        effectId: effect.id,
-        gpuEffectType: effect.effect?.gpuEffectType,
-        coverage: {
-          from: item.from ?? 0,
-          to: (item.from ?? 0) + (item.durationInFrames ?? 0),
-        },
-      })),
-  )
+    .map((track) => audioTrackFact(track, items))
+  const gpuEffects = items.flatMap(gpuEffectFacts)
   const durationFrames = Math.max(
     0,
     ...items.map((item) => (item.from ?? 0) + (item.durationInFrames ?? 0)),
@@ -346,30 +275,7 @@ function collectSemanticFacts({ timeline, tracks, items, uncoveredCuts }) {
   const unlinkedAudioCoverage = intervalCoverage(
     items.filter((item) => item.type === 'audio' && !item.linkedGroupId),
   )
-  const findings = [
-    ...overlayPositions
-      .filter((item) => !item.positionAnimation?.hasActualMotion)
-      .map((item) => ({
-        code: 'static_overlay_position',
-        itemIds: [item.itemId],
-        fact: 'Overlay has no distinct x/y keyframe values.',
-      })),
-    ...uncoveredCuts.map((cut) => ({
-      code: 'cut_without_transition',
-      itemIds: [cut.leftClipId, cut.rightClipId],
-      fact: 'Adjacent visual clips meet at a cut with no transition record.',
-      cutFrame: cut.cutFrame,
-    })),
-    ...(timeline.masterBusDb <= -59 && audioTracks.some((track) => !track.muted)
-      ? [
-          {
-            code: 'master_bus_effectively_silent',
-            itemIds: [],
-            fact: 'The master bus is effectively silent while one or more audio tracks remain unmuted.',
-          },
-        ]
-      : []),
-  ]
+  const findings = semanticFindings({ overlayPositions, uncoveredCuts, timeline, audioTracks })
   return {
     positionAnimations,
     overlayPositions,
@@ -385,12 +291,142 @@ function collectSemanticFacts({ timeline, tracks, items, uncoveredCuts }) {
       projectDurationFrames: durationFrames,
     },
     gpuEffects,
-    findings: findings.map((finding) => ({
-      ...finding,
-      severity: 'observation',
-      requiresAction: false,
-    })),
+    findings: findings.map(observationFinding),
   }
+}
+
+function positionAnimationFact(entry) {
+  const properties = definedOr(entry.properties, []).filter(isPositionProperty)
+  if (properties.length === 0) return undefined
+  const axes = Object.fromEntries(properties.map(positionAxisFact))
+  const displacement = Math.hypot(axisDisplacement(axes, 'x'), axisDisplacement(axes, 'y'))
+  return { itemId: entry.itemId, axes, displacement, hasActualMotion: displacement > 0 }
+}
+
+function isPositionProperty(property) {
+  return ['x', 'y'].includes(property.property)
+}
+
+function positionAxisFact(property) {
+  const keyframes = definedOr(property.keyframes, [])
+  const values = keyframes.map((keyframe) => keyframe.value)
+  const displacement = values.length > 0 ? Math.max(...values) - Math.min(...values) : 0
+  return [property.property, { keyframes, displacement }]
+}
+
+function axisDisplacement(axes, name) {
+  return definedOr(axes[name]?.displacement, 0)
+}
+
+function overlayPositionFact(item, animationByItem) {
+  return {
+    itemId: item.id,
+    itemType: item.type,
+    from: definedOr(item.from, 0),
+    to: definedOr(item.from, 0) + definedOr(item.durationInFrames, 0),
+    positionAnimation: definedOr(animationByItem.get(item.id), null),
+  }
+}
+
+function transitionFact(transition, itemById) {
+  const left = itemById.get(transition.leftClipId)
+  const right = itemById.get(transition.rightClipId)
+  const leftFrom = definedOr(left?.from, 0)
+  const leftDuration = definedOr(left?.durationInFrames, definedOr(transition.durationInFrames, 0))
+  const cutFrame = definedOr(right?.from, leftFrom + leftDuration)
+  const duration = definedOr(transition.durationInFrames, 0)
+  const beforeCut = Math.round(duration * definedOr(transition.alignment, 0.5))
+  return {
+    id: transition.id,
+    type: transition.type,
+    presentation: transition.presentation,
+    leftClipId: transition.leftClipId,
+    rightClipId: transition.rightClipId,
+    durationInFrames: duration,
+    coverage: { from: cutFrame - beforeCut, to: cutFrame - beforeCut + duration },
+  }
+}
+
+function audioTrackFact(track, items) {
+  const trackItems = items.filter((item) => item.trackId === track.id && item.type === 'audio')
+  const sourceAudioItems = trackItems.filter((item) => item.linkedGroupId)
+  const unlinkedItems = trackItems.filter((item) => !item.linkedGroupId)
+  return {
+    trackId: track.id,
+    name: track.name,
+    muted: track.muted === true,
+    volumeDb: track.volume ?? 0,
+    sourceAudioItemIds: sourceAudioItems.map((item) => item.id),
+    unlinkedAudioItemIds: unlinkedItems.map((item) => item.id),
+    contentRole: 'unknown',
+    coverage: intervalCoverage(trackItems),
+    unlinkedAudioCoverage: intervalCoverage(unlinkedItems),
+  }
+}
+
+function gpuEffectFacts(item) {
+  return (item.effects ?? []).filter(isEnabledEffect).map((effect) => gpuEffectFact(item, effect))
+}
+
+function isEnabledEffect(effect) {
+  return effect.enabled !== false
+}
+
+function gpuEffectFact(item, effect) {
+  return {
+    itemId: item.id,
+    effectId: effect.id,
+    gpuEffectType: effect.effect?.gpuEffectType,
+    coverage: {
+      from: definedOr(item.from, 0),
+      to: definedOr(item.from, 0) + definedOr(item.durationInFrames, 0),
+    },
+  }
+}
+
+function semanticFindings({ overlayPositions, uncoveredCuts, timeline, audioTracks }) {
+  return [
+    ...overlayPositions.filter(isStaticOverlay).map(staticOverlayFinding),
+    ...uncoveredCuts.map(uncoveredCutFinding),
+    ...silentMasterBusFindings(timeline, audioTracks),
+  ]
+}
+
+function isStaticOverlay(item) {
+  return item.positionAnimation?.hasActualMotion !== true
+}
+
+function staticOverlayFinding(item) {
+  return {
+    code: 'static_overlay_position',
+    itemIds: [item.itemId],
+    fact: 'Overlay has no distinct x/y keyframe values.',
+  }
+}
+
+function uncoveredCutFinding(cut) {
+  return {
+    code: 'cut_without_transition',
+    itemIds: [cut.leftClipId, cut.rightClipId],
+    fact: 'Adjacent visual clips meet at a cut with no transition record.',
+    cutFrame: cut.cutFrame,
+  }
+}
+
+function silentMasterBusFindings(timeline, audioTracks) {
+  if (!(timeline.masterBusDb <= -59)) return []
+  if (!audioTracks.some((track) => !track.muted)) return []
+  return [
+    {
+      code: 'master_bus_effectively_silent',
+      itemIds: [],
+      fact: 'The master bus is effectively silent while one or more audio tracks remain unmuted.',
+    },
+  ]
+}
+
+function observationFinding(finding) {
+  return { ...finding, severity: 'observation', requiresAction: false }
 }
 
 function isVisualItem(item) {
@@ -426,33 +462,46 @@ function positiveNumber(value, fallback) {
 function sourceRange(item, projectFps) {
   const sourceFps = positiveNumber(item.sourceFps, projectFps)
   const speed = positiveNumber(item.speed, 1)
-  const from = item.sourceStart ?? 0
-  const requiredFrames = Math.round(((item.durationInFrames ?? 0) / projectFps) * sourceFps * speed)
-  const to = item.sourceEnd ?? from + requiredFrames
-  const requiredPlaybackFrames = item.isReversed
-    ? { from: to - requiredFrames, to }
-    : { from, to: from + requiredFrames }
+  const from = definedOr(item.sourceStart, 0)
+  const requiredFrames = Math.round(
+    (definedOr(item.durationInFrames, 0) / projectFps) * sourceFps * speed,
+  )
+  const to = definedOr(item.sourceEnd, from + requiredFrames)
   return {
     itemId: item.id,
     mediaId: item.mediaId ?? null,
     trackId: item.trackId,
     sourceFps,
-    sourceFpsOrigin:
-      positiveNumber(item.sourceFps, null) === null ? 'project_fps_fallback' : 'item',
+    sourceFpsOrigin: sourceFpsOrigin(item.sourceFps),
     projectFps,
     speed,
     reversed: item.isReversed === true,
     frames: { from, to },
     seconds: { from: from / sourceFps, to: to / sourceFps },
-    requiredPlaybackFrames,
-    sourceDurationFrames:
-      typeof item.sourceDuration === 'number' && item.sourceDuration > 0
-        ? item.sourceDuration
-        : null,
-    sourceDurationSeconds:
-      typeof item.sourceDuration === 'number' && item.sourceDuration > 0
-        ? item.sourceDuration / sourceFps
-        : null,
+    requiredPlaybackFrames: requiredPlaybackFrames(item, from, to, requiredFrames),
+    ...sourceDurationFacts(item.sourceDuration, sourceFps),
+  }
+}
+
+function definedOr(value, fallback) {
+  return value === undefined ? fallback : value
+}
+
+function sourceFpsOrigin(sourceFps) {
+  return positiveNumber(sourceFps, null) === null ? 'project_fps_fallback' : 'item'
+}
+
+function requiredPlaybackFrames(item, from, to, requiredFrames) {
+  if (item.isReversed) return { from: to - requiredFrames, to }
+  return { from, to: from + requiredFrames }
+}
+
+function sourceDurationFacts(sourceDuration, sourceFps) {
+  const hasDuration = typeof sourceDuration === 'number' && sourceDuration > 0
+  const frames = hasDuration ? sourceDuration : null
+  return {
+    sourceDurationFrames: frames,
+    sourceDurationSeconds: frames === null ? null : frames / sourceFps,
   }
 }
 

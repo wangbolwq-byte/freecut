@@ -338,13 +338,8 @@ function itemPlacementDetail(
   requested: { readonly from?: number; readonly trackId?: string } = {},
 ): Record<string, unknown> {
   const item = requireItem(id)
-  const adjusted =
-    (requested.from !== undefined && requested.from !== item.from) ||
-    (requested.trackId !== undefined && requested.trackId !== item.trackId)
-  const requestedPlacement = {
-    ...(requested.from !== undefined ? { from: requested.from } : {}),
-    ...(requested.trackId !== undefined ? { trackId: requested.trackId } : {}),
-  }
+  const adjusted = placementWasAdjusted(item, requested)
+  const requestedPlacement = definedPlacement(requested)
   const actualPlacement = { from: item.from, trackId: item.trackId }
   return {
     id: item.id,
@@ -357,13 +352,34 @@ function itemPlacementDetail(
       requested: requestedPlacement,
       actual: actualPlacement,
     },
-    ...(adjusted
-      ? {
-          placementAdjusted: true,
-          requestedPlacement,
-        }
-      : {}),
+    ...placementAdjustmentDetails(adjusted, requestedPlacement),
   }
+}
+
+function placementWasAdjusted(
+  item: { readonly from: number; readonly trackId: string },
+  requested: { readonly from?: number; readonly trackId?: string },
+): boolean {
+  if (requested.from !== undefined && requested.from !== item.from) return true
+  return requested.trackId !== undefined && requested.trackId !== item.trackId
+}
+
+function definedPlacement(requested: {
+  readonly from?: number
+  readonly trackId?: string
+}): Record<string, number | string> {
+  const placement: Record<string, number | string> = {}
+  if (requested.from !== undefined) placement.from = requested.from
+  if (requested.trackId !== undefined) placement.trackId = requested.trackId
+  return placement
+}
+
+function placementAdjustmentDetails(
+  adjusted: boolean,
+  requestedPlacement: Record<string, number | string>,
+): Record<string, unknown> {
+  if (!adjusted) return {}
+  return { placementAdjusted: true, requestedPlacement }
 }
 
 /** Apply a single op by driving the real timeline action modules. Throws on bad input. */

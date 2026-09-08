@@ -39,108 +39,100 @@ export class RemotionDependencyError extends Error {
 
 export function parseRemotionDependencyMap(value) {
   if (value === undefined) return Object.freeze({})
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw dependencyError(
-      'REMOTION_TASK_CONFIG_INVALID',
-      'dependencies must be an object of npm package names to exact versions',
-    )
-  }
+  assertDependencyRecord(value)
   const entries = Object.entries(value)
-  if (entries.length > MAX_DEPENDENCIES) {
-    throw dependencyError(
-      'REMOTION_TASK_CONFIG_INVALID',
-      `dependencies may contain at most ${MAX_DEPENDENCIES} packages`,
-    )
-  }
-  const dependencies = {}
-  for (const [name, version] of entries.sort(([left], [right]) => left.localeCompare(right))) {
-    if (
-      name.length > 214 ||
-      !PACKAGE_NAME.test(name) ||
-      name.startsWith('.') ||
-      name.startsWith('_')
-    ) {
-      throw dependencyError(
-        'REMOTION_TASK_CONFIG_INVALID',
-        `dependencies contains an invalid npm package name: ${name}`,
-      )
-    }
-    if (RESERVED_RUNTIME_PACKAGES.has(name)) {
-      throw dependencyError(
-        'REMOTION_TASK_CONFIG_INVALID',
-        `dependencies may not override the managed ${name} runtime`,
-      )
-    }
-    if (typeof version !== 'string' || !EXACT_VERSION.test(version)) {
-      throw dependencyError(
-        'REMOTION_TASK_CONFIG_INVALID',
-        `dependencies.${name} must be an exact semantic version such as 3.13.0`,
-      )
-    }
-    dependencies[name] = version
-  }
+  assertDependencyLimit(entries.length)
+  const dependencies = Object.fromEntries(
+    entries
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, version]) => parseDependencyEntry(name, version)),
+  )
   return Object.freeze(dependencies)
 }
 
-export function externalImportPackageName(specifier) {
-  if (typeof specifier !== 'string' || specifier === '') return undefined
-  if (specifier.startsWith('@')) {
-    const [scope, name] = specifier.split('/')
-    return scope && name ? `${scope}/${name}` : undefined
-  }
-  return specifier.split('/')[0] || undefined
-}
-
-export function isValidPublicPackageName(name) {
-  return (
-    typeof name === 'string' &&
-    name.length <= 214 &&
-    PACKAGE_NAME.test(name) &&
-    !name.startsWith('.') &&
-    !name.startsWith('_')
+function assertDependencyRecord(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return
+  throw dependencyError(
+    'REMOTION_TASK_CONFIG_INVALID',
+    'dependencies must be an object of npm package names to exact versions',
   )
 }
 
-export async function prepareRemotionTaskDependencies(input) {
-  const pinnedDependencies = input.dependencies ?? {}
-  const packageNames = new Set([...(input.packageNames ?? []), ...Object.keys(pinnedDependencies)])
-  if (packageNames.size > MAX_DEPENDENCIES) {
+function assertDependencyLimit(count) {
+  if (count <= MAX_DEPENDENCIES) return
+  throw dependencyError(
+    'REMOTION_TASK_CONFIG_INVALID',
+    `dependencies may contain at most ${MAX_DEPENDENCIES} packages`,
+  )
+}
+
+function parseDependencyEntry(name, version) {
+  assertDependencyName(name)
+  if (RESERVED_RUNTIME_PACKAGES.has(name)) {
     throw dependencyError(
-      'REMOTION_DEPENDENCY_LIMIT_EXCEEDED',
-      `Remotion source may import at most ${MAX_DEPENDENCIES} npm packages`,
+      'REMOTION_TASK_CONFIG_INVALID',
+      `dependencies may not override the managed ${name} runtime`,
     )
   }
-  const requested = [...packageNames]
-    .sort((left, right) => left.localeCompare(right))
-    .map((name) => {
-      if (!isValidPublicPackageName(name) || RESERVED_RUNTIME_PACKAGES.has(name)) {
-        throw dependencyError(
-          'REMOTION_DEPENDENCY_INVALID',
-          `Remotion source imports an unsupported npm package name: ${name}`,
-        )
-      }
-      return [name, pinnedDependencies[name] ?? null]
-    })
+  if (typeof version !== 'string' || !EXACT_VERSION.test(version)) {
+    throw dependencyError(
+      'REMOTION_TASK_CONFIG_INVALID',
+      `dependencies.${name} must be an exact semantic version such as 3.13.0`,
+    )
+  }
+  return [name, version]
+}
+
+function assertDependencyName(name) {
+  if (isValidPublicPackageName(name)) return
+  throw dependencyError(
+    'REMOTION_TASK_CONFIG_INVALID',
+    `dependencies contains an invalid npm package name: ${name}`,
+  )
+}
+
+export function externalImportPackageName(specifier) {
+  if (typeof specifier !== 'string') return undefined
+  if (specifier === '') return undefined
+  if (specifier.startsWith('@')) return scopedImportPackageName(specifier)
+  return specifier.split('/').at(0)
+}
+
+function scopedImportPackageName(specifier) {
+  const [scope, name] = specifier.split('/')
+  if (!scope || !name) return undefined
+  return `${scope}/${name}`
+}
+
+export function isValidPublicPackageName(name) {
+  if (typeof name !== 'string') return false
+  return hasValidPublicPackageSyntax(name) && hasValidPublicPackagePrefix(name)
+}
+
+function hasValidPublicPackageSyntax(name) {
+  return name.length <= 214 && PACKAGE_NAME.test(name)
+}
+
+function hasValidPublicPackagePrefix(name) {
+  return !name.startsWith('.') && !name.startsWith('_')
+}
+
+export async function prepareRemotionTaskDependencies(input) {
+  const requested = requestedDependencies(input)
   if (requested.length === 0) {
     return dependencyResolution({
       requested,
       resolved: [],
-      nodeModulesPaths: [input.runtimeNodeModules ?? AUTOCUT_RUNTIME_NODE_MODULES],
+      nodeModulesPaths: [definedOr(input.runtimeNodeModules, AUTOCUT_RUNTIME_NODE_MODULES)],
       cacheReused: true,
     })
   }
 
-  const runtimeNodeModules = input.runtimeNodeModules ?? AUTOCUT_RUNTIME_NODE_MODULES
-  const resolved = []
-  const installRequests = {}
-  for (const [name, pinnedVersion] of requested) {
-    const runtimeVersion = await readInstalledPackageVersion(runtimeNodeModules, name)
-    if (runtimeVersion && (pinnedVersion === null || runtimeVersion === pinnedVersion)) {
-      resolved.push({ name, version: runtimeVersion, source: 'runtime' })
-    } else {
-      installRequests[name] = pinnedVersion
-    }
-  }
+  const runtimeNodeModules = definedOr(input.runtimeNodeModules, AUTOCUT_RUNTIME_NODE_MODULES)
+  const { resolved, installRequests } = await resolveRuntimeDependencies(
+    runtimeNodeModules,
+    requested,
+  )
   if (Object.keys(installRequests).length === 0) {
     return dependencyResolution({
       requested,
@@ -150,50 +142,108 @@ export async function prepareRemotionTaskDependencies(input) {
     })
   }
 
+  return dependencyResolutionFromCache({
+    requested,
+    resolved,
+    runtimeNodeModules,
+    installRequests,
+    ...(await prepareDependencyCache(input, installRequests)),
+  })
+}
+
+async function dependencyResolutionFromCache(input) {
+  if (!input.cachedResolution) {
+    throw dependencyError(
+      'REMOTION_DEPENDENCY_INSTALL_INVALID',
+      'The npm dependency cache did not contain every inferred package import',
+      { packages: Object.keys(input.installRequests) },
+    )
+  }
+  input.resolved.push(
+    ...Object.entries(input.cachedResolution).map(([name, version]) => ({
+      name,
+      version,
+      source: 'task-cache',
+    })),
+  )
+  input.resolved.sort((left, right) => left.name.localeCompare(right.name))
+  const lockBytes = await readFile(path.join(input.installationRoot, 'package-lock.json'))
+  return dependencyResolution({
+    requested: input.requested,
+    resolved: input.resolved,
+    nodeModulesPaths: [path.join(input.installationRoot, 'node_modules'), input.runtimeNodeModules],
+    cacheReused: input.cacheReused,
+    lockHash: `sha256:${createHash('sha256').update(lockBytes).digest('hex')}`,
+  })
+}
+
+function requestedDependencies(input) {
+  const pinnedDependencies = input.dependencies ?? {}
+  const packageNames = new Set([...(input.packageNames ?? []), ...Object.keys(pinnedDependencies)])
+  if (packageNames.size > MAX_DEPENDENCIES) {
+    throw dependencyError(
+      'REMOTION_DEPENDENCY_LIMIT_EXCEEDED',
+      `Remotion source may import at most ${MAX_DEPENDENCIES} npm packages`,
+    )
+  }
+  return [...packageNames]
+    .sort((left, right) => left.localeCompare(right))
+    .map((name) => requestedDependency(name, pinnedDependencies[name] ?? null))
+}
+
+function requestedDependency(name, pinnedVersion) {
+  if (isValidPublicPackageName(name) && !RESERVED_RUNTIME_PACKAGES.has(name)) {
+    return [name, pinnedVersion]
+  }
+  throw dependencyError(
+    'REMOTION_DEPENDENCY_INVALID',
+    `Remotion source imports an unsupported npm package name: ${name}`,
+  )
+}
+
+async function resolveRuntimeDependencies(runtimeNodeModules, requested) {
+  const resolved = []
+  const installRequests = {}
+  for (const [name, pinnedVersion] of requested) {
+    const runtimeVersion = await readInstalledPackageVersion(runtimeNodeModules, name)
+    if (runtimeVersionMatchesPin(runtimeVersion, pinnedVersion)) {
+      resolved.push({ name, version: runtimeVersion, source: 'runtime' })
+      continue
+    }
+    installRequests[name] = pinnedVersion
+  }
+  return { resolved, installRequests }
+}
+
+function runtimeVersionMatchesPin(runtimeVersion, pinnedVersion) {
+  if (!runtimeVersion) return false
+  return pinnedVersion === null || runtimeVersion === pinnedVersion
+}
+
+async function prepareDependencyCache(input, installRequests) {
   const cacheRoot = path.join(input.taskDirectory, '.autocut-dependencies')
-  const cacheKey = createHash('sha256')
+  const installationRoot = path.join(cacheRoot, dependencyCacheKey(installRequests))
+  let cachedResolution = await readValidInstallation(installationRoot, installRequests)
+  const cacheReused = cachedResolution !== undefined
+  if (!cacheReused) {
+    await installDependencySet({ ...input, cacheRoot, installationRoot, requests: installRequests })
+    cachedResolution = await readValidInstallation(installationRoot, installRequests)
+  }
+  return { installationRoot, cacheReused, cachedResolution }
+}
+
+function dependencyCacheKey(requests) {
+  return createHash('sha256')
     .update(
       canonicalJson({
         schemaVersion: CACHE_SCHEMA_VERSION,
         platform: process.platform,
         arch: process.arch,
         node: process.versions.node,
-        requests: installRequests,
+        requests,
       }),
     )
     .digest('hex')
-  const installationRoot = path.join(cacheRoot, cacheKey)
-  let cachedResolution = await readValidInstallation(installationRoot, installRequests)
-  const cacheReused = cachedResolution !== undefined
-  if (!cacheReused) {
-    await installDependencySet({
-      ...input,
-      cacheRoot,
-      installationRoot,
-      requests: installRequests,
-    })
-    cachedResolution = await readValidInstallation(installationRoot, installRequests)
-  }
-  if (!cachedResolution) {
-    throw dependencyError(
-      'REMOTION_DEPENDENCY_INSTALL_INVALID',
-      'The npm dependency cache did not contain every inferred package import',
-      { packages: Object.keys(installRequests) },
-    )
-  }
-
-  for (const [name, version] of Object.entries(cachedResolution)) {
-    resolved.push({ name, version, source: 'task-cache' })
-  }
-  resolved.sort((left, right) => left.name.localeCompare(right.name))
-  const lockBytes = await readFile(path.join(installationRoot, 'package-lock.json'))
-  return dependencyResolution({
-    requested,
-    resolved,
-    nodeModulesPaths: [path.join(installationRoot, 'node_modules'), runtimeNodeModules],
-    cacheReused,
-    lockHash: `sha256:${createHash('sha256').update(lockBytes).digest('hex')}`,
-  })
 }
 
 async function installDependencySet(input) {
@@ -233,18 +283,7 @@ async function installDependencySet(input) {
       'utf8',
     )
     const nodeExecutable = path.resolve(input.nodeExecutable ?? process.execPath)
-    const npmCliPath = await resolveNpmCliPath(nodeExecutable, input.npmCliPath)
-    const runNpm =
-      input.runNpm ??
-      (async ({ args, cwd, env }) => {
-        await execFileAsync(nodeExecutable, [npmCliPath, ...args], {
-          cwd,
-          env,
-          encoding: 'utf8',
-          timeout: input.installTimeoutInMilliseconds ?? DEFAULT_INSTALL_TIMEOUT_MS,
-          maxBuffer: MAX_NPM_OUTPUT_BYTES,
-        })
-      })
+    const runNpm = await resolveNpmRunner(input, nodeExecutable)
     try {
       await runNpm({
         args: [
@@ -314,6 +353,20 @@ async function installDependencySet(input) {
   }
 }
 
+async function resolveNpmRunner(input, nodeExecutable) {
+  if (input.runNpm) return input.runNpm
+  const npmCliPath = await resolveNpmCliPath(nodeExecutable, input.npmCliPath)
+  return async ({ args, cwd, env }) => {
+    await execFileAsync(nodeExecutable, [npmCliPath, ...args], {
+      cwd,
+      env,
+      encoding: 'utf8',
+      timeout: input.installTimeoutInMilliseconds ?? DEFAULT_INSTALL_TIMEOUT_MS,
+      maxBuffer: MAX_NPM_OUTPUT_BYTES,
+    })
+  }
+}
+
 async function resolveNpmCliPath(nodeExecutable, explicit) {
   const candidates = [
     explicit,
@@ -344,54 +397,88 @@ async function resolveNpmCliPath(nodeExecutable, explicit) {
 }
 
 async function readValidInstallation(root, requests) {
-  if (!(await isDirectory(path.join(root, 'node_modules')))) return undefined
-  if (!(await isFile(path.join(root, 'package-lock.json')))) return undefined
+  if (!(await hasDependencyInstallationFiles(root))) return undefined
   const marker = await readJson(path.join(root, '.autocut-dependencies.json'))
-  if (
-    marker?.schemaVersion !== CACHE_SCHEMA_VERSION ||
-    canonicalJson(marker.requests) !== canonicalJson(requests) ||
-    !marker.resolved ||
-    typeof marker.resolved !== 'object' ||
-    Array.isArray(marker.resolved)
-  ) {
-    return undefined
-  }
-  for (const [name, version] of Object.entries(marker.resolved)) {
-    if (!EXACT_VERSION.test(version)) return undefined
-    if ((await readInstalledPackageVersion(path.join(root, 'node_modules'), name)) !== version) {
-      return undefined
-    }
-  }
-  if (Object.keys(marker.resolved).sort().join('\0') !== Object.keys(requests).sort().join('\0')) {
-    return undefined
-  }
+  if (!(await isReusableDependencyMarker(root, marker, requests))) return undefined
   return marker.resolved
 }
 
+async function hasDependencyInstallationFiles(root) {
+  const nodeModulesExists = await isDirectory(path.join(root, 'node_modules'))
+  if (!nodeModulesExists) return false
+  return isFile(path.join(root, 'package-lock.json'))
+}
+
+async function isReusableDependencyMarker(root, marker, requests) {
+  if (!isValidDependencyMarker(marker, requests)) return false
+  if (!sameDependencyNames(marker.resolved, requests)) return false
+  return installedVersionsMatch(root, marker.resolved)
+}
+
+async function installedVersionsMatch(root, resolved) {
+  const checks = await Promise.all(
+    Object.entries(resolved).map(([name, version]) => installedVersionMatches(root, name, version)),
+  )
+  return checks.every(Boolean)
+}
+
+function isValidDependencyMarker(marker, requests) {
+  if (marker?.schemaVersion !== CACHE_SCHEMA_VERSION) return false
+  if (canonicalJson(marker.requests) !== canonicalJson(requests)) return false
+  return isPlainObject(marker.resolved)
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+async function installedVersionMatches(root, name, version) {
+  if (!EXACT_VERSION.test(version)) return false
+  const installed = await readInstalledPackageVersion(path.join(root, 'node_modules'), name)
+  return installed === version
+}
+
+function sameDependencyNames(left, right) {
+  return Object.keys(left).sort().join('\0') === Object.keys(right).sort().join('\0')
+}
+
 async function readInstalledDependencyVersions(root, requests) {
+  const packageDependencies = await readPackageDependencies(root)
+  if (!packageDependencies) return undefined
+  return readRequestedDependencyVersions(root, requests, packageDependencies)
+}
+
+async function readPackageDependencies(root) {
   if (!(await isFile(path.join(root, 'package-lock.json')))) return undefined
   const packageJson = await readJson(path.join(root, 'package.json'))
-  if (!packageJson?.dependencies || typeof packageJson.dependencies !== 'object') {
-    return undefined
-  }
+  return isPlainObject(packageJson?.dependencies) ? packageJson.dependencies : undefined
+}
+
+async function readRequestedDependencyVersions(root, requests, packageDependencies) {
   const resolved = {}
   for (const [name, pinnedVersion] of Object.entries(requests)) {
-    const declaredVersion = packageJson.dependencies[name]
+    const declaredVersion = packageDependencies[name]
     const installedVersion = await readInstalledPackageVersion(
       path.join(root, 'node_modules'),
       name,
     )
-    if (
-      typeof declaredVersion !== 'string' ||
-      !EXACT_VERSION.test(declaredVersion) ||
-      installedVersion !== declaredVersion ||
-      (pinnedVersion !== null && installedVersion !== pinnedVersion)
-    ) {
+    if (!installedDependencyMatches(declaredVersion, installedVersion, pinnedVersion))
       return undefined
-    }
     resolved[name] = installedVersion
   }
   return resolved
+}
+
+function installedDependencyMatches(declaredVersion, installedVersion, pinnedVersion) {
+  if (typeof declaredVersion !== 'string') return false
+  if (!EXACT_VERSION.test(declaredVersion)) return false
+  if (installedVersion !== declaredVersion) return false
+  return pinnedVersionMatches(installedVersion, pinnedVersion)
+}
+
+function pinnedVersionMatches(installedVersion, pinnedVersion) {
+  if (pinnedVersion === null) return true
+  return installedVersion === pinnedVersion
 }
 
 async function readInstalledPackageVersion(nodeModulesRoot, name) {
@@ -428,19 +515,28 @@ function dependencyResolution({ requested, resolved, nodeModulesPaths, cacheReus
 }
 
 function safeNpmError(error) {
-  const output =
-    typeof error?.stderr === 'string' && error.stderr.trim()
-      ? error.stderr
-      : typeof error?.stdout === 'string' && error.stdout.trim()
-        ? error.stdout
-        : error instanceof Error
-          ? error.message
-          : String(error)
-  return output
+  return npmErrorOutput(error)
     .replaceAll(/\/\/[^/\s:@]+:[^@\s/]+@/gu, '//***@')
     .replaceAll(/((?:token|password|authorization)=)\S+/giu, '$1***')
     .trim()
     .slice(-2_000)
+}
+
+function npmErrorOutput(error) {
+  const stderr = nonEmptyString(Reflect.get(Object(error), 'stderr'))
+  if (stderr !== undefined) return stderr
+  const stdout = nonEmptyString(Reflect.get(Object(error), 'stdout'))
+  if (stdout !== undefined) return stdout
+  return error instanceof Error ? error.message : String(error)
+}
+
+function nonEmptyString(value) {
+  if (typeof value !== 'string') return undefined
+  return value.trim() ? value : undefined
+}
+
+function definedOr(value, fallback) {
+  return value === undefined ? fallback : value
 }
 
 function canonicalJson(value) {
