@@ -86,6 +86,7 @@ function createCompositionMaskRenderHarness(params: {
     mediabunnyDisabledItems: new Set(),
     mediabunnyFailureCountByItem: new Map(),
     imageElements: params.imageElements ?? new Map(),
+    isImageSourceKnownOpaque: () => true,
     gifFramesMap: new Map(),
     lottieProvider: new LottieExportProvider(),
     keyframesMap: new Map(),

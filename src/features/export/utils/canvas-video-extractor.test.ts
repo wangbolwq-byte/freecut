@@ -2,6 +2,22 @@ import { describe, expect, it, vi } from 'vite-plus/test'
 import { VideoFrameExtractor } from './canvas-video-extractor'
 
 describe('VideoFrameExtractor lifecycle', () => {
+  it('only treats a source as opaque after transparency metadata rules out alpha', () => {
+    const extractor = new VideoFrameExtractor('blob:test', 'test-item')
+    const internals = extractor as unknown as {
+      sourceMayBeTransparent: boolean | null
+    }
+
+    expect(extractor.isSourceKnownOpaque()).toBe(false)
+    internals.sourceMayBeTransparent = false
+    expect(extractor.isSourceKnownOpaque()).toBe(true)
+    internals.sourceMayBeTransparent = true
+    expect(extractor.isSourceKnownOpaque()).toBe(false)
+
+    extractor.dispose()
+    expect(extractor.isSourceKnownOpaque()).toBe(false)
+  })
+
   it('closes a sample yielded after the extractor was disposed', async () => {
     let resolveNext!: (result: IteratorResult<{ close: () => void }>) => void
     const nextResult = new Promise<IteratorResult<{ close: () => void }>>((resolve) => {

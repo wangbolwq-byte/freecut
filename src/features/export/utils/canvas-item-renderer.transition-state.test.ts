@@ -147,6 +147,7 @@ function createExportImageTransitionRenderContext(params: {
         createMockImageBitmapRecord(width, height),
       ]),
     ),
+    isImageSourceKnownOpaque: () => true,
     ...(params.gpuPipeline ? { gpuPipeline: params.gpuPipeline } : {}),
     ...(params.gpuTransitionPipeline
       ? { gpuTransitionPipeline: params.gpuTransitionPipeline }
